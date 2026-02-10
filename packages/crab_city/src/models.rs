@@ -415,13 +415,18 @@ pub struct InputAttribution {
 /// Both sides may be truncated independently, so we use prefix matching.
 pub const ATTRIBUTION_CONTENT_PREFIX_LEN: usize = 100;
 
-/// Normalize content for attribution matching: trim whitespace, take first N chars.
+/// Normalize content for attribution matching: strip \r (terminal line-endings),
+/// trim whitespace, take first N chars.
+///
+/// Terminal input arrives with \r\n line endings but Claude Code writes \n to JSONL.
+/// Stripping \r before comparison ensures multi-line messages match correctly.
 pub fn normalize_attribution_content(content: &str) -> String {
     content
+        .replace('\r', "")
         .trim()
         .chars()
         .take(ATTRIBUTION_CONTENT_PREFIX_LEN)
-        .collect()
+        .collect::<String>()
 }
 
 /// Check if two content strings match for attribution purposes.

@@ -5,10 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use claude_convo::{ClaudeConvo, ContentPart, ConversationWatcher, MessageContent, MessageRole};
+use claude_convo::{ClaudeConvo, ConversationWatcher};
 use tracing::{debug, info, warn};
 
-use super::format::format_entry;
+use super::format::format_entry_with_attribution;
 use crate::AppState;
 
 pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -103,74 +103,18 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
 
     match convo_manager.read_conversation(working_dir, &session_id) {
         Ok(conversation) => {
-            fn normalize_whitespace(s: &str) -> String {
-                let lines: Vec<&str> = s.lines().collect();
-                let mut result = Vec::new();
-                let mut last_was_empty = true;
-                for line in lines {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        if !last_was_empty {
-                            result.push("");
-                            last_was_empty = true;
-                        }
-                    } else {
-                        result.push(line);
-                        last_was_empty = false;
-                    }
-                }
-                while result.last().map(|s| s.trim().is_empty()).unwrap_or(false) {
-                    result.pop();
-                }
-                result.join("\n")
+            let mut turns = Vec::with_capacity(conversation.entries.len());
+            for entry in &conversation.entries {
+                turns.push(
+                    format_entry_with_attribution(
+                        entry,
+                        &id,
+                        Some(&state.repository),
+                        Some(&state.global_state_manager),
+                    )
+                    .await,
+                );
             }
-
-            let turns: Vec<serde_json::Value> = conversation
-                .entries
-                .iter()
-                .filter_map(|entry| {
-                    entry.message.as_ref().and_then(|msg| match msg.role {
-                        MessageRole::User | MessageRole::Assistant => {
-                            let content_text = match &msg.content {
-                                Some(MessageContent::Text(text)) => text.clone(),
-                                Some(MessageContent::Parts(parts)) => parts
-                                    .iter()
-                                    .filter_map(|part| match part {
-                                        ContentPart::Text { text } => Some(text.clone()),
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(" "),
-                                None => String::new(),
-                            };
-
-                            let normalized = normalize_whitespace(&content_text);
-                            let truncated: String = normalized.chars().take(1000).collect();
-
-                            let tool_names: Vec<String> =
-                                if let Some(MessageContent::Parts(parts)) = &msg.content {
-                                    parts
-                                        .iter()
-                                        .filter_map(|p| match p {
-                                            ContentPart::ToolUse { name, .. } => Some(name.clone()),
-                                            _ => None,
-                                        })
-                                        .collect()
-                                } else {
-                                    vec![]
-                                };
-
-                            Some(serde_json::json!({
-                                "role": format!("{:?}", msg.role),
-                                "content": truncated,
-                                "timestamp": entry.timestamp.clone(),
-                                "tools": tool_names
-                            }))
-                        }
-                        _ => None,
-                    })
-                })
-                .collect();
 
             info!(
                 "Found conversation {} with {} turns",
@@ -271,7 +215,18 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
     match watcher.poll() {
         Ok(new_entries) => {
-            let turns: Vec<serde_json::Value> = new_entries.iter().map(format_entry).collect();
+            let mut turns = Vec::with_capacity(new_entries.len());
+            for entry in &new_entries {
+                turns.push(
+                    format_entry_with_attribution(
+                        entry,
+                        &id,
+                        Some(&state.repository),
+                        Some(&state.global_state_manager),
+                    )
+                    .await,
+                );
+            }
 
             Json(serde_json::json!({
                 "new_turns": turns,

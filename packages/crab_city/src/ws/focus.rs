@@ -21,7 +21,7 @@ pub async fn send_conversation_since(
     since_uuid: Option<&str>,
     state_manager: &Arc<GlobalStateManager>,
     tx: &mpsc::Sender<ServerMessage>,
-    repository: Option<&ConversationRepository>,
+    repository: Option<&Arc<ConversationRepository>>,
 ) -> Result<(), String> {
     // Get instance working dir and session info from state manager
     let handle = state_manager

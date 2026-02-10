@@ -239,7 +239,7 @@ pub async fn run_conversation_watcher_with_session(
 ) {
     debug!("Starting conversation watcher for session {}", session_id);
 
-    let repo_ref = repository.as_deref();
+    let repo_ref = repository.as_ref();
     let manager = ClaudeConvo::new();
     let mut watcher = ConversationWatcher::new(manager, working_dir, session_id);
 

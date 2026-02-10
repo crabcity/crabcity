@@ -170,20 +170,20 @@ pub async fn auth_middleware(
         return next.run(request).await;
     }
 
-    // Exempt loopback connections (CLI clients discover daemon via local PID/port files,
-    // so reaching the server on localhost already proves local trust).
-    if let Some(connect_info) = request
+    // Check if this is a loopback connection (CLI clients discover daemon via local
+    // PID/port files, so reaching the server on localhost already proves local trust).
+    let is_loopback = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-    {
-        if connect_info.0.ip().is_loopback() {
-            return next.run(request).await;
-        }
-    }
+        .is_some_and(|ci| ci.0.ip().is_loopback());
 
     // Extract session token from cookie
     let token = match extract_session_token(request.headers()) {
         Some(t) => t,
+        None if is_loopback => {
+            // Loopback without a session cookie — allow through without identity
+            return next.run(request).await;
+        }
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -198,6 +198,10 @@ pub async fn auth_middleware(
     // Look up session
     let (session, user) = match auth_state.repository.get_session_with_user(&token).await {
         Ok(Some(pair)) => pair,
+        Ok(None) if is_loopback => {
+            // Loopback with an invalid/expired session — allow through without identity
+            return next.run(request).await;
+        }
         Ok(None) => {
             return (
                 StatusCode::UNAUTHORIZED,

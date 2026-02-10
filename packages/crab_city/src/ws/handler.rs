@@ -271,7 +271,7 @@ pub async fn handle_multiplexed_ws(
                                             since_uuid.as_deref(),
                                             &state_mgr_sync,
                                             &tx_sync,
-                                            repo_sync.as_deref(),
+                                            repo_sync.as_ref(),
                                         )
                                         .await
                                         {
