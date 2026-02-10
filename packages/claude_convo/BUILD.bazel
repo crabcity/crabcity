@@ -1,0 +1,27 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "claude_convo",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/async_watcher.rs"],  # Requires async-watcher feature
+    ),
+    deps = [
+        "@crate_index//:anyhow",
+        "@crate_index//:chrono",
+        "@crate_index//:clap",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "claude_convo_test",
+    crate = ":claude_convo",
+    deps = [
+        "@crate_index//:tempfile",
+    ],
+)

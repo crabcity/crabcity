@@ -1,0 +1,39 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+
+rust_library(
+    name = "crab_city_ui_crate",
+    srcs = ["src/lib.rs"],
+    compile_data = [
+        "//packages/crab_city_ui",
+    ],
+    crate_name = "crab_city_ui",
+    edition = "2021",
+    rustc_env = {
+        # Use execpath to get path to the tree artifact
+        "CRAB_CITY_UI_PATH": "$(execpath //packages/crab_city_ui)",
+    },
+    # Disable sandbox - rust-embed proc macro can't follow sandbox symlinks
+    tags = ["no-sandbox"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@crate_index//:rust-embed",
+    ],
+)
+
+# Test binary to verify embedded assets
+rust_binary(
+    name = "test_embed",
+    srcs = ["src/bin/test_embed.rs"],
+    compile_data = [
+        "//packages/crab_city_ui",
+    ],
+    edition = "2021",
+    rustc_env = {
+        "CRAB_CITY_UI_PATH": "$(execpath //packages/crab_city_ui)",
+    },
+    tags = ["no-sandbox"],
+    deps = [
+        ":crab_city_ui_crate",
+        "@crate_index//:rust-embed",
+    ],
+)

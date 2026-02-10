@@ -1,0 +1,168 @@
+use anyhow::Result;
+use ratatui::{
+    DefaultTerminal,
+    crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Padding},
+};
+use std::io::IsTerminal;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use super::InstanceInfo;
+
+pub enum PickerResult {
+    Attach(String),
+    NewInstance,
+    Quit,
+}
+
+/// Events received from the multiplexed WebSocket.
+pub enum PickerEvent {
+    Created(InstanceInfo),
+    Stopped(String),
+}
+
+/// Show an interactive TUI picker for instances.
+/// Falls back to most-recent or NewInstance when stdin is not a TTY.
+pub fn run_picker(
+    instances: Vec<InstanceInfo>,
+    events: mpsc::Receiver<PickerEvent>,
+) -> Result<PickerResult> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(match instances.last() {
+            Some(inst) => PickerResult::Attach(inst.id.clone()),
+            None => PickerResult::NewInstance,
+        });
+    }
+
+    let mut terminal = ratatui::init();
+    let result = picker_loop(&mut terminal, instances, events);
+    ratatui::restore();
+    result
+}
+
+fn picker_loop(
+    terminal: &mut DefaultTerminal,
+    mut instances: Vec<InstanceInfo>,
+    events: mpsc::Receiver<PickerEvent>,
+) -> Result<PickerResult> {
+    let mut state = ListState::default().with_selected(Some(0));
+
+    loop {
+        // Drain any pending live-update events
+        while let Ok(ev) = events.try_recv() {
+            match ev {
+                PickerEvent::Created(inst) => {
+                    if !instances.iter().any(|i| i.id == inst.id) {
+                        instances.push(inst);
+                    }
+                }
+                PickerEvent::Stopped(id) => {
+                    instances.retain(|i| i.id != id);
+                }
+            }
+            // Keep selection in bounds
+            let total = instances.len() + 1;
+            if let Some(sel) = state.selected() {
+                if sel >= total {
+                    state.select(Some(total.saturating_sub(1)));
+                }
+            }
+        }
+
+        let total = instances.len() + 1;
+
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let items = build_items(&instances, area.width);
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" crab: select session ")
+                        .title_bottom(" ↑↓ navigate · enter select · q/esc quit ")
+                        .borders(Borders::ALL)
+                        .padding(Padding::horizontal(1)),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▸ ");
+            frame.render_stateful_widget(list, area, &mut state);
+        })?;
+
+        // Poll with a short timeout so we can process WS events between frames
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(PickerResult::Quit),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some((i + 1) % total));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let i = state.selected().unwrap_or(0);
+                    state.select(Some(if i == 0 { total - 1 } else { i - 1 }));
+                }
+                KeyCode::Enter => {
+                    let i = state.selected().unwrap_or(0);
+                    return if i < instances.len() {
+                        Ok(PickerResult::Attach(instances[i].id.clone()))
+                    } else {
+                        Ok(PickerResult::NewInstance)
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>> {
+    let mut items: Vec<ListItem> = instances
+        .iter()
+        .map(|inst| {
+            let status = if inst.running { "running" } else { "stopped" };
+            let short_id = if inst.id.len() > 8 {
+                &inst.id[..8]
+            } else {
+                &inst.id
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{:<20}", inst.name),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" {:<10}", short_id)),
+                Span::styled(
+                    format!(" {:<8}", status),
+                    if inst.running {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::raw(format!(" {}", inst.working_dir)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    items.push(ListItem::new(Line::from(vec![Span::styled(
+        "[ + ]  New instance",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )])));
+
+    items
+}

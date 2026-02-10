@@ -1,0 +1,60 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "tty_wrapper",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    deps = [
+        "@crate_index//:anyhow",
+        "@crate_index//:axum",
+        "@crate_index//:axum-extra",
+        "@crate_index//:chrono",
+        "@crate_index//:clap",
+        "@crate_index//:futures",
+        "@crate_index//:futures-util",
+        "@crate_index//:maud",
+        "@crate_index//:nix",
+        "@crate_index//:portable-pty",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+        "@crate_index//:tower",
+        "@crate_index//:tower-http",
+        "@crate_index//:tracing",
+        "@crate_index//:tracing-subscriber",
+        "@crate_index//:uuid",
+    ],
+)
+
+rust_binary(
+    name = "wrapper",
+    srcs = ["src/main.rs"],
+    deps = [
+        ":tty_wrapper",
+        "@crate_index//:anyhow",
+        "@crate_index//:axum",
+        "@crate_index//:clap",
+        "@crate_index//:maud",
+        "@crate_index//:nix",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tokio",
+        "@crate_index//:tower-http",
+        "@crate_index//:tracing",
+        "@crate_index//:tracing-subscriber",
+        "@crate_index//:uuid",
+    ],
+)
+
+rust_test(
+    name = "tty_wrapper_test",
+    crate = ":tty_wrapper",
+    deps = [
+        "@crate_index//:reqwest",
+        "@crate_index//:tokio-test",
+    ],
+)

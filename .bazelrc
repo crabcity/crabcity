@@ -1,0 +1,13 @@
+# Starlark formatting
+# Run `bazel run //tools/format` to format BUILD and .bzl files
+# Run `bazel test //tools/format:format_test` to check formatting
+
+# Linting
+# Rust: bazel build //path/to:target --config=clippy
+# To fail on violations: add --@aspect_rules_lint//lint:fail_on_violation
+build:lint --aspects //tools/lint:linters.bzl%ruff
+build:lint --output_groups=+rules_lint_report
+
+# Clippy for Rust (uses rules_rust built-in support)
+build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:clippy --output_groups=+clippy_checks

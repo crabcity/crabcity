@@ -1,0 +1,23 @@
+[package]
+name = "claude_convo"
+version = "0.1.0"
+edition = "2024"
+description = "A library for reading Claude conversation logs from the local .claude directory"
+
+[features]
+default = ["async-watcher"]
+async-watcher = ["dep:notify", "dep:tokio"]
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true, features = ["derive"] }
+notify = { version = "7", features = ["macos_kqueue"], optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "fs"], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
