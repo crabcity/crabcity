@@ -1,0 +1,8 @@
+"""Lint tool definitions."""
+
+package(default_visibility = ["//visibility:public"])
+
+sh_binary(
+    name = "lint",
+    srcs = ["lint.sh"],
+)

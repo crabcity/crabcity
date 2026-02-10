@@ -11,7 +11,6 @@ bazel_dep(name = "platforms", version = "1.0.0")
 
 # Helpers
 bazel_dep(name = "aspect_bazel_lib", version = "2.19.3")
-
 bazel_dep(name = "aspect_rules_lint", version = "1.10.2")
 bazel_dep(name = "buildifier_prebuilt", version = "8.2.1.1")
 
@@ -33,21 +32,17 @@ bazel_dep(name = "aspect_rules_jest", version = "0.24.3")
 bazel_dep(name = "rules_nodejs", version = "6.7.3")
 
 npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
-
 npm.npm_translate_lock(
     name = "npm",
     npmrc = "//packages/crab_city_ui:.npmrc",
     pnpm_lock = "//packages/crab_city_ui:pnpm-lock.yaml",
 )
-
 use_repo(npm, "npm")
 
 rules_ts_ext = use_extension("@aspect_rules_ts//ts:extensions.bzl", "ext")
-
 rules_ts_ext.deps(
     ts_version_from = "//packages/crab_city_ui:package.json",
 )
-
 use_repo(rules_ts_ext, "npm_typescript")
 
 ################################################################################
@@ -75,8 +70,8 @@ crate_index.spec(
     version = "1.0",
 )
 crate_index.spec(
-    package = "chrono",
     features = ["serde"],
+    package = "chrono",
     version = "0.4",
 )
 crate_index.spec(
@@ -110,7 +105,10 @@ crate_index.spec(
     version = "3.15",
 )
 crate_index.spec(
-    features = ["v4", "serde"],
+    features = [
+        "v4",
+        "serde",
+    ],
     package = "uuid",
     version = "1.5",
 )
@@ -341,7 +339,6 @@ crate_index.spec(
     package = "git2",
     version = "0.19",
 )
-
 crate_index.from_specs(name = "crate_index")
 use_repo(crate_index, "crate_index")
 

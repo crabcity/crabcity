@@ -11,3 +11,8 @@ build:lint --output_groups=+rules_lint_report
 # Clippy for Rust (uses rules_rust built-in support)
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
+
+# Coverage
+# Filter to only instrument our source code, not external crates or test harnesses
+coverage --instrumentation_filter="//packages[/:],//tools[/:]"
+coverage --combined_report=lcov

@@ -440,7 +440,6 @@ mod tests {
         }
     }
 
-
     fn make_msg(role: MessageRole, content: Option<MessageContent>) -> Message {
         Message {
             role,
@@ -1099,8 +1098,7 @@ mod attribution_integration_tests {
             .await;
 
         let entry = make_user_entry("e1", "fix the bug", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert_eq!(result["attributed_to"]["user_id"], "u1");
         assert_eq!(result["attributed_to"]["display_name"], "Alice");
@@ -1132,8 +1130,7 @@ mod attribution_integration_tests {
 
         // Queue is empty — should fall through to DB
         let entry = make_user_entry("e1", "fix the bug", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
 
         assert_eq!(result["attributed_to"]["user_id"], "u1");
     }
@@ -1146,8 +1143,7 @@ mod attribution_integration_tests {
         let sm = Arc::new(GlobalStateManager::new(create_state_broadcast()));
 
         let entry = make_user_entry("e1", "fix the bug", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
 
         assert_eq!(result["attributed_to"]["user_id"], "terminal");
         assert_eq!(result["attributed_to"]["display_name"], "Terminal");
@@ -1158,8 +1154,7 @@ mod attribution_integration_tests {
     #[tokio::test]
     async fn no_repo_no_state_manager_leaves_unattributed() {
         let entry = make_user_entry("e1", "hello", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, None).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, None).await;
 
         assert!(
             result.get("attributed_to").is_none(),
@@ -1176,8 +1171,7 @@ mod attribution_integration_tests {
             .await;
 
         let entry = make_assistant_entry("e1", "Sure, I can help", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert!(result.get("attributed_to").is_none());
     }
@@ -1196,8 +1190,7 @@ mod attribution_integration_tests {
         let entry = make_user_entry("e1", "fix the bug", &ts);
 
         // First call — consumes queue, spawns write-back
-        let r1 =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let r1 = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
         assert_eq!(r1["attributed_to"]["user_id"], "u1");
 
         // Let the spawned write-back complete
@@ -1225,16 +1218,14 @@ mod attribution_integration_tests {
         let entry = make_user_entry("e1", "fix the bug", &ts);
 
         // First call (conversation watcher) — consumes queue
-        let r1 =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let r1 = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
         assert_eq!(r1["attributed_to"]["user_id"], "u1");
 
         // Let write-back finish
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Second call (REST endpoint) — queue empty, must come from DB
-        let r2 =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let r2 = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
         assert_eq!(
             r2["attributed_to"]["user_id"], "u1",
             "Second caller should get attribution from DB after queue was consumed"
@@ -1250,8 +1241,7 @@ mod attribution_integration_tests {
             .await;
 
         let entry = make_user_entry("e1", "hello world", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert_eq!(
             result["attributed_to"]["user_id"], "u1",
@@ -1292,8 +1282,7 @@ mod attribution_integration_tests {
         let ts = now_rfc3339();
 
         // 1. Handler receives input
-        simulate_handler_input(&sm, &repo, "i1", "u1", "Alice", "fix the bug\r\n", None)
-            .await;
+        simulate_handler_input(&sm, &repo, "i1", "u1", "Alice", "fix the bug\r\n", None).await;
 
         // 2. Conversation watcher picks up the entry (uses queue)
         let entry = make_user_entry("e1", "fix the bug", &ts);
@@ -1308,8 +1297,7 @@ mod attribution_integration_tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // 4. REST endpoint reads same entry (queue already drained)
-        let rest_result =
-            format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
+        let rest_result = format_entry_with_attribution(&entry, "i1", Some(&repo), Some(&sm)).await;
         assert_eq!(
             rest_result["attributed_to"]["user_id"], "u1",
             "REST endpoint should attribute via DB after queue was drained by watcher"
@@ -1324,18 +1312,14 @@ mod attribution_integration_tests {
         let sm = Arc::new(GlobalStateManager::new(create_state_broadcast()));
         let ts = now_rfc3339();
 
-        simulate_handler_input(&sm, &repo, "i1", "u1", "Alice", "hello from alice", None)
-            .await;
-        simulate_handler_input(&sm, &repo, "i1", "u2", "Bob", "hello from bob", None)
-            .await;
+        simulate_handler_input(&sm, &repo, "i1", "u1", "Alice", "hello from alice", None).await;
+        simulate_handler_input(&sm, &repo, "i1", "u2", "Bob", "hello from bob", None).await;
 
         let e1 = make_user_entry("e1", "hello from alice", &ts);
         let e2 = make_user_entry("e2", "hello from bob", &ts);
 
-        let r1 =
-            format_entry_with_attribution(&e1, "i1", Some(&repo), Some(&sm)).await;
-        let r2 =
-            format_entry_with_attribution(&e2, "i1", Some(&repo), Some(&sm)).await;
+        let r1 = format_entry_with_attribution(&e1, "i1", Some(&repo), Some(&sm)).await;
+        let r2 = format_entry_with_attribution(&e2, "i1", Some(&repo), Some(&sm)).await;
 
         assert_eq!(r1["attributed_to"]["user_id"], "u1");
         assert_eq!(r2["attributed_to"]["user_id"], "u2");
@@ -1350,8 +1334,7 @@ mod attribution_integration_tests {
             .await;
 
         let entry = make_user_entry("e1", "do the thing", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert_eq!(result["attributed_to"]["user_id"], "u1");
         assert_eq!(result["task_id"], 42);
@@ -1374,8 +1357,7 @@ mod attribution_integration_tests {
 
         // But Claude writes \n line endings to JSONL
         let entry = make_user_entry("e1", "line one\nline two", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert_eq!(
             result["attributed_to"]["user_id"], "u1",
@@ -1392,8 +1374,7 @@ mod attribution_integration_tests {
             .await;
 
         let entry = make_user_entry("e1", "hello", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "i1", None, Some(&sm)).await;
 
         assert_eq!(
             result["attributed_to"]["user_id"], "u1",
@@ -1413,7 +1394,9 @@ mod attribution_pipeline_diagnostic_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::models::{InputAttribution, User, attribution_content_matches, normalize_attribution_content};
+    use crate::models::{
+        InputAttribution, User, attribution_content_matches, normalize_attribution_content,
+    };
     use crate::repository::test_helpers::test_repository;
     use crate::ws::{GlobalStateManager, create_state_broadcast};
 
@@ -1520,11 +1503,13 @@ mod attribution_pipeline_diagnostic_tests {
             .await;
 
         let entry = make_user_entry("e1", "Test", "2024-06-01T12:00:00Z");
-        let result =
-            format_entry_with_attribution(&entry, "inst1", None, Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "inst1", None, Some(&sm)).await;
 
         assert_eq!(
-            result.get("attributed_to").and_then(|a| a.get("user_id")).and_then(|v| v.as_str()),
+            result
+                .get("attributed_to")
+                .and_then(|a| a.get("user_id"))
+                .and_then(|v| v.as_str()),
             Some("u1"),
             "format_entry_with_attribution should consume queue and attribute to u1"
         );
@@ -1562,8 +1547,7 @@ mod attribution_pipeline_diagnostic_tests {
         let entry = make_user_entry("e1", "Test", &now_rfc3339());
 
         // First caller (e.g. conversation watcher) — should get attribution from queue
-        let r1 =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+        let r1 = format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
         assert_eq!(
             r1["attributed_to"]["user_id"], "u1",
             "First caller should consume queue successfully"
@@ -1573,10 +1557,10 @@ mod attribution_pipeline_diagnostic_tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Second caller (e.g. REST endpoint) — queue is empty, should fall through to DB
-        let r2 =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+        let r2 = format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
 
-        let r2_user = r2.get("attributed_to")
+        let r2_user = r2
+            .get("attributed_to")
             .and_then(|a| a.get("user_id"))
             .and_then(|v| v.as_str());
         assert_eq!(
@@ -1605,8 +1589,7 @@ mod attribution_pipeline_diagnostic_tests {
         let entry = make_user_entry("e1", "Test", &now_rfc3339());
 
         // First caller consumes queue
-        let r1 =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+        let r1 = format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
         assert_eq!(r1["attributed_to"]["user_id"], "u1");
 
         // Write-back spawned by format_entry_with_attribution — but there's no DB
@@ -1614,9 +1597,9 @@ mod attribution_pipeline_diagnostic_tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Second caller — queue empty, DB has no attribution record for this instance
-        let r2 =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
-        let r2_user = r2.get("attributed_to")
+        let r2 = format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+        let r2_user = r2
+            .get("attributed_to")
             .and_then(|a| a.get("user_id"))
             .and_then(|v| v.as_str());
 
@@ -1673,7 +1656,8 @@ mod attribution_pipeline_diagnostic_tests {
         // Now the watcher processes the same entry (queue is drained)
         let watcher_result =
             format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
-        let watcher_user = watcher_result.get("attributed_to")
+        let watcher_user = watcher_result
+            .get("attributed_to")
             .and_then(|a| a.get("user_id"))
             .and_then(|v| v.as_str());
 
@@ -1696,10 +1680,10 @@ mod attribution_pipeline_diagnostic_tests {
         let repo = Arc::new(test_repository().await);
 
         let entry = make_user_entry("e1", "Test", &now_rfc3339());
-        let result =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), None).await;
+        let result = format_entry_with_attribution(&entry, "inst1", Some(&repo), None).await;
 
-        let user = result.get("attributed_to")
+        let user = result
+            .get("attributed_to")
             .and_then(|a| a.get("user_id"))
             .and_then(|v| v.as_str());
 
@@ -1726,8 +1710,7 @@ mod attribution_pipeline_diagnostic_tests {
 
         // But watcher processes for "inst2"
         let entry = make_user_entry("e1", "Test", &now_rfc3339());
-        let result =
-            format_entry_with_attribution(&entry, "inst2", Some(&repo), Some(&sm)).await;
+        let result = format_entry_with_attribution(&entry, "inst2", Some(&repo), Some(&sm)).await;
 
         assert_eq!(
             result["attributed_to"]["user_id"], "terminal",
@@ -1761,13 +1744,7 @@ mod attribution_pipeline_diagnostic_tests {
 
         // === Watcher processes entry ===
         // repo is Some (auth is enabled), state_manager is Some
-        let result = format_entry_with_attribution(
-            &entry,
-            "inst1",
-            Some(&repo),
-            Some(&sm),
-        )
-        .await;
+        let result = format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
 
         // Queue is empty (nothing pushed), DB is empty (nothing written)
         // → Falls through to Terminal
@@ -1776,9 +1753,7 @@ mod attribution_pipeline_diagnostic_tests {
             "BUG CONFIRMED: When ws_user is None (loopback auth exemption), \
              no attribution is ever pushed, and every user message falls to Terminal"
         );
-        assert_eq!(
-            result["attributed_to"]["display_name"], "Terminal",
-        );
+        assert_eq!(result["attributed_to"]["display_name"], "Terminal",);
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -1825,13 +1800,8 @@ mod attribution_pipeline_diagnostic_tests {
         let entry = make_user_entry("e1", "Test", &ts);
 
         // === Step C: Conversation watcher picks up entry ===
-        let watcher_result = format_entry_with_attribution(
-            &entry,
-            "inst1",
-            Some(&repo),
-            Some(&sm),
-        )
-        .await;
+        let watcher_result =
+            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
         assert_eq!(
             watcher_result["attributed_to"]["user_id"], "u1",
             "Watcher (first consumer) should attribute to Alice"
@@ -1841,15 +1811,11 @@ mod attribution_pipeline_diagnostic_tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // === Step D: REST endpoint also processes the entry ===
-        let rest_result = format_entry_with_attribution(
-            &entry,
-            "inst1",
-            Some(&repo),
-            Some(&sm),
-        )
-        .await;
+        let rest_result =
+            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
         assert_eq!(
-            rest_result["attributed_to"]["user_id"], "u1",
+            rest_result["attributed_to"]["user_id"],
+            "u1",
             "REST endpoint (second consumer) should find attribution in DB. \
              Got: {:?}",
             rest_result.get("attributed_to")
