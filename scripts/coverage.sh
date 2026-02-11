@@ -120,9 +120,9 @@ _coverage_report="$_output_path/_coverage/_coverage_report.dat"
 
 if [[ $_skip_tests -eq 0 ]]; then
     if [[ -z "$_targets" ]]; then
-        _targets=$(bazel query 'kind("rust_test", //...)' 2>/dev/null | tr '\n' ' ')
+        _targets=$(bazel query 'kind("rust_test|jest_test", //...)' 2>/dev/null | tr '\n' ' ')
         if [[ -z "$_targets" ]]; then
-            echo "ERROR: No rust_test targets found."
+            echo "ERROR: No test targets found."
             exit 1
         fi
     fi

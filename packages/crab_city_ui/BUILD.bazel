@@ -172,7 +172,6 @@ jest_test(
     config = "jest.config.cjs",
     data = [
         "package.json",
-        "tsconfig.test.json",
         ":node_modules/@jest/globals",
         ":node_modules/jest",
         ":node_modules/jest-cli",
@@ -180,5 +179,12 @@ jest_test(
         ":test_lib",
     ],
     node_modules = ":node_modules",
+    auto_configure_reporters = False,
     node_options = ["--experimental-vm-modules"],
+    patch_node_fs = False,
+    run_in_band = True,
+    # Run without sandbox so V8 coverage paths match rootDir.
+    # Bazel sandbox resolves symlinks to real paths, causing a mismatch
+    # between Jest's rootDir (sandbox) and V8's file URLs (real execroot).
+    tags = ["local"],
 )

@@ -27,6 +27,7 @@
 		"declaration": true,
 		"declarationMap": true,
 		"sourceMap": true,
+		"inlineSources": true,
 		"rootDir": "src/lib/utils",
 		"outDir": "dist-test"
 	},
