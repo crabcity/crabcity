@@ -1,3 +1,6 @@
+/// Crab binary version. Bump this when releasing.
+pub const VERSION: &str = "0.42.0";
+
 use anyhow::Result;
 use axum::{
     Router,
@@ -69,6 +72,7 @@ impl<B> MakeSpan<B> for RequestIdMakeSpan {
 
 #[derive(Parser)]
 #[command(name = "crab")]
+#[command(version = VERSION)]
 #[command(about = "Terminal multiplexer for Claude Code instances")]
 struct Cli {
     #[command(subcommand)]
