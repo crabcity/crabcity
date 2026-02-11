@@ -34,7 +34,7 @@ pub async fn default_command(config: &CrabCityConfig) -> Result<()> {
 /// Attach to an existing instance (by name, ID, or prefix). No target: show picker.
 /// After detaching from a session, returns to the picker.
 pub async fn attach_command(config: &CrabCityConfig, target: Option<String>) -> Result<()> {
-    let daemon = daemon::ensure_daemon(config).await?;
+    let daemon = daemon::require_running_daemon(config).await?;
 
     if let Some(t) = target {
         let instance_id = resolve_instance(&daemon, &t).await?;
