@@ -175,6 +175,16 @@ async fn health_check(info: &DaemonInfo) -> bool {
     }
 }
 
+/// Send SIGTERM to the daemon process for a graceful shutdown.
+pub fn stop_daemon(info: &DaemonInfo) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{self, Signal};
+        use nix::unistd::Pid;
+        let _ = signal::kill(Pid::from_raw(info.pid as i32), Signal::SIGTERM);
+    }
+}
+
 /// Clean up daemon PID and port files.
 pub fn cleanup_daemon_files(config: &CrabCityConfig) {
     let _ = std::fs::remove_file(config.daemon_pid_path());

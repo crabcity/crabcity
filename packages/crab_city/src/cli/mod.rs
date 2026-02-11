@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tokio_tungstenite::tungstenite;
 
 use crate::config::CrabCityConfig;
+use attach::AttachOutcome;
 use daemon::DaemonInfo;
 use picker::{PickerEvent, PickerResult};
 
@@ -25,7 +26,16 @@ pub async fn default_command(config: &CrabCityConfig) -> Result<()> {
             .to_string_lossy()
             .to_string();
         let instance = create_instance(&daemon, None, Some(&cwd)).await?;
-        attach::attach(&daemon, &instance.id).await?;
+        match attach::attach(&daemon, &instance.id).await? {
+            AttachOutcome::Detached => {}
+            AttachOutcome::Exited => {
+                delete_instance(&daemon, &instance.id).await;
+                if should_stop_daemon(&daemon).await {
+                    daemon::stop_daemon(&daemon);
+                    return Ok(());
+                }
+            }
+        }
     }
 
     session_loop(&daemon).await
@@ -38,20 +48,30 @@ pub async fn attach_command(config: &CrabCityConfig, target: Option<String>) -> 
 
     if let Some(t) = target {
         let instance_id = resolve_instance(&daemon, &t).await?;
-        return attach::attach(&daemon, &instance_id).await;
+        match attach::attach(&daemon, &instance_id).await? {
+            AttachOutcome::Detached => return Ok(()),
+            AttachOutcome::Exited => {
+                delete_instance(&daemon, &instance_id).await;
+                if should_stop_daemon(&daemon).await {
+                    daemon::stop_daemon(&daemon);
+                }
+                return Ok(());
+            }
+        }
     }
 
     session_loop(&daemon).await
 }
 
-/// Picker → attach → detach → picker loop. Exits on Quit.
+/// Picker → attach → detach → picker loop. Exits on Quit or when no instances remain.
 async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
     loop {
         let instances = fetch_instances(daemon).await?;
 
-        match run_live_picker(daemon, instances).await? {
+        let (instance_id, outcome) = match run_live_picker(daemon, instances).await? {
             PickerResult::Attach(id) => {
-                attach::attach(daemon, &id).await?;
+                let outcome = attach::attach(daemon, &id).await?;
+                (id, outcome)
             }
             PickerResult::NewInstance => {
                 let cwd = std::env::current_dir()
@@ -59,11 +79,25 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
                     .to_string_lossy()
                     .to_string();
                 let instance = create_instance(daemon, None, Some(&cwd)).await?;
-                attach::attach(daemon, &instance.id).await?;
+                let outcome = attach::attach(daemon, &instance.id).await?;
+                (instance.id, outcome)
             }
             PickerResult::Quit => return Ok(()),
+        };
+
+        match outcome {
+            AttachOutcome::Detached => {
+                // Loop back to picker
+            }
+            AttachOutcome::Exited => {
+                delete_instance(daemon, &instance_id).await;
+                if should_stop_daemon(daemon).await {
+                    daemon::stop_daemon(daemon);
+                    return Ok(());
+                }
+                // Other instances remain, loop back to picker
+            }
         }
-        // After detach, loop back to picker
     }
 }
 
@@ -161,6 +195,20 @@ pub struct InstanceInfo {
 struct CreateInstanceResponse {
     id: String,
     name: String,
+}
+
+/// Delete a stopped instance from the daemon. Best-effort (ignores errors).
+async fn delete_instance(daemon: &DaemonInfo, instance_id: &str) {
+    let url = format!("{}/api/instances/{}", daemon.base_url(), instance_id);
+    let _ = reqwest::Client::new().delete(&url).send().await;
+}
+
+/// Check if the daemon has no remaining running instances.
+async fn should_stop_daemon(daemon: &DaemonInfo) -> bool {
+    match fetch_instances(daemon).await {
+        Ok(instances) => instances.is_empty() || instances.iter().all(|i| !i.running),
+        Err(_) => false,
+    }
 }
 
 async fn fetch_instances(daemon: &DaemonInfo) -> Result<Vec<InstanceInfo>> {

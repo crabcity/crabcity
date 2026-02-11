@@ -10,8 +10,16 @@ use crate::websocket_proxy::WsMessage;
 
 const DETACH_BYTE: u8 = 0x1D; // Ctrl-]
 
+/// What happened when an attach session ended.
+pub enum AttachOutcome {
+    /// User pressed Ctrl-] to detach; instance is still running.
+    Detached,
+    /// The remote process exited (WebSocket closed).
+    Exited,
+}
+
 /// Attach to an instance, forwarding terminal I/O over WebSocket.
-pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<()> {
+pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutcome> {
     // 1. Fetch and display scrollback
     let output_url = format!("{}/api/instances/{}/output", daemon.base_url(), instance_id);
     if let Ok(resp) = reqwest::get(&output_url).await {
@@ -146,9 +154,9 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<()> {
     drop(_guard);
     if detached {
         eprintln!("\r\n[crab: detached]");
+        Ok(AttachOutcome::Detached)
     } else {
-        eprintln!("\r\n[crab: connection closed]");
+        eprintln!("\r\n[crab: exited]");
+        Ok(AttachOutcome::Exited)
     }
-
-    Ok(())
 }
