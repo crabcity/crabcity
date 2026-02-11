@@ -229,6 +229,20 @@ crate_index.spec(
     version = "7",
 )
 
+# Configuration
+crate_index.spec(
+    features = [
+        "toml",
+        "env",
+    ],
+    package = "figment",
+    version = "0.10",
+)
+crate_index.spec(
+    package = "toml",
+    version = "0.8",
+)
+
 # PTY / terminal
 crate_index.spec(
     package = "portable-pty",

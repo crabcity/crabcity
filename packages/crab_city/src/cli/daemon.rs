@@ -166,6 +166,11 @@ pub async fn ensure_daemon(config: &CrabCityConfig) -> Result<DaemonInfo> {
     }
 }
 
+/// Public health check (used by `cli::auth`).
+pub async fn health_check_pub(info: &DaemonInfo) -> bool {
+    health_check(info).await
+}
+
 /// Health check the daemon via GET /health.
 async fn health_check(info: &DaemonInfo) -> bool {
     let url = format!("{}/health", info.base_url());

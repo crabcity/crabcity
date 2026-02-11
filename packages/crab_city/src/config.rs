@@ -1,104 +1,113 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::info;
 
-/// Server configuration for runtime behavior
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct ServerConfig {
-    /// Instance-related settings
-    pub instance: InstanceConfig,
-    /// WebSocket-related settings
-    pub websocket: WebSocketConfig,
-    /// State detection settings
-    pub state: StateConfig,
+// =============================================================================
+// Unified config (figment-deserialized from defaults / config.toml / env vars)
+// =============================================================================
+//
+// Three equivalent ways to configure:
+//
+//   config.toml:     [auth]
+//                    enabled = true
+//
+//   env var:         CRAB_AUTH__ENABLED=true   (double underscore = nesting)
+//
+//   (single underscore stays within field names: CRAB_AUTH__SESSION_TTL_SECS)
+
+/// Top-level tunable configuration, deserialized by figment.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FileConfig {
+    #[serde(default)]
+    pub auth: AuthFileConfig,
+    #[serde(default)]
+    pub server: ServerFileConfig,
 }
 
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct InstanceConfig {
-    /// Maximum output buffer per instance in bytes (default: 1MB)
-    pub max_buffer_bytes: usize,
-    /// Consider instance hung after this duration without output (None = disabled)
-    pub hang_timeout: Option<Duration>,
-    /// Number of PTY spawn retries
-    pub spawn_retries: usize,
+/// Auth-related tunables (lives under `[auth]` in config.toml).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthFileConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_session_ttl")]
+    pub session_ttl_secs: u64,
+    #[serde(default = "default_allow_registration")]
+    pub allow_registration: bool,
+    #[serde(default)]
+    pub https: bool,
 }
 
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct WebSocketConfig {
-    /// Channel capacity for messages to client
-    pub send_channel_capacity: usize,
-    /// Broadcast channel capacity for state updates
-    pub state_broadcast_capacity: usize,
-    /// Maximum history bytes to send on focus switch (default: 64KB)
-    pub max_history_replay_bytes: usize,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct StateConfig {
-    /// Idle timeout for staleness detection
-    pub idle_timeout: Duration,
-    /// Conversation poll interval
-    pub poll_interval: Duration,
-}
-
-impl Default for ServerConfig {
+impl Default for AuthFileConfig {
     fn default() -> Self {
         Self {
-            instance: InstanceConfig {
-                max_buffer_bytes: 25 * 1024 * 1024,           // 25MB
-                hang_timeout: Some(Duration::from_secs(300)), // 5 minutes
-                spawn_retries: 2,
-            },
-            websocket: WebSocketConfig {
-                send_channel_capacity: 100,
-                state_broadcast_capacity: 256,
-                max_history_replay_bytes: 64 * 1024, // 64KB
-            },
-            state: StateConfig {
-                idle_timeout: Duration::from_secs(10),
-                poll_interval: Duration::from_millis(500),
-            },
+            enabled: false,
+            session_ttl_secs: default_session_ttl(),
+            allow_registration: default_allow_registration(),
+            https: false,
         }
     }
 }
 
-impl ServerConfig {
-    /// Create config from environment variables (with defaults)
-    pub fn from_env() -> Self {
-        let mut config = Self::default();
+/// Server tuning knobs (lives under `[server]` in config.toml).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServerFileConfig {
+    #[serde(default = "default_max_buffer_mb")]
+    pub max_buffer_mb: usize,
+    #[serde(default = "default_max_history_kb")]
+    pub max_history_kb: usize,
+    #[serde(default = "default_hang_timeout_secs")]
+    pub hang_timeout_secs: u64,
+}
 
-        if let Ok(val) = std::env::var("CRAB_CITY_MAX_BUFFER_MB") {
-            if let Ok(mb) = val.parse::<usize>() {
-                config.instance.max_buffer_bytes = mb * 1024 * 1024;
-            }
+impl Default for ServerFileConfig {
+    fn default() -> Self {
+        Self {
+            max_buffer_mb: default_max_buffer_mb(),
+            max_history_kb: default_max_history_kb(),
+            hang_timeout_secs: default_hang_timeout_secs(),
         }
-
-        if let Ok(val) = std::env::var("CRAB_CITY_MAX_HISTORY_KB") {
-            if let Ok(kb) = val.parse::<usize>() {
-                config.websocket.max_history_replay_bytes = kb * 1024;
-            }
-        }
-
-        if let Ok(val) = std::env::var("CRAB_CITY_HANG_TIMEOUT_SECS") {
-            if let Ok(secs) = val.parse::<u64>() {
-                config.instance.hang_timeout = if secs == 0 {
-                    None
-                } else {
-                    Some(Duration::from_secs(secs))
-                };
-            }
-        }
-
-        config
     }
 }
 
-/// Authentication configuration
+fn default_session_ttl() -> u64 {
+    604800
+}
+fn default_allow_registration() -> bool {
+    true
+}
+fn default_max_buffer_mb() -> usize {
+    25
+}
+fn default_max_history_kb() -> usize {
+    64
+}
+fn default_hang_timeout_secs() -> u64 {
+    300
+}
+
+/// Build a figment that layers: defaults → config.toml → CRAB_* env vars.
+///
+/// Env vars use double-underscore for nesting into sections:
+///   `CRAB_AUTH__ENABLED=true`  →  `auth.enabled = true`
+///   `CRAB_SERVER__MAX_BUFFER_MB=50`  →  `server.max_buffer_mb = 50`
+pub fn load_config(data_dir: &Path) -> figment::Figment {
+    use figment::{
+        Figment,
+        providers::{Env, Format, Serialized, Toml},
+    };
+
+    Figment::from(Serialized::defaults(FileConfig::default()))
+        .merge(Toml::file(data_dir.join("config.toml")))
+        .merge(Env::prefixed("CRAB_").split("__"))
+}
+
+// =============================================================================
+// Runtime config structs (derived from FileConfig, used throughout the server)
+// =============================================================================
+
+/// Authentication configuration (runtime view).
 #[derive(Clone, Debug)]
 pub struct AuthConfig {
     /// Whether authentication is enabled
@@ -111,63 +120,109 @@ pub struct AuthConfig {
     pub https: bool,
 }
 
-impl Default for AuthConfig {
-    fn default() -> Self {
+impl AuthConfig {
+    pub fn from_file(fc: &AuthFileConfig) -> Self {
         Self {
-            enabled: false,
-            session_ttl_secs: 604800, // 7 days
-            allow_registration: true,
-            https: false,
+            enabled: fc.enabled,
+            session_ttl_secs: fc.session_ttl_secs,
+            allow_registration: fc.allow_registration,
+            https: fc.https,
         }
     }
 }
 
-impl AuthConfig {
-    /// Create auth config from environment variables
-    pub fn from_env() -> Self {
-        let mut config = Self::default();
-
-        if let Ok(val) = std::env::var("CRAB_CITY_AUTH_ENABLED") {
-            config.enabled = val == "true" || val == "1";
-        }
-
-        if let Ok(val) = std::env::var("CRAB_CITY_SESSION_TTL") {
-            if let Ok(secs) = val.parse::<u64>() {
-                config.session_ttl_secs = secs;
-            }
-        }
-
-        if let Ok(val) = std::env::var("CRAB_CITY_ALLOW_REGISTRATION") {
-            config.allow_registration = val != "false" && val != "0";
-        }
-
-        if let Ok(val) = std::env::var("CRAB_CITY_HTTPS") {
-            config.https = val == "true" || val == "1";
-        }
-
-        config
-    }
+/// Server configuration for runtime behavior.
+#[derive(Clone, Debug)]
+pub struct ServerConfig {
+    /// Instance-related settings
+    pub instance: InstanceConfig,
+    /// WebSocket-related settings
+    pub websocket: WebSocketConfig,
+    /// State detection settings
+    #[allow(dead_code)]
+    pub state: StateConfig,
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+pub struct InstanceConfig {
+    /// Maximum output buffer per instance in bytes
+    pub max_buffer_bytes: usize,
+    /// Consider instance hung after this duration without output (None = disabled)
+    #[allow(dead_code)]
+    pub hang_timeout: Option<Duration>,
+    /// Number of PTY spawn retries
+    #[allow(dead_code)]
+    pub spawn_retries: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebSocketConfig {
+    /// Channel capacity for messages to client
+    #[allow(dead_code)]
+    pub send_channel_capacity: usize,
+    /// Broadcast channel capacity for state updates
+    #[allow(dead_code)]
+    pub state_broadcast_capacity: usize,
+    /// Maximum history bytes to send on focus switch
+    pub max_history_replay_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct StateConfig {
+    /// Idle timeout for staleness detection
+    #[allow(dead_code)]
+    pub idle_timeout: Duration,
+    /// Conversation poll interval
+    #[allow(dead_code)]
+    pub poll_interval: Duration,
+}
+
+impl ServerConfig {
+    pub fn from_file(fc: &ServerFileConfig) -> Self {
+        Self {
+            instance: InstanceConfig {
+                max_buffer_bytes: fc.max_buffer_mb * 1024 * 1024,
+                hang_timeout: if fc.hang_timeout_secs == 0 {
+                    None
+                } else {
+                    Some(Duration::from_secs(fc.hang_timeout_secs))
+                },
+                spawn_retries: 2,
+            },
+            websocket: WebSocketConfig {
+                send_channel_capacity: 100,
+                state_broadcast_capacity: 256,
+                max_history_replay_bytes: fc.max_history_kb * 1024,
+            },
+            state: StateConfig {
+                idle_timeout: Duration::from_secs(10),
+                poll_interval: Duration::from_millis(500),
+            },
+        }
+    }
+}
+
+// =============================================================================
+// Directory layout config (not tunable via figment — derived from --data-dir)
+// =============================================================================
+
+#[derive(Clone, Debug)]
 pub struct CrabCityConfig {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
+    #[allow(dead_code)]
     pub exports_dir: PathBuf,
     pub logs_dir: PathBuf,
 }
 
 impl CrabCityConfig {
     pub fn new(custom_dir: Option<PathBuf>) -> Result<Self> {
-        // Use custom dir, or default to ~/.crabcity
         let data_dir = custom_dir.unwrap_or_else(|| {
             dirs::home_dir()
                 .expect("Could not find home directory")
                 .join(".crabcity")
         });
 
-        // Create directory structure
         std::fs::create_dir_all(&data_dir)
             .with_context(|| format!("Failed to create data directory: {:?}", data_dir))?;
 
@@ -181,7 +236,7 @@ impl CrabCityConfig {
 
         let db_path = data_dir.join("crabcity.db");
 
-        info!("📁 Data directory: {}", data_dir.display());
+        info!("Data directory: {}", data_dir.display());
 
         Ok(Self {
             data_dir,
@@ -192,8 +247,6 @@ impl CrabCityConfig {
     }
 
     pub fn db_url(&self) -> String {
-        // Enable WAL mode and foreign keys
-        // Note: We'll set additional pragmas after connection
         format!("sqlite://{}?mode=rwc", self.db_path.display())
     }
 
@@ -203,7 +256,6 @@ impl CrabCityConfig {
                 .with_context(|| format!("Failed to delete database: {:?}", self.db_path))?;
             info!("Database reset: {:?}", self.db_path);
 
-            // Also remove WAL and SHM files if they exist
             let wal_path = self.db_path.with_extension("db-wal");
             if wal_path.exists() {
                 std::fs::remove_file(&wal_path)?;
@@ -230,5 +282,9 @@ impl CrabCityConfig {
 
     pub fn daemon_err_path(&self) -> PathBuf {
         self.logs_dir.join("daemon.err")
+    }
+
+    pub fn config_toml_path(&self) -> PathBuf {
+        self.data_dir.join("config.toml")
     }
 }

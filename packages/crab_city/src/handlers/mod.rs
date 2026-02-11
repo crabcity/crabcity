@@ -8,7 +8,7 @@ pub mod websocket;
 
 // Re-export all handlers for easy route registration
 pub use admin::{
-    create_server_invite_handler, get_database_stats, list_server_invites_handler,
+    create_server_invite_handler, get_database_stats, list_server_invites_handler, restart_handler,
     revoke_server_invite_handler, trigger_import,
 };
 pub use conversations::{

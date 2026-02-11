@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::{
     Router,
     routing::{delete, get, patch, post},
@@ -42,7 +42,8 @@ use std::path::PathBuf;
 use tokio::sync::Mutex;
 
 use crate::auth::AuthState;
-use crate::config::{AuthConfig, CrabCityConfig, ServerConfig};
+use crate::config::{AuthConfig, CrabCityConfig, FileConfig, ServerConfig, load_config};
+
 use crate::db::Database;
 use crate::metrics::ServerMetrics;
 use crate::persistence::{InstancePersistor, PersistenceService};
@@ -92,6 +93,9 @@ enum Commands {
 
     /// Stop the daemon and all sessions
     KillServer(KillServerArgs),
+
+    /// Manage authentication
+    Auth(AuthArgs),
 }
 
 #[derive(Parser)]
@@ -159,6 +163,22 @@ struct KillServerArgs {
     force: bool,
 }
 
+#[derive(Parser)]
+struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthCommands,
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Enable authentication (writes config, restarts server, prompts for admin if needed)
+    Enable,
+    /// Disable authentication
+    Disable,
+    /// Show current auth status
+    Status,
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AppState {
@@ -179,6 +199,8 @@ pub(crate) struct AppState {
     pub notes_storage: Arc<notes::NotesStorage>,
     /// Global state manager for multiplexed WebSocket
     pub global_state_manager: Arc<ws::GlobalStateManager>,
+    /// Send to trigger an HTTP server restart (config reload)
+    pub restart_tx: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 #[tokio::main]
@@ -196,6 +218,11 @@ async fn main() -> Result<()> {
         Some(Commands::List(args)) => cli::list_command(&config, args.json).await,
         Some(Commands::Kill(args)) => cli::kill_command(&config, &args.target).await,
         Some(Commands::KillServer(args)) => cli::kill_server_command(&config, args.force).await,
+        Some(Commands::Auth(args)) => match args.command {
+            AuthCommands::Enable => cli::auth::enable_command(&config).await,
+            AuthCommands::Disable => cli::auth::disable_command(&config).await,
+            AuthCommands::Status => cli::auth::status_command(&config).await,
+        },
         Some(Commands::Server(args)) => run_server(args, config).await,
     }
 }
@@ -233,6 +260,8 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             println!("Cancelled.");
         }
     }
+
+    // === Init once: these survive across server restarts ===
 
     // Initialize database
     info!("Initializing database...");
@@ -291,14 +320,14 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
 
     info!("Default command configured: {}", default_command);
 
-    // Initialize server runtime config
-    let server_config = Arc::new(ServerConfig::from_env());
+    // Create instance manager (long-lived, survives restarts)
+    let fc_initial: FileConfig = load_config(&config.data_dir).extract().unwrap_or_default();
+    let initial_server_config = ServerConfig::from_file(&fc_initial.server);
 
-    // Create instance manager
     let instance_manager = Arc::new(InstanceManager::new(
         default_command,
         args.instance_base_port,
-        server_config.instance.max_buffer_bytes,
+        initial_server_config.instance.max_buffer_bytes,
     ));
 
     // Initialize notes storage
@@ -307,267 +336,319 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     // Initialize global state manager for multiplexed WebSocket
     let state_broadcast = ws::create_state_broadcast();
     let global_state_manager = Arc::new(ws::GlobalStateManager::new(state_broadcast));
-    info!(
-        "Server config: max_history={}KB, max_buffer={}MB",
-        server_config.websocket.max_history_replay_bytes / 1024,
-        server_config.instance.max_buffer_bytes / (1024 * 1024)
-    );
-
-    // Initialize auth config
-    let auth_config_raw = AuthConfig::from_env();
-    if auth_config_raw.enabled {
-        info!(
-            "Authentication ENABLED (session TTL: {}s)",
-            auth_config_raw.session_ttl_secs
-        );
-    } else {
-        info!("Authentication disabled (set CRAB_CITY_AUTH_ENABLED=true to enable)");
-    }
-
-    // First-run onboarding
-    onboarding::maybe_run_onboarding(&repository, &auth_config_raw).await?;
-
-    // Reset admin password if requested
-    if args.reset_admin {
-        onboarding::reset_admin(&repository).await?;
-    }
-
-    let auth_config = Arc::new(auth_config_raw);
 
     // Initialize metrics
     let metrics = Arc::new(ServerMetrics::new());
 
-    let app_state = AppState {
-        instance_manager,
-        conversation_watchers: Arc::new(Mutex::new(HashMap::new())),
-        config: config.clone(),
-        server_config,
-        auth_config: auth_config.clone(),
-        metrics,
-        db: db.clone(),
-        repository: repository.clone(),
-        persistence_service: persistence_service.clone(),
-        instance_persistors: Arc::new(Mutex::new(HashMap::new())),
-        notes_storage,
-        global_state_manager,
-    };
+    // Shared mutable state across restarts
+    let conversation_watchers = Arc::new(Mutex::new(HashMap::new()));
+    let instance_persistors = Arc::new(Mutex::new(HashMap::new()));
 
-    // Build auth sub-state
-    let auth_state = AuthState {
-        repository: repository.clone(),
-        auth_config: auth_config.clone(),
-    };
-
-    // Build routes
-    #[cfg(not(feature = "embedded-ui"))]
-    let app = Router::new()
-        .route("/", get(views::index_page))
-        .route("/settings", get(views::settings_page))
-        .route("/history", get(views::history_page))
-        .route("/conversation/{id}", get(views::conversation_detail_page));
-
-    #[cfg(feature = "embedded-ui")]
-    let app = Router::new();
-
-    let mut app = app
-        // Instance routes
-        .route("/api/instances", get(handlers::list_instances))
-        .route("/api/instances", post(handlers::create_instance))
-        .route("/api/instances/{id}", get(handlers::get_instance))
-        .route("/api/instances/{id}", delete(handlers::delete_instance))
-        .route("/api/instances/{id}/name", patch(handlers::set_custom_name))
-        .route("/api/instances/{id}/ws", get(handlers::websocket_handler))
-        .route("/api/ws", get(handlers::multiplexed_websocket_handler))
-        .route(
-            "/api/instances/{id}/output",
-            get(handlers::get_instance_output),
-        )
-        // File routes
-        .route("/api/instances/{id}/files", get(files::list_instance_files))
-        .route(
-            "/api/instances/{id}/files/search",
-            get(files::search_instance_files),
-        )
-        .route(
-            "/api/instances/{id}/files/content",
-            get(files::get_instance_file_content),
-        )
-        // Git routes
-        .route("/api/instances/{id}/git/log", get(git::get_git_log))
-        .route(
-            "/api/instances/{id}/git/branches",
-            get(git::get_git_branches),
-        )
-        .route("/api/instances/{id}/git/status", get(git::get_git_status))
-        .route("/api/instances/{id}/git/diff", get(git::get_git_diff))
-        // Live conversation routes
-        .route(
-            "/api/instances/{id}/conversation",
-            get(handlers::get_conversation),
-        )
-        .route(
-            "/api/instances/{id}/conversation/poll",
-            get(handlers::poll_conversation),
-        )
-        // Instance permission / invitation endpoints
-        .route(
-            "/api/instances/{id}/invite",
-            post(handlers::create_invitation),
-        )
-        .route(
-            "/api/invitations/{token}/accept",
-            post(handlers::accept_invitation),
-        )
-        .route(
-            "/api/instances/{id}/collaborators/{user_id}",
-            delete(handlers::remove_collaborator),
-        )
-        // Database conversation endpoints
-        .route("/api/conversations", get(handlers::list_conversations))
-        .route(
-            "/api/conversations/search",
-            get(handlers::search_conversations_handler),
-        )
-        .route(
-            "/api/conversations/{id}",
-            get(handlers::get_conversation_by_id),
-        )
-        .route(
-            "/api/conversations/{id}/comments",
-            post(handlers::add_comment).get(handlers::get_comments),
-        )
-        .route(
-            "/api/conversations/{id}/share",
-            post(handlers::create_share),
-        )
-        .route("/api/share/{token}", get(handlers::get_shared_conversation))
-        // Notes endpoints
-        .route(
-            "/api/notes/{session_id}",
-            get(handlers::get_notes).post(handlers::create_note),
-        )
-        .route(
-            "/api/notes/{session_id}/{note_id}",
-            post(handlers::update_note).delete(handlers::delete_note),
-        )
-        // Task endpoints
-        .route(
-            "/api/tasks",
-            get(handlers::list_tasks_handler).post(handlers::create_task_handler),
-        )
-        .route("/api/tasks/migrate", post(handlers::migrate_tasks_handler))
-        .route(
-            "/api/tasks/{id}",
-            get(handlers::get_task_handler)
-                .patch(handlers::update_task_handler)
-                .delete(handlers::delete_task_handler),
-        )
-        .route("/api/tasks/{id}/send", post(handlers::send_task_handler))
-        .route(
-            "/api/tasks/{id}/dispatch",
-            post(handlers::create_dispatch_handler),
-        )
-        .route("/api/tasks/{id}/tags", post(handlers::add_task_tag_handler))
-        .route(
-            "/api/tasks/{id}/tags/{tag_id}",
-            delete(handlers::remove_task_tag_handler),
-        )
-        // Admin endpoints
-        .route("/api/admin/stats", get(handlers::get_database_stats))
-        .route("/api/admin/import", post(handlers::trigger_import))
-        .route(
-            "/api/admin/invites",
-            post(handlers::create_server_invite_handler).get(handlers::list_server_invites_handler),
-        )
-        .route(
-            "/api/admin/invites/{token}",
-            delete(handlers::revoke_server_invite_handler),
-        )
-        // Health endpoints
-        .route("/health", get(handlers::health_handler))
-        .route("/health/live", get(handlers::health_live_handler))
-        .route("/health/ready", get(handlers::health_ready_handler))
-        .route("/metrics", get(handlers::metrics_handler));
-
-    // Merge auth routes
-    app = app.merge(auth::auth_routes().with_state(auth_state.clone()));
-
-    // Apply auth middleware if enabled
-    if auth_config.enabled {
-        app = app.layer(axum::middleware::from_fn_with_state(
-            auth_state,
-            auth::auth_middleware,
-        ));
+    // Reset admin password if requested (one-time)
+    if args.reset_admin {
+        if fc_initial.auth.enabled {
+            onboarding::reset_admin(&repository).await?;
+        } else {
+            warn!("--reset-admin ignored: auth is not enabled");
+        }
     }
 
-    // Spawn periodic expired session cleanup
-    if auth_config.enabled {
-        let cleanup_repo = repository.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            loop {
-                interval.tick().await;
-                match cleanup_repo.cleanup_expired_sessions().await {
-                    Ok(n) if n > 0 => info!("Cleaned up {} expired sessions", n),
-                    _ => {}
-                }
-            }
-        });
-    }
+    // Restart channel
+    let (restart_tx, mut restart_rx) = tokio::sync::watch::channel(());
+    let restart_tx = Arc::new(restart_tx);
+
+    let bind_host = args.host.clone();
+    // Track the actual port after first bind so restarts reuse the same port
+    let mut bound_port: Option<u16> = None;
 
     // Clone references needed for shutdown cleanup
     let persistence_for_shutdown = persistence_service.clone();
-    let instances_for_shutdown = app_state.instance_manager.clone();
+    let instances_for_shutdown = instance_manager.clone();
     let config_for_shutdown = config.clone();
 
-    let app = app
-        .layer(TraceLayer::new_for_http().make_span_with(RequestIdMakeSpan))
-        .layer(CorsLayer::permissive())
-        .with_state(app_state);
+    // Track whether session cleanup task has been spawned
+    let mut cleanup_spawned = false;
 
-    // Serve SPA when embedded
-    #[cfg(feature = "embedded-ui")]
-    let app = app.fallback_service(embedded_ui::spa_router());
+    // === Server loop: reload config and rebuild router on each iteration ===
+    let mut first_iteration = true;
+    loop {
+        // Load config from figment (defaults → config.toml → env vars)
+        let fc: FileConfig = load_config(&config.data_dir).extract().unwrap_or_default();
+        let auth_config_raw = AuthConfig::from_file(&fc.auth);
+        let server_config = Arc::new(ServerConfig::from_file(&fc.server));
 
-    #[cfg(feature = "embedded-ui")]
-    info!("Embedded UI enabled - serving SPA at /");
+        if auth_config_raw.enabled {
+            info!(
+                "Authentication ENABLED (session TTL: {}s)",
+                auth_config_raw.session_ttl_secs
+            );
+        } else {
+            info!("Authentication disabled (use `crab auth enable` to enable)");
+        }
 
-    let addr = format!("{}:{}", args.host, args.port).parse::<SocketAddr>()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let actual_addr = listener.local_addr()?;
+        info!(
+            "Server config: max_history={}KB, max_buffer={}MB",
+            server_config.websocket.max_history_replay_bytes / 1024,
+            server_config.instance.max_buffer_bytes / (1024 * 1024)
+        );
 
-    // Write daemon PID and port files so clients can discover us
-    let pid = std::process::id();
-    cli::daemon::write_daemon_files(&config_for_shutdown, pid, actual_addr.port())?;
+        // Onboarding only on first iteration (interactive prompt needs a real TTY;
+        // on restart the daemon's stdin is /dev/null — the CLI handles admin creation).
+        if first_iteration {
+            onboarding::maybe_run_onboarding(&repository, &auth_config_raw).await?;
+        }
 
-    info!("Crab City listening on http://{}", actual_addr);
-    info!("");
-    info!("Web UI: http://{}/", actual_addr);
-    info!("API endpoints:");
-    info!("  GET    /api/instances       - List all instances");
-    info!("  POST   /api/instances       - Create new instance");
-    info!("  GET    /api/instances/:id   - Get instance details");
-    info!("  DELETE /api/instances/:id   - Stop instance");
-    info!("  GET    /api/instances/:id/ws - WebSocket connection to instance");
+        let auth_config = Arc::new(auth_config_raw);
 
-    // Create shutdown signal handler
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
-        info!("Received shutdown signal, cleaning up...");
-    };
+        let app_state = AppState {
+            instance_manager: instance_manager.clone(),
+            conversation_watchers: conversation_watchers.clone(),
+            config: config.clone(),
+            server_config,
+            auth_config: auth_config.clone(),
+            metrics: metrics.clone(),
+            db: db.clone(),
+            repository: repository.clone(),
+            persistence_service: persistence_service.clone(),
+            instance_persistors: instance_persistors.clone(),
+            notes_storage: notes_storage.clone(),
+            global_state_manager: global_state_manager.clone(),
+            restart_tx: restart_tx.clone(),
+        };
 
-    // Run server with graceful shutdown
-    let server_result = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal)
-    .await
-    .context("Server error");
+        // Build auth sub-state
+        let auth_state = AuthState {
+            repository: repository.clone(),
+            auth_config: auth_config.clone(),
+        };
 
-    // Perform cleanup after shutdown
+        // Build routes
+        #[cfg(not(feature = "embedded-ui"))]
+        let app = Router::new()
+            .route("/", get(views::index_page))
+            .route("/settings", get(views::settings_page))
+            .route("/history", get(views::history_page))
+            .route("/conversation/{id}", get(views::conversation_detail_page));
+
+        #[cfg(feature = "embedded-ui")]
+        let app = Router::new();
+
+        let mut app = app
+            // Instance routes
+            .route("/api/instances", get(handlers::list_instances))
+            .route("/api/instances", post(handlers::create_instance))
+            .route("/api/instances/{id}", get(handlers::get_instance))
+            .route("/api/instances/{id}", delete(handlers::delete_instance))
+            .route("/api/instances/{id}/name", patch(handlers::set_custom_name))
+            .route("/api/instances/{id}/ws", get(handlers::websocket_handler))
+            .route("/api/ws", get(handlers::multiplexed_websocket_handler))
+            .route(
+                "/api/instances/{id}/output",
+                get(handlers::get_instance_output),
+            )
+            // File routes
+            .route("/api/instances/{id}/files", get(files::list_instance_files))
+            .route(
+                "/api/instances/{id}/files/search",
+                get(files::search_instance_files),
+            )
+            .route(
+                "/api/instances/{id}/files/content",
+                get(files::get_instance_file_content),
+            )
+            // Git routes
+            .route("/api/instances/{id}/git/log", get(git::get_git_log))
+            .route(
+                "/api/instances/{id}/git/branches",
+                get(git::get_git_branches),
+            )
+            .route("/api/instances/{id}/git/status", get(git::get_git_status))
+            .route("/api/instances/{id}/git/diff", get(git::get_git_diff))
+            // Live conversation routes
+            .route(
+                "/api/instances/{id}/conversation",
+                get(handlers::get_conversation),
+            )
+            .route(
+                "/api/instances/{id}/conversation/poll",
+                get(handlers::poll_conversation),
+            )
+            // Instance permission / invitation endpoints
+            .route(
+                "/api/instances/{id}/invite",
+                post(handlers::create_invitation),
+            )
+            .route(
+                "/api/invitations/{token}/accept",
+                post(handlers::accept_invitation),
+            )
+            .route(
+                "/api/instances/{id}/collaborators/{user_id}",
+                delete(handlers::remove_collaborator),
+            )
+            // Database conversation endpoints
+            .route("/api/conversations", get(handlers::list_conversations))
+            .route(
+                "/api/conversations/search",
+                get(handlers::search_conversations_handler),
+            )
+            .route(
+                "/api/conversations/{id}",
+                get(handlers::get_conversation_by_id),
+            )
+            .route(
+                "/api/conversations/{id}/comments",
+                post(handlers::add_comment).get(handlers::get_comments),
+            )
+            .route(
+                "/api/conversations/{id}/share",
+                post(handlers::create_share),
+            )
+            .route("/api/share/{token}", get(handlers::get_shared_conversation))
+            // Notes endpoints
+            .route(
+                "/api/notes/{session_id}",
+                get(handlers::get_notes).post(handlers::create_note),
+            )
+            .route(
+                "/api/notes/{session_id}/{note_id}",
+                post(handlers::update_note).delete(handlers::delete_note),
+            )
+            // Task endpoints
+            .route(
+                "/api/tasks",
+                get(handlers::list_tasks_handler).post(handlers::create_task_handler),
+            )
+            .route("/api/tasks/migrate", post(handlers::migrate_tasks_handler))
+            .route(
+                "/api/tasks/{id}",
+                get(handlers::get_task_handler)
+                    .patch(handlers::update_task_handler)
+                    .delete(handlers::delete_task_handler),
+            )
+            .route("/api/tasks/{id}/send", post(handlers::send_task_handler))
+            .route(
+                "/api/tasks/{id}/dispatch",
+                post(handlers::create_dispatch_handler),
+            )
+            .route("/api/tasks/{id}/tags", post(handlers::add_task_tag_handler))
+            .route(
+                "/api/tasks/{id}/tags/{tag_id}",
+                delete(handlers::remove_task_tag_handler),
+            )
+            // Admin endpoints
+            .route("/api/admin/stats", get(handlers::get_database_stats))
+            .route("/api/admin/import", post(handlers::trigger_import))
+            .route("/api/admin/restart", post(handlers::restart_handler))
+            .route(
+                "/api/admin/invites",
+                post(handlers::create_server_invite_handler)
+                    .get(handlers::list_server_invites_handler),
+            )
+            .route(
+                "/api/admin/invites/{token}",
+                delete(handlers::revoke_server_invite_handler),
+            )
+            // Health endpoints
+            .route("/health", get(handlers::health_handler))
+            .route("/health/live", get(handlers::health_live_handler))
+            .route("/health/ready", get(handlers::health_ready_handler))
+            .route("/metrics", get(handlers::metrics_handler));
+
+        // Merge auth routes
+        app = app.merge(auth::auth_routes().with_state(auth_state.clone()));
+
+        // Apply auth middleware if enabled
+        if auth_config.enabled {
+            app = app.layer(axum::middleware::from_fn_with_state(
+                auth_state,
+                auth::auth_middleware,
+            ));
+        }
+
+        // Spawn periodic expired session cleanup (once, on whichever iteration auth is first enabled)
+        if !cleanup_spawned && auth_config.enabled {
+            cleanup_spawned = true;
+            let cleanup_repo = repository.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+                loop {
+                    interval.tick().await;
+                    match cleanup_repo.cleanup_expired_sessions().await {
+                        Ok(n) if n > 0 => info!("Cleaned up {} expired sessions", n),
+                        _ => {}
+                    }
+                }
+            });
+        }
+
+        let app = app
+            .layer(TraceLayer::new_for_http().make_span_with(RequestIdMakeSpan))
+            .layer(CorsLayer::permissive())
+            .with_state(app_state);
+
+        // Serve SPA when embedded
+        #[cfg(feature = "embedded-ui")]
+        let app = app.fallback_service(embedded_ui::spa_router());
+
+        #[cfg(feature = "embedded-ui")]
+        if first_iteration {
+            info!("Embedded UI enabled - serving SPA at /");
+        }
+
+        let port = bound_port.unwrap_or(args.port);
+        let addr = format!("{}:{}", bind_host, port).parse::<SocketAddr>()?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let actual_addr = listener.local_addr()?;
+        bound_port = Some(actual_addr.port());
+
+        // Write daemon PID and port files so clients can discover us
+        let pid = std::process::id();
+        cli::daemon::write_daemon_files(&config_for_shutdown, pid, actual_addr.port())?;
+
+        if first_iteration {
+            info!("Crab City listening on http://{}", actual_addr);
+            info!("");
+            info!("Web UI: http://{}/", actual_addr);
+            info!("API endpoints:");
+            info!("  GET    /api/instances       - List all instances");
+            info!("  POST   /api/instances       - Create new instance");
+            info!("  GET    /api/instances/:id   - Get instance details");
+            info!("  DELETE /api/instances/:id   - Stop instance");
+            info!("  GET    /api/instances/:id/ws - WebSocket connection to instance");
+        } else {
+            info!("Server restarted on http://{}", actual_addr);
+        }
+
+        // Create shutdown signal handler
+        let shutdown_signal = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install Ctrl+C handler");
+            info!("Received shutdown signal, cleaning up...");
+        };
+
+        // Race: serve vs restart signal
+        tokio::select! {
+            result = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            ).with_graceful_shutdown(shutdown_signal) => {
+                // Real shutdown (Ctrl-C / SIGTERM)
+                if let Err(e) = result {
+                    warn!("Server error: {}", e);
+                }
+                break;
+            }
+            _ = restart_rx.changed() => {
+                info!("Restarting HTTP server with new config...");
+                first_iteration = false;
+                continue;
+            }
+        }
+    }
+
+    // === Cleanup ===
     info!("Flushing persistence buffer...");
     if let Err(e) = persistence_for_shutdown.flush_all().await {
         warn!("Failed to flush persistence buffer during shutdown: {}", e);
@@ -586,5 +667,5 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     cli::daemon::cleanup_daemon_files(&config_for_shutdown);
 
     info!("Shutdown complete");
-    server_result
+    Ok(())
 }

@@ -155,3 +155,11 @@ pub async fn revoke_server_invite_handler(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
+
+/// Trigger an HTTP server restart to reload configuration.
+/// Accessible from loopback without auth (the CLI calls this after writing config.toml).
+pub async fn restart_handler(State(state): State<AppState>) -> impl IntoResponse {
+    info!("Admin restart requested — signalling server loop to reload config");
+    let _ = state.restart_tx.send(());
+    Json(serde_json::json!({ "ok": true, "message": "Server restarting with new config" }))
+}
