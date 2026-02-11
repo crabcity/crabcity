@@ -48,8 +48,47 @@ pub async fn disable_command(config: &CrabCityConfig) -> Result<()> {
 }
 
 /// `crab auth status` — read config and print current auth state.
+/// If the daemon is running, fetches effective config from `/api/admin/config`.
 pub async fn status_command(config: &CrabCityConfig) -> Result<()> {
-    let fc: FileConfig = load_config(&config.data_dir).extract().unwrap_or_default();
+    // Try to get live config from running daemon
+    if let Some(daemon) = daemon::check_daemon(config) {
+        if daemon::health_check_pub(&daemon).await {
+            let url = format!("{}/api/admin/config", daemon.base_url());
+            if let Ok(resp) = reqwest::get(&url).await {
+                if let Ok(cfg) = resp.json::<serde_json::Value>().await {
+                    let auth = cfg
+                        .get("auth_enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let https = cfg.get("https").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let host = cfg
+                        .get("host")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let profile = cfg
+                        .get("profile")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(none)");
+
+                    eprintln!("Daemon running (pid {} on {}:{})", daemon.pid, host, port);
+                    eprintln!("  profile:  {}", profile);
+                    if auth {
+                        eprintln!("  auth:     enabled");
+                        eprintln!("  https:    {}", https);
+                    } else {
+                        eprintln!("  auth:     disabled");
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Fallback: read from config file
+    let fc: FileConfig = load_config(&config.data_dir, None)
+        .extract()
+        .unwrap_or_default();
 
     if fc.auth.enabled {
         eprintln!("Auth: enabled");

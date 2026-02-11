@@ -42,7 +42,9 @@ use std::path::PathBuf;
 use tokio::sync::Mutex;
 
 use crate::auth::AuthState;
-use crate::config::{AuthConfig, CrabCityConfig, FileConfig, ServerConfig, load_config};
+use crate::config::{
+    AuthConfig, CrabCityConfig, FileConfig, Profile, RuntimeOverrides, ServerConfig, load_config,
+};
 
 use crate::db::Database;
 use crate::metrics::ServerMetrics;
@@ -100,13 +102,17 @@ enum Commands {
 
 #[derive(Parser)]
 struct ServerArgs {
-    /// Port for the web server (0 = auto-select)
-    #[arg(short, long, default_value = "0")]
-    port: u16,
+    /// Port for the web server (0 = auto-select; overrides profile/config)
+    #[arg(short, long)]
+    port: Option<u16>,
 
-    /// Host to bind to
-    #[arg(short = 'b', long, default_value = "127.0.0.1")]
-    host: String,
+    /// Host to bind to (overrides profile/config)
+    #[arg(short = 'b', long)]
+    host: Option<String>,
+
+    /// Configuration profile (sets defaults for host/auth/https)
+    #[arg(long, value_enum)]
+    profile: Option<Profile>,
 
     /// Base port for Claude instances (will increment for each instance)
     #[arg(long, default_value = "9000")]
@@ -199,6 +205,8 @@ pub(crate) struct AppState {
     pub notes_storage: Arc<notes::NotesStorage>,
     /// Global state manager for multiplexed WebSocket
     pub global_state_manager: Arc<ws::GlobalStateManager>,
+    /// Ephemeral runtime overrides (from TUI/API)
+    pub runtime_overrides: Arc<tokio::sync::RwLock<RuntimeOverrides>>,
     /// Send to trigger an HTTP server restart (config reload)
     pub restart_tx: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -321,7 +329,10 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     info!("Default command configured: {}", default_command);
 
     // Create instance manager (long-lived, survives restarts)
-    let fc_initial: FileConfig = load_config(&config.data_dir).extract().unwrap_or_default();
+    let cli_profile = args.profile.clone();
+    let fc_initial: FileConfig = load_config(&config.data_dir, cli_profile.as_ref())
+        .extract()
+        .unwrap_or_default();
     let initial_server_config = ServerConfig::from_file(&fc_initial.server);
 
     let instance_manager = Arc::new(InstanceManager::new(
@@ -357,9 +368,15 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     let (restart_tx, mut restart_rx) = tokio::sync::watch::channel(());
     let restart_tx = Arc::new(restart_tx);
 
-    let bind_host = args.host.clone();
-    // Track the actual port after first bind so restarts reuse the same port
+    // Runtime overrides (ephemeral, from TUI/API)
+    let runtime_overrides = Arc::new(tokio::sync::RwLock::new(RuntimeOverrides::default()));
+
+    // CLI --host/--port override everything (applied after figment + runtime overrides)
+    let cli_host = args.host.clone();
+    let cli_port = args.port;
+    // Track the actual host/port after first bind so restarts reuse the same address
     let mut bound_port: Option<u16> = None;
+    let mut bound_host: Option<String> = None;
 
     // Clone references needed for shutdown cleanup
     let persistence_for_shutdown = persistence_service.clone();
@@ -372,10 +389,37 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     // === Server loop: reload config and rebuild router on each iteration ===
     let mut first_iteration = true;
     loop {
-        // Load config from figment (defaults → config.toml → env vars)
-        let fc: FileConfig = load_config(&config.data_dir).extract().unwrap_or_default();
-        let auth_config_raw = AuthConfig::from_file(&fc.auth);
+        // Load config from figment (defaults → profile → config.toml → env vars)
+        let fc: FileConfig = load_config(&config.data_dir, cli_profile.as_ref())
+            .extract()
+            .unwrap_or_default();
+        let overrides = runtime_overrides.read().await.clone();
+
+        // Resolve effective host/port: runtime overrides > CLI flags > figment config > defaults
+        let effective_host = overrides
+            .host
+            .as_deref()
+            .or(cli_host.as_deref())
+            .or(fc.server.host.as_deref())
+            .unwrap_or("127.0.0.1");
+        let effective_port = overrides.port.or(cli_port).or(fc.server.port).unwrap_or(0);
+
+        // Resolve effective auth/https with runtime overrides
+        let mut auth_config_raw = AuthConfig::from_file(&fc.auth);
+        if let Some(auth_enabled) = overrides.auth_enabled {
+            auth_config_raw.enabled = auth_enabled;
+        }
+        if let Some(https) = overrides.https {
+            auth_config_raw.https = https;
+        }
+
         let server_config = Arc::new(ServerConfig::from_file(&fc.server));
+
+        // If effective host changed from last iteration, force rebind
+        let host_changed = bound_host.as_ref().map_or(false, |h| h != effective_host);
+        if host_changed {
+            bound_port = None;
+        }
 
         if auth_config_raw.enabled {
             info!(
@@ -413,6 +457,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             instance_persistors: instance_persistors.clone(),
             notes_storage: notes_storage.clone(),
             global_state_manager: global_state_manager.clone(),
+            runtime_overrides: runtime_overrides.clone(),
             restart_tx: restart_tx.clone(),
         };
 
@@ -541,6 +586,10 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/api/admin/import", post(handlers::trigger_import))
             .route("/api/admin/restart", post(handlers::restart_handler))
             .route(
+                "/api/admin/config",
+                get(handlers::get_config_handler).patch(handlers::patch_config_handler),
+            )
+            .route(
                 "/api/admin/invites",
                 post(handlers::create_server_invite_handler)
                     .get(handlers::list_server_invites_handler),
@@ -596,11 +645,12 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             info!("Embedded UI enabled - serving SPA at /");
         }
 
-        let port = bound_port.unwrap_or(args.port);
-        let addr = format!("{}:{}", bind_host, port).parse::<SocketAddr>()?;
+        let port = bound_port.unwrap_or(effective_port);
+        let addr = format!("{}:{}", effective_host, port).parse::<SocketAddr>()?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_addr = listener.local_addr()?;
         bound_port = Some(actual_addr.port());
+        bound_host = Some(effective_host.to_string());
 
         // Write daemon PID and port files so clients can discover us
         let pid = std::process::id();

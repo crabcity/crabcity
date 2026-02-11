@@ -181,6 +181,7 @@ crate_index.spec(
 crate_index.spec(
     default_features = False,
     features = [
+        "blocking",
         "rustls-tls",
         "http2",
         "charset",

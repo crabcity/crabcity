@@ -17,9 +17,23 @@ use tracing::info;
 //
 //   (single underscore stays within field names: CRAB_AUTH__SESSION_TTL_SECS)
 
+/// Named configuration presets.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Profile {
+    /// host=127.0.0.1, auth=off, https=off
+    Local,
+    /// host=127.0.0.1, auth=on, https=on
+    Tunnel,
+    /// host=0.0.0.0, auth=on, https=on
+    Server,
+}
+
 /// Top-level tunable configuration, deserialized by figment.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FileConfig {
+    #[serde(default)]
+    pub profile: Option<Profile>,
     #[serde(default)]
     pub auth: AuthFileConfig,
     #[serde(default)]
@@ -53,6 +67,10 @@ impl Default for AuthFileConfig {
 /// Server tuning knobs (lives under `[server]` in config.toml).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerFileConfig {
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
     #[serde(default = "default_max_buffer_mb")]
     pub max_buffer_mb: usize,
     #[serde(default = "default_max_history_kb")]
@@ -64,6 +82,8 @@ pub struct ServerFileConfig {
 impl Default for ServerFileConfig {
     fn default() -> Self {
         Self {
+            host: None,
+            port: None,
             max_buffer_mb: default_max_buffer_mb(),
             max_history_kb: default_max_history_kb(),
             hang_timeout_secs: default_hang_timeout_secs(),
@@ -87,20 +107,90 @@ fn default_hang_timeout_secs() -> u64 {
     300
 }
 
-/// Build a figment that layers: defaults → config.toml → CRAB_* env vars.
+/// Build a figment that layers: defaults → profile defaults → config.toml → CRAB_* env vars.
+///
+/// Profile defaults sit above struct defaults but below config.toml/env.
+/// The CLI profile takes priority over the config file profile.
 ///
 /// Env vars use double-underscore for nesting into sections:
 ///   `CRAB_AUTH__ENABLED=true`  →  `auth.enabled = true`
 ///   `CRAB_SERVER__MAX_BUFFER_MB=50`  →  `server.max_buffer_mb = 50`
-pub fn load_config(data_dir: &Path) -> figment::Figment {
+pub fn load_config(data_dir: &Path, cli_profile: Option<&Profile>) -> figment::Figment {
     use figment::{
         Figment,
         providers::{Env, Format, Serialized, Toml},
     };
 
+    // Pass 1: peek at profile from config.toml/env (CLI overrides file)
+    let base = Figment::from(Serialized::defaults(FileConfig::default()))
+        .merge(Toml::file(data_dir.join("config.toml")))
+        .merge(Env::prefixed("CRAB_").split("__"));
+
+    let profile: Option<Profile> = cli_profile
+        .cloned()
+        .or_else(|| base.extract_inner("profile").ok());
+
+    // Pass 2: rebuild with profile defaults as a layer between defaults and config.toml
+    let profile_layer = profile_to_file_config(profile.as_ref());
+
     Figment::from(Serialized::defaults(FileConfig::default()))
+        .merge(Serialized::defaults(profile_layer))
         .merge(Toml::file(data_dir.join("config.toml")))
         .merge(Env::prefixed("CRAB_").split("__"))
+}
+
+/// Convert a profile into a `FileConfig` with the profile's default values filled in.
+/// Fields not set by the profile remain at their struct defaults so figment
+/// does not override explicit user values from config.toml / env.
+fn profile_to_file_config(profile: Option<&Profile>) -> FileConfig {
+    match profile {
+        Some(Profile::Local) => FileConfig {
+            profile: Some(Profile::Local),
+            auth: AuthFileConfig {
+                enabled: false,
+                https: false,
+                ..Default::default()
+            },
+            server: ServerFileConfig {
+                host: Some("127.0.0.1".to_string()),
+                ..Default::default()
+            },
+        },
+        Some(Profile::Tunnel) => FileConfig {
+            profile: Some(Profile::Tunnel),
+            auth: AuthFileConfig {
+                enabled: true,
+                https: true,
+                ..Default::default()
+            },
+            server: ServerFileConfig {
+                host: Some("127.0.0.1".to_string()),
+                ..Default::default()
+            },
+        },
+        Some(Profile::Server) => FileConfig {
+            profile: Some(Profile::Server),
+            auth: AuthFileConfig {
+                enabled: true,
+                https: true,
+                ..Default::default()
+            },
+            server: ServerFileConfig {
+                host: Some("0.0.0.0".to_string()),
+                ..Default::default()
+            },
+        },
+        None => FileConfig::default(),
+    }
+}
+
+/// Ephemeral config changes from TUI/API. Lost on daemon shutdown.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RuntimeOverrides {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub auth_enabled: Option<bool>,
+    pub https: Option<bool>,
 }
 
 // =============================================================================
@@ -234,6 +324,10 @@ impl CrabCityConfig {
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("Failed to create logs directory: {:?}", logs_dir))?;
 
+        let state_dir = data_dir.join("state");
+        std::fs::create_dir_all(&state_dir)
+            .with_context(|| format!("Failed to create state directory: {:?}", state_dir))?;
+
         let db_path = data_dir.join("crabcity.db");
 
         info!("Data directory: {}", data_dir.display());
@@ -268,12 +362,16 @@ impl CrabCityConfig {
         Ok(())
     }
 
+    pub fn state_dir(&self) -> PathBuf {
+        self.data_dir.join("state")
+    }
+
     pub fn daemon_pid_path(&self) -> PathBuf {
-        self.data_dir.join("daemon.pid")
+        self.state_dir().join("daemon.pid")
     }
 
     pub fn daemon_port_path(&self) -> PathBuf {
-        self.data_dir.join("daemon.port")
+        self.state_dir().join("daemon.port")
     }
 
     pub fn daemon_log_path(&self) -> PathBuf {

@@ -2,6 +2,7 @@ pub mod attach;
 pub mod auth;
 pub mod daemon;
 pub mod picker;
+pub mod settings;
 pub mod terminal;
 
 use anyhow::{Context, Result};
@@ -61,22 +62,58 @@ pub async fn attach_command(config: &CrabCityConfig, target: Option<String>) -> 
 }
 
 /// Picker → attach → detach → picker loop. Exits on Quit or when no instances remain.
+/// Owns the ratatui terminal so picker and settings can share it.
 async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
+    use std::io::IsTerminal;
+
+    let has_tty = std::io::stdin().is_terminal();
+
+    // Initialise ratatui terminal once; picker + settings share it.
+    // attach() uses its own raw-mode I/O, so we restore before attaching
+    // and re-init afterwards.
+    let mut terminal = if has_tty { Some(ratatui::init()) } else { None };
+
+    let result = session_loop_inner(&mut terminal, daemon).await;
+
+    if terminal.is_some() {
+        ratatui::restore();
+    }
+    result
+}
+
+async fn session_loop_inner(
+    terminal: &mut Option<ratatui::DefaultTerminal>,
+    daemon: &DaemonInfo,
+) -> Result<()> {
     loop {
         let instances = fetch_instances(daemon).await?;
 
-        let (instance_id, outcome) = match run_live_picker(daemon, instances).await? {
+        let (instance_id, outcome) = match run_live_picker(terminal, daemon, instances).await? {
             PickerResult::Attach(id) => {
+                // Restore terminal before attaching (attach uses raw terminal I/O directly)
+                if terminal.is_some() {
+                    ratatui::restore();
+                }
                 let outcome = attach::attach(daemon, &id).await?;
+                // Re-init terminal for the next picker iteration
+                if terminal.is_some() {
+                    *terminal = Some(ratatui::init());
+                }
                 (id, outcome)
             }
             PickerResult::NewInstance => {
+                if terminal.is_some() {
+                    ratatui::restore();
+                }
                 let cwd = std::env::current_dir()
                     .context("Failed to get current directory")?
                     .to_string_lossy()
                     .to_string();
                 let instance = create_instance(daemon, None, Some(&cwd)).await?;
                 let outcome = attach::attach(daemon, &instance.id).await?;
+                if terminal.is_some() {
+                    *terminal = Some(ratatui::init());
+                }
                 (instance.id, outcome)
             }
             PickerResult::Kill(id) => {
@@ -86,6 +123,12 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
             PickerResult::KillServer => {
                 daemon::stop_daemon(daemon);
                 return Ok(());
+            }
+            PickerResult::Settings => {
+                if let Some(term) = terminal {
+                    settings::run_settings(term, daemon)?;
+                }
+                continue;
             }
             PickerResult::Quit => return Ok(()),
         };
@@ -103,6 +146,7 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
 
 /// Connect to the mux WebSocket for live updates and run the picker.
 async fn run_live_picker(
+    terminal: &mut Option<ratatui::DefaultTerminal>,
     daemon: &DaemonInfo,
     instances: Vec<InstanceInfo>,
 ) -> Result<PickerResult> {
@@ -131,7 +175,7 @@ async fn run_live_picker(
         });
     }
 
-    picker::run_picker(instances, rx)
+    picker::run_picker(terminal, &daemon.base_url(), instances, rx)
 }
 
 /// Subset of server messages we care about in the CLI picker.

@@ -7,7 +7,7 @@ rust_library(
         "//packages/crab_city_ui",
     ],
     crate_name = "crab_city_ui",
-    edition = "2021",
+    edition = "2024",
     rustc_env = {
         # Use execpath to get path to the tree artifact
         "CRAB_CITY_UI_PATH": "$(execpath //packages/crab_city_ui)",
@@ -27,7 +27,7 @@ rust_binary(
     compile_data = [
         "//packages/crab_city_ui",
     ],
-    edition = "2021",
+    edition = "2024",
     rustc_env = {
         "CRAB_CITY_UI_PATH": "$(execpath //packages/crab_city_ui)",
     },

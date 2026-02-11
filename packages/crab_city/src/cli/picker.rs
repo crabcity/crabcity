@@ -2,11 +2,11 @@ use anyhow::Result;
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
+    layout::Alignment,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Padding},
 };
-use std::io::IsTerminal;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -17,6 +17,7 @@ pub enum PickerResult {
     NewInstance,
     Kill(String),
     KillServer,
+    Settings,
     Quit,
 }
 
@@ -28,25 +29,28 @@ pub enum PickerEvent {
 
 /// Show an interactive TUI picker for instances.
 /// Falls back to most-recent or NewInstance when stdin is not a TTY.
+/// The caller owns the terminal (shared with settings screen).
 pub fn run_picker(
+    terminal: &mut Option<DefaultTerminal>,
+    base_url: &str,
     instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
 ) -> Result<PickerResult> {
-    if !std::io::stdin().is_terminal() {
-        return Ok(match instances.last() {
-            Some(inst) => PickerResult::Attach(inst.id.clone()),
-            None => PickerResult::NewInstance,
-        });
+    match terminal {
+        Some(term) => picker_loop(term, base_url, instances, events),
+        None => {
+            // No TTY — fall back to most recent instance or new
+            Ok(match instances.last() {
+                Some(inst) => PickerResult::Attach(inst.id.clone()),
+                None => PickerResult::NewInstance,
+            })
+        }
     }
-
-    let mut terminal = ratatui::init();
-    let result = picker_loop(&mut terminal, instances, events);
-    ratatui::restore();
-    result
 }
 
 fn picker_loop(
     terminal: &mut DefaultTerminal,
+    base_url: &str,
     mut instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
 ) -> Result<PickerResult> {
@@ -95,23 +99,25 @@ fn picker_loop(
                     Span::raw("y to confirm · any key to cancel "),
                 ])
             } else {
-                Line::raw(" ↑↓ navigate · enter select · x kill · Q kill server · q/esc quit ")
+                Line::raw(" ↑↓ navigate · enter select · x kill · s settings · Q kill server · q/esc quit ")
             };
 
             let list = List::new(items)
                 .block(
                     Block::default()
                         .title(" crab: select session ")
+                        .title(
+                            Line::styled(
+                                format!(" {} ", base_url),
+                                Style::default().add_modifier(Modifier::DIM),
+                            )
+                            .alignment(Alignment::Right),
+                        )
                         .title_bottom(bottom_bar)
                         .borders(Borders::ALL)
                         .padding(Padding::horizontal(1)),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
                 .highlight_symbol("▸ ");
             frame.render_stateful_widget(list, area, &mut state);
         })?;
@@ -160,6 +166,9 @@ fn picker_loop(
                         return Ok(PickerResult::Kill(instances[i].id.clone()));
                     }
                 }
+                KeyCode::Char('s') => {
+                    return Ok(PickerResult::Settings);
+                }
                 _ => {}
             }
         }
@@ -185,9 +194,9 @@ fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>
                 Span::styled(
                     format!(" {:<8}", status),
                     if inst.running {
-                        Style::default().fg(Color::Green)
+                        Style::default().add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().add_modifier(Modifier::DIM)
                     },
                 ),
                 Span::raw(format!(" {}", inst.working_dir)),
@@ -198,9 +207,7 @@ fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>
 
     items.push(ListItem::new(Line::from(vec![Span::styled(
         "[ + ]  New instance",
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
+        Style::default().add_modifier(Modifier::BOLD),
     )])));
 
     items

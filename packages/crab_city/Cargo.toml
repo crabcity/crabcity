@@ -1,7 +1,7 @@
 [package]
 name = "crab_city"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [[bin]]
 name = "crab"
@@ -26,7 +26,7 @@ futures = "0.3"
 tokio-util = "0.7"
 
 # HTTP client for optional API calls
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
