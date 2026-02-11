@@ -183,8 +183,4 @@ jest_test(
     node_options = ["--experimental-vm-modules"],
     patch_node_fs = False,
     run_in_band = True,
-    # Run without sandbox so V8 coverage paths match rootDir.
-    # Bazel sandbox resolves symlinks to real paths, causing a mismatch
-    # between Jest's rootDir (sandbox) and V8's file URLs (real execroot).
-    tags = ["local"],
 )

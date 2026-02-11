@@ -231,34 +231,38 @@ run. They pointed to different directory trees, confirming the mismatch.
 
 ## The Fix
 
-Three coordinated changes across three files:
+Five coordinated changes across three files:
 
-### 1. Override `rootDir` to the Bin Directory (`jest.config.cjs`)
+### 1. Override `rootDir` to the Real Bin Directory (`jest.config.cjs`)
 
 ```javascript
-let bazelBinDir;
-if (process.env.JS_BINARY__EXECROOT &&
-    process.env.JS_BINARY__BINDIR &&
-    process.env.JS_BINARY__PACKAGE) {
-  bazelBinDir = path.resolve(
-    process.env.JS_BINARY__EXECROOT,
-    process.env.JS_BINARY__BINDIR,
-    process.env.JS_BINARY__PACKAGE
-  );
-}
+const pkg = process.env.JS_BINARY__PACKAGE;
+const binSuffix = path.join(process.env.JS_BINARY__BINDIR, pkg);
+const rawBinDir = path.resolve(process.env.JS_BINARY__EXECROOT, binSuffix);
+
+// Probe through a file symlink to find the real execroot prefix (see §3).
+let realBinDir = rawBinDir;
+try {
+  const probeFile = path.join(runfilesBase, workspace, pkg, 'jest.config.cjs');
+  const realProbe = fs.realpathSync(probeFile);
+  const idx = realProbe.indexOf(binSuffix);
+  if (idx !== -1) realBinDir = realProbe.substring(0, idx + binSuffix.length);
+} catch {}
 
 module.exports = {
-  ...(bazelBinDir ? { rootDir: bazelBinDir } : {})
+  ...(bazelBinDir ? { rootDir: realBinDir } : {})
 };
 ```
 
-This makes `rootDir` point to the **bin directory** where V8 sees the files,
-so `url.startsWith(rootDir)` passes.
+This makes `rootDir` point to the **real bin directory** where V8 sees the files,
+so `url.startsWith(rootDir)` passes — even inside Bazel's sandbox.
 
 The environment variables are provided by `aspect_rules_js`:
-- `JS_BINARY__EXECROOT`: absolute path to the Bazel execroot
+- `JS_BINARY__EXECROOT`: absolute path to the Bazel execroot (sandbox path when sandboxed)
 - `JS_BINARY__BINDIR`: relative path like `bazel-out/darwin_arm64-fastbuild/bin`
 - `JS_BINARY__PACKAGE`: the Bazel package, e.g. `packages/crab_city_ui`
+- `RUNFILES`: absolute path to the runfiles root
+- `JS_BINARY__WORKSPACE`: workspace name, e.g. `_main`
 
 When not running under Bazel (e.g. local development), these vars are unset and
 the spread is a no-op — the config falls back to Jest's default `rootDir`.
@@ -298,7 +302,7 @@ module.exports = {
 `require.resolve('jest-junit')` returns an **absolute path** that works
 regardless of `rootDir`.
 
-### 3. Disable Sandbox (`BUILD.bazel: tags = ["local"]`)
+### 3. Resolve Through the Sandbox (`jest.config.cjs`)
 
 The `rootDir` override works when running without a sandbox (`--spawn_strategy=local`),
 but fails under Bazel's default `darwin-sandbox` strategy. In the sandbox:
@@ -309,18 +313,54 @@ but fails under Bazel's default `darwin-sandbox` strategy. In the sandbox:
 4. `rootDir` (sandbox path) doesn't match V8 URLs (real execroot path)
 
 This is the same class of problem — symlink resolution causing path mismatches —
-but at a different layer. There is no way to predict what V8 will resolve to
-from inside the sandbox.
+but at a different layer.
 
-Fix: `tags = ["local"]` disables sandboxing for this test target. The test
-runs directly in the execroot, eliminating the sandbox path layer.
+The naive fix is `fs.realpathSync(binDir)`, but this doesn't work: Bazel's
+`darwin-sandbox` creates the bin directory tree as **real directories** populated
+with **symlink files**. `realpathSync` on a directory that isn't itself a symlink
+returns the directory unchanged — it doesn't chase the symlinks of its contents.
 
-```python
-jest_test(
-    name = "unit_tests",
-    tags = ["local"],
-    ...
-)
+```
+sandbox/darwin-sandbox/7292/execroot/_main/
+  bazel-out/.../bin/packages/crab_city_ui/     ← real directory (realpathSync = self)
+    unit_tests_/unit_tests.runfiles/_main/
+      packages/crab_city_ui/
+        dist-test/
+          fileLinkMatch.js                     ← symlink → real execroot
+```
+
+Fix: probe through an actual **file** symlink in the runfiles tree to discover
+the real execroot prefix, then extract the bin dir path from it:
+
+```javascript
+const probeFile = path.join(runfilesBase, workspace, pkg, 'jest.config.cjs');
+const realProbe = fs.realpathSync(probeFile);
+// realProbe: /real/execroot/_main/bazel-out/.../bin/packages/crab_city_ui/
+//            unit_tests_/unit_tests.runfiles/_main/packages/crab_city_ui/jest.config.cjs
+const idx = realProbe.indexOf(binSuffix);  // binSuffix = "bazel-out/.../bin/packages/crab_city_ui"
+realBinDir = realProbe.substring(0, idx + binSuffix.length);
+// realBinDir: /real/execroot/_main/bazel-out/.../bin/packages/crab_city_ui
+```
+
+This gives us the canonical path that V8 will use for file URLs, regardless of
+whether we're in a sandbox. Without a sandbox, the probe resolves to the same
+path as `rawBinDir`, so the `try/catch` fallback is harmless.
+
+### 3a. Restore Test Discovery (`jest.config.cjs: roots`)
+
+Overriding `rootDir` to the real execroot bin dir breaks test discovery. Jest
+uses `rootDir` as the default for `roots` — the directories it walks to find
+test files. When `rootDir` points outside the sandbox, Jest either can't find
+files or finds them in unexpected locations.
+
+Fix: explicitly set `roots` to include both the runfiles tree (where the haste
+map discovers test files) and the real bin dir (where V8 sees source files):
+
+```javascript
+roots: [
+  path.join(runfilesBase, workspace, pkg),  // runfiles: test discovery
+  realBinDir,                                // real bin dir: coverage sources
+]
 ```
 
 ### 4. Inline TypeScript Sources (`tsconfig.test.json`)
@@ -378,12 +418,34 @@ coveragePathIgnorePatterns: ['/node_modules/', '\\.runfiles/'],
 
 ```javascript
 const path = require('path');
+const fs = require('fs');
 
 let bazelBinDir;
+let bazelRoots;
 if (process.env.JS_BINARY__EXECROOT && process.env.JS_BINARY__BINDIR && process.env.JS_BINARY__PACKAGE) {
-  bazelBinDir = path.resolve(
-    process.env.JS_BINARY__EXECROOT, process.env.JS_BINARY__BINDIR, process.env.JS_BINARY__PACKAGE
-  );
+  const pkg = process.env.JS_BINARY__PACKAGE;
+  const binSuffix = path.join(process.env.JS_BINARY__BINDIR, pkg);
+  const rawBinDir = path.resolve(process.env.JS_BINARY__EXECROOT, binSuffix);
+  const runfilesBase = process.env.RUNFILES;
+  const workspace = process.env.JS_BINARY__WORKSPACE;
+
+  // Probe through a file symlink to discover the real execroot prefix.
+  // The sandbox creates real directories but populates them with symlink files.
+  let realBinDir = rawBinDir;
+  if (runfilesBase && workspace) {
+    try {
+      const probeFile = path.join(runfilesBase, workspace, pkg, 'jest.config.cjs');
+      const realProbe = fs.realpathSync(probeFile);
+      const idx = realProbe.indexOf(binSuffix);
+      if (idx !== -1) {
+        realBinDir = realProbe.substring(0, idx + binSuffix.length);
+      }
+    } catch {
+      // Outside sandbox — rawBinDir is already correct.
+    }
+    bazelRoots = [path.join(runfilesBase, workspace, pkg), realBinDir];
+  }
+  bazelBinDir = realBinDir;
 }
 
 let jestJunitPath;
@@ -402,6 +464,7 @@ module.exports = {
   },
   ...(bazelBinDir ? {
     rootDir: bazelBinDir,
+    ...(bazelRoots ? { roots: bazelRoots } : {}),
     reporters: [
       'default',
       ...(jestJunitPath ? [[jestJunitPath, { outputFile: process.env.XML_OUTPUT_FILE || 'jest-junit.xml' }]] : []),
@@ -429,7 +492,6 @@ jest_test(
     node_options = ["--experimental-vm-modules"],
     patch_node_fs = False,
     run_in_band = True,
-    tags = ["local"],
 )
 ```
 
@@ -462,6 +524,31 @@ Test Suites: 5 passed, 5 total
 Tests:       156 passed, 156 total
 ```
 
-Both `bazel test` and `bazel coverage` pass. Coverage reports show TypeScript
+Both `bazel test` and `bazel coverage` pass under `darwin-sandbox` (the default
+strategy) with no `tags = ["local"]` override. Coverage reports show TypeScript
 source files with line-level data. LCOV output is generated for integration
 with coverage tooling.
+
+## Addendum: Why `realpathSync(directory)` Doesn't Work
+
+An earlier version of the fix used `fs.realpathSync(binDir)` and
+`tags = ["local"]` to disable sandboxing. The reasoning was that `realpathSync`
+would resolve through the sandbox's symlinks to the real execroot, matching V8's
+paths.
+
+This is wrong. Bazel's `darwin-sandbox` creates the directory *tree* as real
+directories, then populates the leaf *files* with symlinks to the real execroot.
+`realpathSync` on a real directory returns the directory unchanged — it doesn't
+inspect or follow its contents' symlinks. Only `realpathSync` on a *file* (which
+is an actual symlink) resolves to the real execroot.
+
+```
+realpathSync("/sandbox/.../bin/packages/crab_city_ui")           → same path (real dir)
+realpathSync("/sandbox/.../bin/.../runfiles/.../jest.config.cjs") → /real/execroot/...  (symlink)
+```
+
+The working fix probes through a file symlink (the config file itself in the
+runfiles tree), extracts the real execroot prefix from the resolved path, and
+uses that as `rootDir`. This works with sandboxing enabled because the real
+execroot path is the canonical form that V8 always resolves to, regardless of
+how many symlink layers Bazel adds.
