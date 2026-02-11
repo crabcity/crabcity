@@ -30,10 +30,6 @@ pub async fn default_command(config: &CrabCityConfig) -> Result<()> {
             AttachOutcome::Detached => {}
             AttachOutcome::Exited => {
                 delete_instance(&daemon, &instance.id).await;
-                if should_stop_daemon(&daemon).await {
-                    daemon::stop_daemon(&daemon);
-                    return Ok(());
-                }
             }
         }
     }
@@ -82,6 +78,14 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
                 let outcome = attach::attach(daemon, &instance.id).await?;
                 (instance.id, outcome)
             }
+            PickerResult::Kill(id) => {
+                delete_instance(daemon, &id).await;
+                continue;
+            }
+            PickerResult::KillServer => {
+                daemon::stop_daemon(daemon);
+                return Ok(());
+            }
             PickerResult::Quit => return Ok(()),
         };
 
@@ -91,11 +95,6 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
             }
             AttachOutcome::Exited => {
                 delete_instance(daemon, &instance_id).await;
-                if should_stop_daemon(daemon).await {
-                    daemon::stop_daemon(daemon);
-                    return Ok(());
-                }
-                // Other instances remain, loop back to picker
             }
         }
     }
@@ -140,6 +139,51 @@ async fn run_live_picker(
 enum WsLifecycleEvent {
     InstanceCreated { instance: InstanceInfo },
     InstanceStopped { instance_id: String },
+}
+
+/// Kill a specific session by name, ID, or prefix.
+pub async fn kill_command(config: &CrabCityConfig, target: &str) -> Result<()> {
+    let daemon = daemon::require_running_daemon(config).await?;
+    let instance_id = resolve_instance(&daemon, target).await?;
+    delete_instance(&daemon, &instance_id).await;
+    eprintln!(
+        "Killed session {}",
+        &instance_id[..8.min(instance_id.len())]
+    );
+    if should_stop_daemon(&daemon).await {
+        daemon::stop_daemon(&daemon);
+        eprintln!("No sessions remaining, daemon stopped.");
+    }
+    Ok(())
+}
+
+/// Stop the daemon and all sessions.
+pub async fn kill_server_command(config: &CrabCityConfig, force: bool) -> Result<()> {
+    let daemon = daemon::require_running_daemon(config).await?;
+
+    if !force {
+        let instances = fetch_instances(&daemon).await?;
+        let running = instances.iter().filter(|i| i.running).count();
+        if running > 0 {
+            eprint!(
+                "Kill daemon and {} running session{}? (y/N) ",
+                running,
+                if running == 1 { "" } else { "s" }
+            );
+            use std::io::Write;
+            std::io::stderr().flush()?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                eprintln!("Cancelled.");
+                return Ok(());
+            }
+        }
+    }
+
+    daemon::stop_daemon(&daemon);
+    eprintln!("Daemon stopped.");
+    Ok(())
 }
 
 /// List running instances.

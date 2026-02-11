@@ -15,6 +15,8 @@ use super::InstanceInfo;
 pub enum PickerResult {
     Attach(String),
     NewInstance,
+    Kill(String),
+    KillServer,
     Quit,
 }
 
@@ -49,6 +51,7 @@ fn picker_loop(
     events: mpsc::Receiver<PickerEvent>,
 ) -> Result<PickerResult> {
     let mut state = ListState::default().with_selected(Some(0));
+    let mut confirming_kill_server = false;
 
     loop {
         // Drain any pending live-update events
@@ -77,11 +80,29 @@ fn picker_loop(
         terminal.draw(|frame| {
             let area = frame.area();
             let items = build_items(&instances, area.width);
+
+            let bottom_bar = if confirming_kill_server {
+                let running = instances.iter().filter(|i| i.running).count();
+                Line::from(vec![
+                    Span::styled(
+                        format!(
+                            " Kill server and {} session{}? ",
+                            running,
+                            if running == 1 { "" } else { "s" }
+                        ),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("y to confirm · any key to cancel "),
+                ])
+            } else {
+                Line::raw(" ↑↓ navigate · enter select · x kill · Q kill server · q/esc quit ")
+            };
+
             let list = List::new(items)
                 .block(
                     Block::default()
                         .title(" crab: select session ")
-                        .title_bottom(" ↑↓ navigate · enter select · q/esc quit ")
+                        .title_bottom(bottom_bar)
                         .borders(Borders::ALL)
                         .padding(Padding::horizontal(1)),
                 )
@@ -103,8 +124,20 @@ fn picker_loop(
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+
+            if confirming_kill_server {
+                confirming_kill_server = false;
+                if key.code == KeyCode::Char('y') {
+                    return Ok(PickerResult::KillServer);
+                }
+                continue;
+            }
+
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(PickerResult::Quit),
+                KeyCode::Char('Q') => {
+                    confirming_kill_server = true;
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     let i = state.selected().unwrap_or(0);
                     state.select(Some((i + 1) % total));
@@ -120,6 +153,12 @@ fn picker_loop(
                     } else {
                         Ok(PickerResult::NewInstance)
                     };
+                }
+                KeyCode::Char('x') => {
+                    let i = state.selected().unwrap_or(0);
+                    if i < instances.len() {
+                        return Ok(PickerResult::Kill(instances[i].id.clone()));
+                    }
                 }
                 _ => {}
             }

@@ -169,6 +169,7 @@ ts_project(
 # bazel test //packages/crab_city_ui:unit_tests
 jest_test(
     name = "unit_tests",
+    auto_configure_reporters = False,
     config = "jest.config.cjs",
     data = [
         "package.json",
@@ -179,7 +180,6 @@ jest_test(
         ":test_lib",
     ],
     node_modules = ":node_modules",
-    auto_configure_reporters = False,
     node_options = ["--experimental-vm-modules"],
     patch_node_fs = False,
     run_in_band = True,

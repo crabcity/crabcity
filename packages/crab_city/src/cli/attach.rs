@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 
@@ -65,17 +67,35 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutc
     let mut sigwinch =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
 
-    // 6. Spawn blocking stdin reader thread
+    // 6. Spawn blocking stdin reader thread (with poll so it can shut down cleanly)
     let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(64);
+    let stdin_shutdown = Arc::new(AtomicBool::new(false));
+    let stdin_shutdown_thread = stdin_shutdown.clone();
     std::thread::spawn(move || {
         use std::io::Read;
+        use std::os::fd::AsRawFd;
         let stdin = std::io::stdin();
-        let mut handle = stdin.lock();
+        let stdin_fd = stdin.as_raw_fd();
         let mut buf = [0u8; 4096];
         loop {
+            if stdin_shutdown_thread.load(Ordering::Relaxed) {
+                break;
+            }
+            // Poll stdin with 100ms timeout so we can check the shutdown flag
+            let mut pfd = nix::libc::pollfd {
+                fd: stdin_fd,
+                events: nix::libc::POLLIN,
+                revents: 0,
+            };
+            let ret = unsafe { nix::libc::poll(&mut pfd, 1, 100) };
+            if ret <= 0 {
+                continue;
+            }
+            let mut handle = stdin.lock();
             match handle.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    drop(handle);
                     if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
                         break;
                     }
@@ -149,8 +169,8 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutc
         }
     }
 
-    // 8. Clean exit
-    // Guard drops here, restoring terminal
+    // 8. Clean exit — shut down stdin reader before restoring terminal
+    stdin_shutdown.store(true, Ordering::Relaxed);
     drop(_guard);
     if detached {
         eprintln!("\r\n[crab: detached]");

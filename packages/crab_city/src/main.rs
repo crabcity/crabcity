@@ -86,6 +86,12 @@ enum Commands {
 
     /// List running instances
     List(ListArgs),
+
+    /// Kill a specific session
+    Kill(KillArgs),
+
+    /// Stop the daemon and all sessions
+    KillServer(KillServerArgs),
 }
 
 #[derive(Parser)]
@@ -140,6 +146,19 @@ struct ListArgs {
     json: bool,
 }
 
+#[derive(Parser)]
+struct KillArgs {
+    /// Instance name, ID, or ID prefix to kill
+    target: String,
+}
+
+#[derive(Parser)]
+struct KillServerArgs {
+    /// Skip confirmation prompt
+    #[arg(short, long)]
+    force: bool,
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AppState {
@@ -175,6 +194,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Attach(args)) => cli::attach_command(&config, args.target).await,
         Some(Commands::List(args)) => cli::list_command(&config, args.json).await,
+        Some(Commands::Kill(args)) => cli::kill_command(&config, &args.target).await,
+        Some(Commands::KillServer(args)) => cli::kill_server_command(&config, args.force).await,
         Some(Commands::Server(args)) => run_server(args, config).await,
     }
 }
