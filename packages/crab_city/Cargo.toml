@@ -63,6 +63,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.5", features = ["v4", "serde"] }
 anyhow = "1.0"
+thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 tracing = "0.1"
@@ -85,6 +86,9 @@ ignore = "0.4.25"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "term"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []

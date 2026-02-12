@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use std::io::Write;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 
-use crate::cli::daemon::DaemonInfo;
+use crate::cli::daemon::{DaemonError, DaemonInfo};
 use crate::cli::terminal::{TerminalGuard, get_terminal_size};
 use crate::websocket_proxy::WsMessage;
 
@@ -21,8 +21,8 @@ pub enum AttachOutcome {
 }
 
 /// Attach to an instance, forwarding terminal I/O over WebSocket.
-pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutcome> {
-    // 1. Fetch and display scrollback
+pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutcome, DaemonError> {
+    // 1. Fetch and display scrollback (best-effort, unchanged)
     let output_url = format!("{}/api/instances/{}/output", daemon.base_url(), instance_id);
     if let Ok(resp) = reqwest::get(&output_url).await {
         if resp.status().is_success() {
@@ -40,11 +40,22 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutc
         }
     }
 
-    // 2. Connect WebSocket
+    // 2. Connect WebSocket — the Unavailable boundary
     let ws_url = daemon.ws_url(instance_id);
     let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
-        .with_context(|| format!("Failed to connect to {}", ws_url))?;
+        .map_err(DaemonError::from_tungstenite)?;
+
+    // 3. Session phase — internal anyhow, mapped to Other at boundary
+    attach_session(ws_stream).await.map_err(Into::into)
+}
+
+/// Run the attach session after WebSocket is connected.
+async fn attach_session(
+    ws_stream: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Result<AttachOutcome> {
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     // 3. Enter raw mode

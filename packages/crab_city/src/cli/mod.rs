@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite;
 
 use crate::config::CrabCityConfig;
 use attach::AttachOutcome;
-use daemon::DaemonInfo;
+use daemon::{DaemonError, DaemonInfo};
 use picker::{PickerEvent, PickerResult};
 
 /// Default command: ensure daemon, show picker if instances exist, else create new.
@@ -21,22 +21,41 @@ pub async fn default_command(config: &CrabCityConfig) -> Result<()> {
     let daemon = daemon::ensure_daemon(config).await?;
 
     // First run: if no instances at all, create one directly
-    let instances = fetch_instances(&daemon).await?;
+    let instances = match fetch_instances(&daemon).await {
+        Ok(inst) => inst,
+        Err(DaemonError::Unavailable) => {
+            eprintln!("[crab: server stopped]");
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
     if instances.is_empty() {
         let cwd = std::env::current_dir()
             .context("Failed to get current directory")?
             .to_string_lossy()
             .to_string();
-        let instance = create_instance(&daemon, None, Some(&cwd)).await?;
-        match attach::attach(&daemon, &instance.id).await? {
-            AttachOutcome::Detached => {}
-            AttachOutcome::Exited => {
+        let instance = match create_instance(&daemon, None, Some(&cwd)).await {
+            Ok(inst) => inst,
+            Err(DaemonError::Unavailable) => {
+                eprintln!("[crab: server stopped]");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        match attach::attach(&daemon, &instance.id).await {
+            Ok(AttachOutcome::Detached) => {}
+            Ok(AttachOutcome::Exited) => {
                 delete_instance(&daemon, &instance.id).await;
             }
+            Err(DaemonError::Unavailable) => {
+                eprintln!("[crab: server stopped]");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
         }
     }
 
-    session_loop(&daemon).await
+    session_loop(config, daemon).await
 }
 
 /// Attach to an existing instance (by name, ID, or prefix). No target: show picker.
@@ -46,24 +65,29 @@ pub async fn attach_command(config: &CrabCityConfig, target: Option<String>) -> 
 
     if let Some(t) = target {
         let instance_id = resolve_instance(&daemon, &t).await?;
-        match attach::attach(&daemon, &instance_id).await? {
-            AttachOutcome::Detached => return Ok(()),
-            AttachOutcome::Exited => {
+        match attach::attach(&daemon, &instance_id).await {
+            Ok(AttachOutcome::Detached) => return Ok(()),
+            Ok(AttachOutcome::Exited) => {
                 delete_instance(&daemon, &instance_id).await;
                 if should_stop_daemon(&daemon).await {
                     daemon::stop_daemon(&daemon);
                 }
                 return Ok(());
             }
+            Err(DaemonError::Unavailable) => {
+                eprintln!("[crab: server stopped]");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
         }
     }
 
-    session_loop(&daemon).await
+    session_loop(config, daemon).await
 }
 
 /// Picker → attach → detach → picker loop. Exits on Quit or when no instances remain.
 /// Owns the ratatui terminal so picker and settings can share it.
-async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
+async fn session_loop(config: &CrabCityConfig, daemon: DaemonInfo) -> Result<()> {
     use std::io::IsTerminal;
 
     let has_tty = std::io::stdin().is_terminal();
@@ -73,7 +97,7 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
     // and re-init afterwards.
     let mut terminal = if has_tty { Some(ratatui::init()) } else { None };
 
-    let result = session_loop_inner(&mut terminal, daemon).await;
+    let result = session_loop_inner(&mut terminal, config, daemon).await;
 
     if terminal.is_some() {
         ratatui::restore();
@@ -83,18 +107,58 @@ async fn session_loop(daemon: &DaemonInfo) -> Result<()> {
 
 async fn session_loop_inner(
     terminal: &mut Option<ratatui::DefaultTerminal>,
-    daemon: &DaemonInfo,
+    config: &CrabCityConfig,
+    mut daemon: DaemonInfo,
 ) -> Result<()> {
-    loop {
-        let instances = fetch_instances(daemon).await?;
+    /// Try to rediscover the daemon after an Unavailable error.
+    /// Returns `true` if a new daemon was found and `daemon` was updated.
+    async fn try_rediscover(config: &CrabCityConfig, daemon: &mut DaemonInfo) -> bool {
+        if let Some(new) = daemon::rediscover_daemon(config).await {
+            *daemon = new;
+            true
+        } else {
+            false
+        }
+    }
 
-        let (instance_id, outcome) = match run_live_picker(terminal, daemon, instances).await? {
+    loop {
+        let instances = match fetch_instances(&daemon).await {
+            Ok(inst) => inst,
+            Err(DaemonError::Unavailable) => {
+                if try_rediscover(config, &mut daemon).await {
+                    continue;
+                }
+                eprintln!("[crab: server stopped]");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let (instance_id, outcome) = match run_live_picker(terminal, &daemon, instances).await? {
             PickerResult::Attach(id) => {
                 // Restore terminal before attaching (attach uses raw terminal I/O directly)
                 if terminal.is_some() {
                     ratatui::restore();
                 }
-                let outcome = attach::attach(daemon, &id).await?;
+                let outcome = match attach::attach(&daemon, &id).await {
+                    Ok(o) => o,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
                 // Re-init terminal for the next picker iteration
                 if terminal.is_some() {
                     *terminal = Some(ratatui::init());
@@ -109,24 +173,60 @@ async fn session_loop_inner(
                     .context("Failed to get current directory")?
                     .to_string_lossy()
                     .to_string();
-                let instance = create_instance(daemon, None, Some(&cwd)).await?;
-                let outcome = attach::attach(daemon, &instance.id).await?;
+                let instance = match create_instance(&daemon, None, Some(&cwd)).await {
+                    Ok(inst) => inst,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
+                let outcome = match attach::attach(&daemon, &instance.id).await {
+                    Ok(o) => o,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
                 if terminal.is_some() {
                     *terminal = Some(ratatui::init());
                 }
                 (instance.id, outcome)
             }
             PickerResult::Kill(id) => {
-                delete_instance(daemon, &id).await;
+                delete_instance(&daemon, &id).await;
                 continue;
             }
             PickerResult::KillServer => {
-                daemon::stop_daemon(daemon);
+                daemon::stop_daemon(&daemon);
                 return Ok(());
             }
             PickerResult::Settings => {
                 if let Some(term) = terminal {
-                    settings::run_settings(term, daemon)?;
+                    settings::run_settings(term, &daemon)?;
                 }
                 continue;
             }
@@ -138,7 +238,7 @@ async fn session_loop_inner(
                 // Loop back to picker
             }
             AttachOutcome::Exited => {
-                delete_instance(daemon, &instance_id).await;
+                delete_instance(&daemon, &instance_id).await;
             }
         }
     }
@@ -300,19 +400,19 @@ async fn should_stop_daemon(daemon: &DaemonInfo) -> bool {
     }
 }
 
-async fn fetch_instances(daemon: &DaemonInfo) -> Result<Vec<InstanceInfo>> {
+async fn fetch_instances(daemon: &DaemonInfo) -> Result<Vec<InstanceInfo>, DaemonError> {
     let url = format!("{}/api/instances", daemon.base_url());
     let resp = reqwest::get(&url)
         .await
-        .context("Failed to list instances")?;
-    resp.json().await.context("Failed to parse instance list")
+        .map_err(DaemonError::from_reqwest)?;
+    Ok(resp.json().await.map_err(DaemonError::from_reqwest)?)
 }
 
 async fn create_instance(
     daemon: &DaemonInfo,
     name: Option<&str>,
     working_dir: Option<&str>,
-) -> Result<CreateInstanceResponse> {
+) -> Result<CreateInstanceResponse, DaemonError> {
     let url = format!("{}/api/instances", daemon.base_url());
     let body = serde_json::json!({
         "name": name,
@@ -325,17 +425,15 @@ async fn create_instance(
         .json(&body)
         .send()
         .await
-        .context("Failed to create instance")?;
+        .map_err(DaemonError::from_reqwest)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Failed to create instance: {} {}", status, text);
+        return Err(anyhow::anyhow!("Failed to create instance: {} {}", status, text).into());
     }
 
-    resp.json()
-        .await
-        .context("Failed to parse create instance response")
+    Ok(resp.json().await.map_err(DaemonError::from_reqwest)?)
 }
 
 async fn resolve_instance(daemon: &DaemonInfo, target: &str) -> Result<String> {
