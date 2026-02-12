@@ -158,22 +158,34 @@ pub async fn handle_proxy(
     let tx_output = tx.clone();
     let signal_tx_output = signal_tx.clone();
     let output_task = async move {
-        while let Ok(event) = output_rx.recv().await {
-            let data = String::from_utf8_lossy(&event.data).to_string();
+        let mut decoder = crate::ws::Utf8StreamDecoder::new();
+        loop {
+            match output_rx.recv().await {
+                Ok(event) => {
+                    let data = decoder.decode(&event.data);
+                    if data.is_empty() {
+                        continue;
+                    }
 
-            // Send signal to state manager (for tool detection)
-            if is_claude {
-                if signal_tx_output
-                    .send(StateSignal::TerminalOutput { data: data.clone() })
-                    .await
-                    .is_err()
-                {
-                    warn!("Failed to send terminal output signal - state manager closed");
+                    // Send signal to state manager (for tool detection)
+                    if is_claude {
+                        if signal_tx_output
+                            .send(StateSignal::TerminalOutput { data: data.clone() })
+                            .await
+                            .is_err()
+                        {
+                            warn!("Failed to send terminal output signal - state manager closed");
+                        }
+                    }
+
+                    if tx_output.send(WsMessage::Output { data }).await.is_err() {
+                        break;
+                    }
                 }
-            }
-
-            if tx_output.send(WsMessage::Output { data }).await.is_err() {
-                break;
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    decoder.clear();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     };

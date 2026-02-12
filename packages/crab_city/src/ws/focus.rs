@@ -27,28 +27,52 @@ impl Utf8StreamDecoder {
         Self { buf: Vec::new() }
     }
 
+    /// Drop any buffered incomplete bytes (e.g. after broadcast lag
+    /// where the continuation bytes were lost).
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
     /// Feed a chunk of bytes and return the longest valid UTF-8 string.
     /// Any trailing incomplete multi-byte sequence is retained for the next call.
+    /// Genuinely invalid bytes (non-UTF-8 data) are replaced with U+FFFD.
     pub fn decode(&mut self, chunk: &[u8]) -> String {
         self.buf.extend_from_slice(chunk);
-        let (data, consumed) = match std::str::from_utf8(&self.buf) {
-            Ok(s) => (s.to_string(), self.buf.len()),
-            Err(e) if e.error_len().is_none() => {
-                // Incomplete sequence at end — send the valid prefix,
-                // keep the trailing 1-3 bytes for the next event.
-                let n = e.valid_up_to();
-                (String::from_utf8(self.buf[..n].to_vec()).unwrap(), n)
+        let mut result = String::new();
+
+        loop {
+            match std::str::from_utf8(&self.buf) {
+                Ok(s) => {
+                    result.push_str(s);
+                    self.buf.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid_up_to = e.valid_up_to();
+                    if valid_up_to > 0 {
+                        // Safety: from_utf8 validated these bytes
+                        result.push_str(std::str::from_utf8(&self.buf[..valid_up_to]).unwrap());
+                    }
+
+                    match e.error_len() {
+                        None => {
+                            // Incomplete sequence at end — keep for next call
+                            self.buf = self.buf[valid_up_to..].to_vec();
+                            break;
+                        }
+                        Some(len) => {
+                            // Genuinely invalid bytes (non-UTF-8 data from PTY,
+                            // or stale bytes after broadcast lag missed by clear).
+                            result.push('\u{FFFD}');
+                            self.buf = self.buf[valid_up_to + len..].to_vec();
+                            // Continue loop to process remaining bytes
+                        }
+                    }
+                }
             }
-            Err(_) => {
-                // Genuinely invalid bytes — flush lossy
-                (
-                    String::from_utf8_lossy(&self.buf).to_string(),
-                    self.buf.len(),
-                )
-            }
-        };
-        self.buf = self.buf[consumed..].to_vec();
-        data
+        }
+
+        result
     }
 }
 
@@ -274,6 +298,9 @@ pub async fn handle_focus(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Stale incomplete bytes in the decoder would poison
+                        // the next chunk — the continuation was in a dropped event.
+                        decoder.clear();
                         warn!(instance = %instance_id_output, "PTY output lagged by {} messages", n);
                         // Notify client about the lag so UI can indicate data loss
                         if tx_output.send(ServerMessage::OutputLagged {
@@ -526,5 +553,70 @@ mod tests {
         assert_eq!(dec.decode(b"chunk1 "), "chunk1 ");
         assert_eq!(dec.decode(b"chunk2 "), "chunk2 ");
         assert_eq!(dec.decode("├──┤".as_bytes()), "├──┤");
+    }
+
+    #[test]
+    fn decode_invalid_byte_0xff() {
+        // 0xFF is never valid in UTF-8 — should produce U+FFFD
+        let mut dec = Utf8StreamDecoder::new();
+        let r = dec.decode(&[0xFF, b'A', b'B']);
+        assert_eq!(r, "\u{FFFD}AB");
+    }
+
+    #[test]
+    fn decode_stale_buffer_after_missed_clear() {
+        // Simulates broadcast lag where decoder.clear() wasn't called:
+        // 2 bytes of ─ buffered, continuation lost, next chunk starts fresh.
+        let mut dec = Utf8StreamDecoder::new();
+        let r1 = dec.decode(&[0xE2, 0x94]);
+        assert_eq!(r1, ""); // incomplete, buffered
+
+        // Continuation byte was in a dropped broadcast message.
+        // Next chunk starts with escape sequences.
+        let mut new_data = Vec::new();
+        new_data.extend_from_slice(b"\x1b[H\x1b[2J");
+        new_data.extend_from_slice("───".as_bytes());
+        let r2 = dec.decode(&new_data);
+
+        // Stale bytes produce U+FFFD, then valid content follows
+        assert!(r2.starts_with("\u{FFFD}"));
+        assert!(r2.contains("\x1b[H\x1b[2J"));
+        assert!(r2.contains("───"));
+    }
+
+    #[test]
+    fn decode_incomplete_lead_then_noncontination() {
+        // Lead byte buffered, next chunk doesn't continue the sequence
+        let mut dec = Utf8StreamDecoder::new();
+        let r1 = dec.decode(&[0xE2]); // 3-byte lead
+        assert_eq!(r1, "");
+        let r2 = dec.decode(b"hello");
+        assert_eq!(r2, "\u{FFFD}hello");
+    }
+
+    #[test]
+    fn decode_incomplete_4byte_then_noncontination() {
+        // 3 bytes of a 4-byte char buffered, then ASCII
+        let mut dec = Utf8StreamDecoder::new();
+        let crab = "🦀".as_bytes(); // [0xF0, 0x9F, 0xA6, 0x80]
+        let r1 = dec.decode(&crab[..3]);
+        assert_eq!(r1, "");
+        let r2 = dec.decode(b"ok");
+        assert_eq!(r2, "\u{FFFD}ok");
+    }
+
+    #[test]
+    fn decode_multiple_invalid_sequences() {
+        // Two interrupted sequences in a row
+        let mut dec = Utf8StreamDecoder::new();
+        // Buffer 2 bytes of ─
+        dec.decode(&[0xE2, 0x94]);
+        // Next: another lead byte (0xE2) then ASCII 'x'
+        // Buffer becomes [0xE2, 0x94, 0xE2, 0x78]
+        // [0xE2, 0x94] invalid (0xE2 not continuation) → U+FFFD
+        // [0xE2] invalid (0x78 not continuation) → U+FFFD
+        // [0x78] = "x"
+        let r = dec.decode(&[0xE2, b'x']);
+        assert_eq!(r, "\u{FFFD}\u{FFFD}x");
     }
 }
