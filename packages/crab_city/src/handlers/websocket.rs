@@ -40,8 +40,16 @@ pub async fn websocket_handler(
         None
     };
 
+    let global_state_manager = state.global_state_manager.clone();
+
     ws.on_upgrade(move |socket| {
-        crate::websocket_proxy::handle_proxy(socket, instance_id, handle, convo_config)
+        crate::websocket_proxy::handle_proxy(
+            socket,
+            instance_id,
+            handle,
+            convo_config,
+            Some(global_state_manager),
+        )
     })
 }
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
-	import { sendInput, sendResize, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence } from '$lib/stores/websocket';
+	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence } from '$lib/stores/websocket';
 	import { currentTerminalHasOutput, consumeTerminalOutput } from '$lib/stores/terminal';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
@@ -147,6 +147,11 @@
 
 				// Now that terminal is ready, set up output subscription
 				setupOutputSubscription();
+
+				// Register this terminal in server-side dimension negotiation
+				if (terminal) {
+					sendTerminalVisible(terminal.rows, terminal.cols);
+				}
 			});
 
 			terminal.onData((data) => {
@@ -173,7 +178,7 @@
 			});
 
 			resizeObserver = new ResizeObserver(() => {
-				if (fitAddon && terminal && isReady) {
+				if (fitAddon && terminal && isReady && document.visibilityState === 'visible') {
 					fitAddon.fit();
 					sendResize(terminal.rows, terminal.cols);
 				}
@@ -196,6 +201,9 @@
 	});
 
 	onDestroy(() => {
+		// Unregister from server-side dimension negotiation before cleanup
+		sendTerminalHidden();
+
 		themeUnsubscribe();
 		outputUnsubscribe?.();
 		resizeObserver?.disconnect();

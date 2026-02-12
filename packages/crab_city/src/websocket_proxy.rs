@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use claude_convo::{ClaudeConvo, ConversationWatcher};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
@@ -10,6 +11,8 @@ use crate::inference::{
     ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
 };
 use crate::instance_actor::InstanceHandle;
+use crate::virtual_terminal::ClientType;
+use crate::ws::GlobalStateManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -86,11 +89,15 @@ pub async fn handle_proxy(
     instance_id: String,
     handle: InstanceHandle,
     convo_config: Option<ConversationConfig>,
+    _global_state_manager: Option<Arc<GlobalStateManager>>,
 ) {
     debug!(
         "WebSocket connection established for instance {}",
         instance_id
     );
+
+    // Generate a unique connection ID for VT dimension negotiation
+    let connection_id = uuid::Uuid::new_v4().to_string();
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
@@ -408,6 +415,7 @@ pub async fn handle_proxy(
     // Task to forward WebSocket input to PTY (and signal state manager)
     let handle_clone = handle.clone();
     let signal_tx_input = signal_tx.clone();
+    let connection_id_input = connection_id.clone();
     let input_task = async move {
         while let Some(msg) = ws_receiver.next().await {
             match msg {
@@ -434,7 +442,15 @@ pub async fn handle_proxy(
                                 }
                             }
                             WsMessage::Resize { rows, cols } => {
-                                if let Err(e) = handle_clone.resize(rows, cols).await {
+                                if let Err(e) = handle_clone
+                                    .update_viewport_and_resize(
+                                        &connection_id_input,
+                                        rows,
+                                        cols,
+                                        ClientType::Terminal,
+                                    )
+                                    .await
+                                {
                                     error!("Failed to resize PTY: {}", e);
                                 }
                             }
@@ -477,6 +493,14 @@ pub async fn handle_proxy(
             _ = input_task => debug!("Input task ended"),
         }
         let _ = convo_task.await;
+    }
+
+    // Clean up VirtualTerminal viewport on disconnect
+    if let Err(e) = handle.remove_client_and_resize(&connection_id).await {
+        warn!(
+            "Failed to resize PTY for {} on CLI disconnect: {}",
+            instance_id, e
+        );
     }
 
     // Clean up state manager

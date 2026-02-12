@@ -76,6 +76,9 @@ crab_city_ui = { path = "../crab_city_ui/crate", optional = true }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 
+# Virtual terminal emulator (for screen buffer / keyframe snapshots)
+vt100 = "0.15"
+
 # TUI picker
 ratatui = "0.29"
 ignore = "0.4.25"

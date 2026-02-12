@@ -15,6 +15,8 @@ use crate::instance_manager::InstanceManager;
 use crate::metrics::ServerMetrics;
 use crate::repository::ConversationRepository;
 
+use crate::virtual_terminal::ClientType;
+
 use super::focus::{handle_focus, send_conversation_since};
 use super::protocol::{
     BackpressureStats, ClientMessage, DEFAULT_MAX_HISTORY_BYTES, PresenceUser, ServerMessage,
@@ -390,11 +392,45 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
-                                // Use instance_id from the message, NOT focused_clone
-                                // This ensures resize goes to the correct instance
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await {
-                                    if let Err(e) = handle.resize(rows, cols).await {
-                                        // Resize errors are less critical, just log
+                                    if let Err(e) = handle
+                                        .update_viewport_and_resize(
+                                            &connection_id_clone,
+                                            rows,
+                                            cols,
+                                            ClientType::Web,
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
+                                    }
+                                }
+                            }
+                            ClientMessage::TerminalVisible {
+                                instance_id,
+                                rows,
+                                cols,
+                            } => {
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
+                                    if let Err(e) = handle
+                                        .update_viewport_and_resize(
+                                            &connection_id_clone,
+                                            rows,
+                                            cols,
+                                            ClientType::Web,
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
+                                    }
+                                }
+                            }
+                            ClientMessage::TerminalHidden { instance_id } => {
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
+                                    if let Err(e) = handle
+                                        .set_active_and_resize(&connection_id_clone, false)
+                                        .await
+                                    {
                                         warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                     }
                                 }
@@ -628,6 +664,18 @@ pub async fn handle_multiplexed_ws(
         _ = lifecycle_task => debug!("Lifecycle task ended"),
         _ = sender_task => debug!("Sender task ended"),
         _ = input_task => debug!("Input task ended"),
+    }
+
+    // Clean up VirtualTerminal viewports on disconnect
+    if let Some(focused_id) = focused_instance.read().await.clone() {
+        if let Some(handle) = state_manager.get_handle(&focused_id).await {
+            if let Err(e) = handle.remove_client_and_resize(&connection_id).await {
+                warn!(
+                    "Failed to resize PTY for {} on disconnect: {}",
+                    focused_id, e
+                );
+            }
+        }
     }
 
     // Clean up presence and terminal locks on disconnect

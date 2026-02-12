@@ -58,6 +58,7 @@ rust_binary(
         "@crate_index//:tree-sitter-toml-ng",
         "@crate_index//:tree-sitter-typescript",
         "@crate_index//:uuid",
+        "@crate_index//:vt100",
         "@crate_index//:walkdir",
     ],
 )
@@ -118,6 +119,7 @@ rust_binary(
         "@crate_index//:tree-sitter-toml-ng",
         "@crate_index//:tree-sitter-typescript",
         "@crate_index//:uuid",
+        "@crate_index//:vt100",
         "@crate_index//:walkdir",
     ],
 )

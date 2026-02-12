@@ -138,6 +138,14 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         topic: Option<String>,
     },
+    /// Terminal panel became visible — include this client in dimension negotiation
+    TerminalVisible {
+        instance_id: String,
+        rows: u16,
+        cols: u16,
+    },
+    /// Terminal panel was hidden — exclude this client from dimension negotiation
+    TerminalHidden { instance_id: String },
     /// Request paginated chat history
     ChatHistory {
         scope: String,
@@ -842,6 +850,46 @@ mod tests {
     }
 
     #[test]
+    fn test_client_message_terminal_visible_roundtrip() {
+        let original = ClientMessage::TerminalVisible {
+            instance_id: "inst-1".to_string(),
+            rows: 40,
+            cols: 120,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+
+        match decoded {
+            ClientMessage::TerminalVisible {
+                instance_id,
+                rows,
+                cols,
+            } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(rows, 40);
+                assert_eq!(cols, 120);
+            }
+            _ => panic!("Expected TerminalVisible message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_terminal_hidden_roundtrip() {
+        let original = ClientMessage::TerminalHidden {
+            instance_id: "inst-1".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+
+        match decoded {
+            ClientMessage::TerminalHidden { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected TerminalHidden message"),
+        }
+    }
+
+    #[test]
     fn test_default_max_history_bytes_constant() {
         assert_eq!(DEFAULT_MAX_HISTORY_BYTES, 64 * 1024);
     }
@@ -881,6 +929,38 @@ mod tests {
                 }
                 _ => panic!("Wrong message type"),
             }
+        }
+    }
+
+    #[test]
+    fn test_client_message_terminal_visible_from_raw_json() {
+        let json = r#"{"type":"TerminalVisible","instance_id":"inst-1","rows":40,"cols":120}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+
+        match msg {
+            ClientMessage::TerminalVisible {
+                instance_id,
+                rows,
+                cols,
+            } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(rows, 40);
+                assert_eq!(cols, 120);
+            }
+            _ => panic!("Expected TerminalVisible message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_terminal_hidden_from_raw_json() {
+        let json = r#"{"type":"TerminalHidden","instance_id":"inst-1"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+
+        match msg {
+            ClientMessage::TerminalHidden { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected TerminalHidden message"),
         }
     }
 

@@ -8,6 +8,7 @@ use uuid::Uuid;
 use pty_manager::{PtyConfig, PtyHandle, PtyOutput};
 
 use crate::inference::ClaudeState;
+use crate::virtual_terminal::{ClientType, VirtualTerminal};
 
 /// Commands that can be sent to an instance actor
 #[derive(Debug)]
@@ -51,6 +52,28 @@ pub enum InstanceCommand {
     SetCustomName {
         name: Option<String>,
         respond_to: oneshot::Sender<()>,
+    },
+    /// Update a client's viewport in the VirtualTerminal.
+    /// Returns Some((rows, cols)) if effective dims changed.
+    UpdateViewport {
+        connection_id: String,
+        rows: u16,
+        cols: u16,
+        client_type: ClientType,
+        respond_to: oneshot::Sender<Option<(u16, u16)>>,
+    },
+    /// Set a client's terminal visibility.
+    /// Returns Some((rows, cols)) if effective dims changed.
+    SetClientActive {
+        connection_id: String,
+        active: bool,
+        respond_to: oneshot::Sender<Option<(u16, u16)>>,
+    },
+    /// Remove a client from the VirtualTerminal.
+    /// Returns Some((rows, cols)) if effective dims changed.
+    RemoveClient {
+        connection_id: String,
+        respond_to: oneshot::Sender<Option<(u16, u16)>>,
     },
     Stop {
         respond_to: oneshot::Sender<Result<()>>,
@@ -217,6 +240,91 @@ impl InstanceHandle {
         Ok(())
     }
 
+    /// Update a client's viewport in the VirtualTerminal.
+    /// Returns Some((rows, cols)) if the effective dimensions changed.
+    pub async fn update_viewport(
+        &self,
+        connection_id: &str,
+        rows: u16,
+        cols: u16,
+        client_type: ClientType,
+    ) -> Option<(u16, u16)> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(InstanceCommand::UpdateViewport {
+                connection_id: connection_id.to_string(),
+                rows,
+                cols,
+                client_type,
+                respond_to: tx,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// Set a client's terminal visibility.
+    /// Returns Some((rows, cols)) if the effective dimensions changed.
+    pub async fn set_client_active(&self, connection_id: &str, active: bool) -> Option<(u16, u16)> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(InstanceCommand::SetClientActive {
+                connection_id: connection_id.to_string(),
+                active,
+                respond_to: tx,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// Remove a client from the VirtualTerminal.
+    /// Returns Some((rows, cols)) if the effective dimensions changed.
+    pub async fn remove_client(&self, connection_id: &str) -> Option<(u16, u16)> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(InstanceCommand::RemoveClient {
+                connection_id: connection_id.to_string(),
+                respond_to: tx,
+            })
+            .await
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// Update viewport and resize PTY if effective dimensions changed.
+    pub async fn update_viewport_and_resize(
+        &self,
+        connection_id: &str,
+        rows: u16,
+        cols: u16,
+        client_type: ClientType,
+    ) -> Result<()> {
+        if let Some((eff_rows, eff_cols)) = self
+            .update_viewport(connection_id, rows, cols, client_type)
+            .await
+        {
+            self.resize(eff_rows, eff_cols).await?;
+        }
+        Ok(())
+    }
+
+    /// Set client active/inactive and resize PTY if effective dimensions changed.
+    pub async fn set_active_and_resize(&self, connection_id: &str, active: bool) -> Result<()> {
+        if let Some((eff_rows, eff_cols)) = self.set_client_active(connection_id, active).await {
+            self.resize(eff_rows, eff_cols).await?;
+        }
+        Ok(())
+    }
+
+    /// Remove client and resize PTY if effective dimensions changed.
+    pub async fn remove_client_and_resize(&self, connection_id: &str) -> Result<()> {
+        if let Some((eff_rows, eff_cols)) = self.remove_client(connection_id).await {
+            self.resize(eff_rows, eff_cols).await?;
+        }
+        Ok(())
+    }
+
     pub fn id(&self) -> String {
         self.info.blocking_read().id.clone()
     }
@@ -237,12 +345,68 @@ pub struct SpawnOptions {
     pub max_buffer_bytes: usize,
 }
 
+/// Handle VT-related commands.
+/// Returns `None` if handled, `Some(cmd)` for PTY/metadata commands.
+async fn handle_vt_command(
+    vt: &RwLock<VirtualTerminal>,
+    cmd: InstanceCommand,
+) -> Option<InstanceCommand> {
+    match cmd {
+        InstanceCommand::UpdateViewport {
+            connection_id,
+            rows,
+            cols,
+            client_type,
+            respond_to,
+        } => {
+            let mut vt = vt.write().await;
+            let result = vt.update_viewport(&connection_id, rows, cols, client_type);
+            let _ = respond_to.send(result);
+            None
+        }
+        InstanceCommand::SetClientActive {
+            connection_id,
+            active,
+            respond_to,
+        } => {
+            let mut vt = vt.write().await;
+            let result = vt.set_active(&connection_id, active);
+            let _ = respond_to.send(result);
+            None
+        }
+        InstanceCommand::RemoveClient {
+            connection_id,
+            respond_to,
+        } => {
+            let mut vt = vt.write().await;
+            let result = vt.remove_client(&connection_id);
+            let _ = respond_to.send(result);
+            None
+        }
+        InstanceCommand::GetRecentOutput {
+            max_bytes,
+            respond_to,
+        } => {
+            let mut vt = vt.write().await;
+            let replay = vt.replay();
+            let data = if replay.len() > max_bytes {
+                replay[replay.len() - max_bytes..].to_vec()
+            } else {
+                replay
+            };
+            let _ = respond_to.send(vec![String::from_utf8_lossy(&data).to_string()]);
+            None
+        }
+        other => Some(other),
+    }
+}
+
 /// The instance actor that manages a single PTY session
 struct InstanceActor {
     info: Arc<RwLock<InstanceInfo>>,
     pty: PtyHandle,
     receiver: mpsc::Receiver<InstanceCommand>,
-    output_buffer: Arc<RwLock<Vec<String>>>,
+    virtual_terminal: Arc<RwLock<VirtualTerminal>>,
 }
 
 impl InstanceActor {
@@ -291,38 +455,26 @@ impl InstanceActor {
         }));
 
         let (sender, receiver) = mpsc::channel(32);
-        let output_buffer = Arc::new(RwLock::new(Vec::new()));
+        let virtual_terminal = Arc::new(RwLock::new(VirtualTerminal::new(
+            24,
+            80,
+            opts.max_buffer_bytes,
+        )));
 
         let actor = InstanceActor {
             info: info.clone(),
             pty: pty.clone(),
             receiver,
-            output_buffer: output_buffer.clone(),
+            virtual_terminal: virtual_terminal.clone(),
         };
 
-        // Start the output collection task - store raw output chunks
+        // Start the output collection task - feed PTY output to VirtualTerminal
         let mut output_rx = pty.subscribe();
-        let buffer_clone = output_buffer.clone();
-        let max_buffer = opts.max_buffer_bytes;
+        let vt_clone = virtual_terminal.clone();
         tokio::spawn(async move {
-            let mut total_size = 0usize;
-
             while let Ok(event) = output_rx.recv().await {
-                let mut buffer = buffer_clone.write().await;
-
-                // Store complete chunks (keep raw formatting)
-                // Convert bytes to string for storage
-                let data_str = String::from_utf8_lossy(&event.data).to_string();
-                total_size += data_str.len();
-                buffer.push(data_str);
-
-                // Limit by total size rather than chunk count
-                while total_size > max_buffer && !buffer.is_empty() {
-                    if let Some(removed) = buffer.first() {
-                        total_size = total_size.saturating_sub(removed.len());
-                    }
-                    buffer.remove(0);
-                }
+                let mut vt = vt_clone.write().await;
+                vt.process_output(&event.data);
             }
         });
 
@@ -339,6 +491,10 @@ impl InstanceActor {
         debug!("Instance actor '{}' started", name);
 
         while let Some(cmd) = self.receiver.recv().await {
+            let cmd = match handle_vt_command(&self.virtual_terminal, cmd).await {
+                Some(cmd) => cmd,
+                None => continue,
+            };
             match cmd {
                 InstanceCommand::GetInfo { respond_to } => {
                     let _ = respond_to.send(self.info.read().await.clone());
@@ -370,30 +526,6 @@ impl InstanceActor {
                 InstanceCommand::SubscribeOutput { respond_to } => {
                     let rx = self.pty.subscribe();
                     let _ = respond_to.send(rx);
-                }
-
-                InstanceCommand::GetRecentOutput {
-                    max_bytes,
-                    respond_to,
-                } => {
-                    let buffer = self.output_buffer.read().await;
-
-                    // Walk backwards from end until we hit max_bytes
-                    let mut total_bytes = 0usize;
-                    let mut start_idx = buffer.len();
-
-                    for (i, chunk) in buffer.iter().enumerate().rev() {
-                        let chunk_len = chunk.len();
-                        if total_bytes + chunk_len > max_bytes {
-                            break;
-                        }
-                        total_bytes += chunk_len;
-                        start_idx = i;
-                    }
-
-                    // Return chunks from start_idx to end
-                    let recent: Vec<String> = buffer[start_idx..].to_vec();
-                    let _ = respond_to.send(recent);
                 }
 
                 InstanceCommand::SetSessionId {
@@ -447,6 +579,7 @@ impl InstanceActor {
                     let _ = respond_to.send(result);
                     break; // Exit the actor loop
                 }
+                _ => {} // VT commands handled by handle_vt_command
             }
         }
 
@@ -457,4 +590,172 @@ impl InstanceActor {
 /// Create a new instance and return its handle
 pub async fn create_instance(opts: SpawnOptions) -> Result<InstanceHandle> {
     InstanceActor::spawn(opts).await
+}
+
+#[cfg(test)]
+impl InstanceHandle {
+    /// Spawn a test actor backed by a VirtualTerminal only (no real PTY).
+    /// Returns the handle and a reference to the VT for injecting output.
+    fn spawn_test(
+        rows: u16,
+        cols: u16,
+        max_delta_bytes: usize,
+    ) -> (Self, Arc<RwLock<VirtualTerminal>>) {
+        let info = Arc::new(RwLock::new(InstanceInfo {
+            id: "test-instance".to_string(),
+            name: "test".to_string(),
+            custom_name: None,
+            command: "echo test".to_string(),
+            working_dir: "/tmp".to_string(),
+            running: true,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            session_id: None,
+            claude_state: None,
+        }));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let vt = Arc::new(RwLock::new(VirtualTerminal::new(
+            rows,
+            cols,
+            max_delta_bytes,
+        )));
+        let vt_actor = vt.clone();
+        tokio::spawn(async move {
+            while let Some(cmd) = receiver.recv().await {
+                let cmd = match handle_vt_command(&vt_actor, cmd).await {
+                    Some(cmd) => cmd,
+                    None => continue,
+                };
+                match cmd {
+                    InstanceCommand::Resize { respond_to, .. } => {
+                        let _ = respond_to.send(Ok(()));
+                    }
+                    InstanceCommand::Stop { respond_to } => {
+                        let _ = respond_to.send(Ok(()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        (InstanceHandle { sender, info }, vt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_handle_update_viewport() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        let result = handle
+            .update_viewport("client-1", 40, 120, ClientType::Web)
+            .await;
+        assert_eq!(result, Some((40, 120)));
+
+        // Same dims again → no change
+        let result = handle
+            .update_viewport("client-1", 40, 120, ClientType::Web)
+            .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_set_client_active() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        handle
+            .update_viewport("client-1", 40, 120, ClientType::Web)
+            .await;
+        handle
+            .update_viewport("client-2", 24, 80, ClientType::Terminal)
+            .await;
+
+        // Hide smaller client → dims go up
+        let result = handle.set_client_active("client-2", false).await;
+        assert_eq!(result, Some((40, 120)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_remove_client() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        handle
+            .update_viewport("client-1", 40, 120, ClientType::Web)
+            .await;
+        handle
+            .update_viewport("client-2", 24, 80, ClientType::Terminal)
+            .await;
+
+        let result = handle.remove_client("client-2").await;
+        assert_eq!(result, Some((40, 120)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_recent_output_replay() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // Inject output directly into the VT
+        vt.write()
+            .await
+            .process_output(b"Hello from test\r\nLine 2");
+
+        let output = handle.get_recent_output(4096).await;
+        assert_eq!(output.len(), 1);
+        assert!(output[0].contains("Hello from test"));
+        assert!(output[0].contains("Line 2"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_get_recent_output_truncation() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        vt.write().await.process_output("A".repeat(200).as_bytes());
+
+        let full = handle.get_recent_output(100_000).await;
+        let full_len = full[0].len();
+        assert!(full_len > 50);
+
+        let truncated = handle.get_recent_output(50).await;
+        assert!(truncated[0].len() <= 50);
+        assert!(truncated[0].len() < full_len);
+    }
+
+    #[tokio::test]
+    async fn test_update_viewport_and_resize() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // Dims change triggers resize (no-op in test actor)
+        let result = handle
+            .update_viewport_and_resize("conn-1", 40, 120, ClientType::Web)
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_active_and_resize() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        handle
+            .update_viewport("conn-1", 40, 120, ClientType::Web)
+            .await;
+        handle
+            .update_viewport("conn-2", 24, 80, ClientType::Terminal)
+            .await;
+
+        // Deactivate smaller → resize to larger
+        let result = handle.set_active_and_resize("conn-2", false).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_remove_client_and_resize_no_change() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // Remove nonexistent → no dims change, no resize, still Ok
+        let result = handle.remove_client_and_resize("nonexistent").await;
+        assert!(result.is_ok());
+    }
 }

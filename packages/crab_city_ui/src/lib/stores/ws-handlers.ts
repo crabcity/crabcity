@@ -26,7 +26,7 @@ import {
 // =============================================================================
 
 export interface MuxClientMessage {
-	type: 'Focus' | 'Input' | 'Resize' | 'SessionSelect' | 'ConversationSync' | 'Lobby' | 'TerminalLockRequest' | 'TerminalLockRelease' | 'ChatSend' | 'ChatHistory' | 'ChatForward' | 'ChatTopics';
+	type: 'Focus' | 'Input' | 'Resize' | 'SessionSelect' | 'ConversationSync' | 'Lobby' | 'TerminalLockRequest' | 'TerminalLockRelease' | 'ChatSend' | 'ChatHistory' | 'ChatForward' | 'ChatTopics' | 'TerminalVisible' | 'TerminalHidden';
 	instance_id?: string;
 	since_uuid?: string;
 	data?: string;

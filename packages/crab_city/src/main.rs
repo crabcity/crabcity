@@ -37,6 +37,7 @@ mod persistence;
 mod repository;
 mod terminal;
 mod views;
+mod virtual_terminal;
 pub mod websocket_proxy;
 mod ws;
 

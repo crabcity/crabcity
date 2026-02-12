@@ -258,6 +258,10 @@ crate_index.spec(
     version = "0.29",
 )
 crate_index.spec(
+    package = "vt100",
+    version = "0.15",
+)
+crate_index.spec(
     package = "ratatui",
     version = "0.29",
 )
