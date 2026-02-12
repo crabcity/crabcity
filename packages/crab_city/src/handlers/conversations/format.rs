@@ -203,7 +203,8 @@ pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Valu
                                                     .and_then(|c| c.as_str())
                                                     .unwrap_or("");
                                                 let preview = if tool_content.len() > 100 {
-                                                    format!("{}...", &tool_content[..100])
+                                                    let end = tool_content.floor_char_boundary(100);
+                                                    format!("{}...", &tool_content[..end])
                                                 } else {
                                                     tool_content.to_string()
                                                 };
@@ -228,7 +229,8 @@ pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Valu
                     }
 
                     if content.len() > 500 {
-                        content = format!("{}...", &content[..500]);
+                        let end = content.floor_char_boundary(500);
+                        content = format!("{}...", &content[..end]);
                     }
 
                     let empty_tools: Vec<String> = vec![];
@@ -241,7 +243,8 @@ pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Valu
                         "entry_type": "progress",
                         "agent_id": agent_id,
                         "agent_prompt": if prompt.len() > 200 {
-                            format!("{}...", &prompt[..200])
+                            let end = prompt.floor_char_boundary(200);
+                            format!("{}...", &prompt[..end])
                         } else {
                             prompt.to_string()
                         },
@@ -273,7 +276,8 @@ pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Valu
         obj.insert("tool_result".to_string(), tool_result.clone());
         if let Some(content) = tool_result.get("content").and_then(|c| c.as_str()) {
             let preview = if content.len() > 200 {
-                format!("{}...", &content[..200])
+                let end = content.floor_char_boundary(200);
+                format!("{}...", &content[..end])
             } else {
                 content.to_string()
             };
