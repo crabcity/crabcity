@@ -84,6 +84,158 @@ fn find_candidate_sessions(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_message_output_serde() {
+        let msg = WsMessage::Output {
+            data: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "Output");
+        assert_eq!(json["data"], "hello");
+        let rt: WsMessage = serde_json::from_value(json).unwrap();
+        match rt {
+            WsMessage::Output { data } => assert_eq!(data, "hello"),
+            _ => panic!("Expected Output"),
+        }
+    }
+
+    #[test]
+    fn ws_message_input_serde() {
+        let msg = WsMessage::Input {
+            data: "ls\n".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "Input");
+        assert_eq!(json["data"], "ls\n");
+    }
+
+    #[test]
+    fn ws_message_resize_serde() {
+        let msg = WsMessage::Resize { rows: 24, cols: 80 };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "Resize");
+        assert_eq!(json["rows"], 24);
+        assert_eq!(json["cols"], 80);
+        let rt: WsMessage = serde_json::from_value(json).unwrap();
+        match rt {
+            WsMessage::Resize { rows, cols } => {
+                assert_eq!(rows, 24);
+                assert_eq!(cols, 80);
+            }
+            _ => panic!("Expected Resize"),
+        }
+    }
+
+    #[test]
+    fn ws_message_conversation_update_serde() {
+        let turns = vec![serde_json::json!({"role": "user", "text": "hi"})];
+        let msg = WsMessage::ConversationUpdate {
+            turns: turns.clone(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "ConversationUpdate");
+        assert_eq!(json["turns"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ws_message_conversation_full_serde() {
+        let msg = WsMessage::ConversationFull { turns: vec![] };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "ConversationFull");
+        assert!(json["turns"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ws_message_state_change_serde() {
+        let msg = WsMessage::StateChange {
+            state: ClaudeState::Idle,
+            stale: false,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "StateChange");
+        // stale=false should be skipped by skip_serializing_if
+        assert!(json.get("stale").is_none());
+    }
+
+    #[test]
+    fn ws_message_state_change_stale_serde() {
+        let msg = WsMessage::StateChange {
+            state: ClaudeState::Thinking,
+            stale: true,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["stale"], true);
+    }
+
+    #[test]
+    fn ws_message_session_ambiguous_serde() {
+        let msg = WsMessage::SessionAmbiguous {
+            candidates: vec![SessionCandidate {
+                session_id: "sess-1".to_string(),
+                started_at: Some("2024-01-01T00:00:00Z".to_string()),
+                message_count: 5,
+                preview: Some("Hello Claude".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "SessionAmbiguous");
+        assert_eq!(json["candidates"][0]["session_id"], "sess-1");
+        assert_eq!(json["candidates"][0]["message_count"], 5);
+        assert_eq!(json["candidates"][0]["preview"], "Hello Claude");
+    }
+
+    #[test]
+    fn ws_message_session_select_serde() {
+        let msg = WsMessage::SessionSelect {
+            session_id: "sess-2".to_string(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "SessionSelect");
+        assert_eq!(json["session_id"], "sess-2");
+    }
+
+    #[test]
+    fn session_candidate_none_fields() {
+        let c = SessionCandidate {
+            session_id: "s".to_string(),
+            started_at: None,
+            message_count: 0,
+            preview: None,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json["started_at"].is_null());
+        assert!(json["preview"].is_null());
+        assert_eq!(json["message_count"], 0);
+    }
+
+    #[test]
+    fn ws_message_roundtrip_all_variants() {
+        let variants: Vec<WsMessage> = vec![
+            WsMessage::Output { data: "x".into() },
+            WsMessage::Input { data: "y".into() },
+            WsMessage::Resize { rows: 10, cols: 20 },
+            WsMessage::ConversationUpdate { turns: vec![] },
+            WsMessage::ConversationFull { turns: vec![] },
+            WsMessage::StateChange {
+                state: ClaudeState::Idle,
+                stale: false,
+            },
+            WsMessage::SessionAmbiguous { candidates: vec![] },
+            WsMessage::SessionSelect {
+                session_id: "s".into(),
+            },
+        ];
+        for msg in variants {
+            let json_str = serde_json::to_string(&msg).unwrap();
+            let _: WsMessage = serde_json::from_str(&json_str).unwrap();
+        }
+    }
+}
+
 pub async fn handle_proxy(
     socket: WebSocket,
     instance_id: String,

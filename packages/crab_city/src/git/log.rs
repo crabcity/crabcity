@@ -51,6 +51,14 @@ pub async fn get_git_log(
         }
     };
 
+    Json(parse_git_log_output(&output, limit)).into_response()
+}
+
+/// Parse the custom-formatted git log output into structured commits.
+///
+/// Format per commit: `%H\0%h\0%an\0%ae\0%at\0%s\0%b\x1e%D\x1f`
+/// Records are separated by `\x1f`, body/refs by `\x1e`, fields by `\0`.
+pub fn parse_git_log_output(output: &str, limit: i64) -> GitLogResponse {
     let mut commits = Vec::new();
     // Each record ends with \x1f (unit separator)
     for record in output.split('\x1f') {
@@ -90,5 +98,191 @@ pub async fn get_git_log(
     let has_more = commits.len() as i64 > limit;
     commits.truncate(limit as usize);
 
-    Json(GitLogResponse { commits, has_more }).into_response()
+    GitLogResponse { commits, has_more }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_record(
+        hash: &str,
+        short: &str,
+        name: &str,
+        email: &str,
+        ts: &str,
+        msg: &str,
+        body: &str,
+        refs: &str,
+    ) -> String {
+        format!(
+            "{}\0{}\0{}\0{}\0{}\0{}\0{}\x1e{}\x1f",
+            hash, short, name, email, ts, msg, body, refs
+        )
+    }
+
+    #[test]
+    fn test_parse_empty_output() {
+        let result = parse_git_log_output("", 50);
+        assert!(result.commits.is_empty());
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn test_parse_single_commit() {
+        let output = make_record(
+            "abc123def456",
+            "abc123",
+            "Alice",
+            "alice@example.com",
+            "1700000000",
+            "Fix the thing",
+            "Detailed body here",
+            "HEAD -> main",
+        );
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(result.commits.len(), 1);
+        let c = &result.commits[0];
+        assert_eq!(c.hash, "abc123def456");
+        assert_eq!(c.short_hash, "abc123");
+        assert_eq!(c.author_name, "Alice");
+        assert_eq!(c.author_email, "alice@example.com");
+        assert_eq!(c.date, 1700000000);
+        assert_eq!(c.message, "Fix the thing");
+        assert_eq!(c.body, "Detailed body here");
+        assert_eq!(c.refs, vec!["HEAD -> main"]);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn test_parse_multiple_commits() {
+        let mut output = make_record("aaa", "aa", "Alice", "a@x", "100", "First", "", "");
+        output += &make_record("bbb", "bb", "Bob", "b@x", "200", "Second", "", "");
+        output += &make_record("ccc", "cc", "Carol", "c@x", "300", "Third", "", "");
+
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(result.commits.len(), 3);
+        assert_eq!(result.commits[0].message, "First");
+        assert_eq!(result.commits[2].message, "Third");
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn test_has_more_when_exceeds_limit() {
+        let mut output = String::new();
+        for i in 0..4 {
+            output += &make_record(
+                &format!("hash{i}"),
+                &format!("h{i}"),
+                "A",
+                "a@x",
+                "100",
+                &format!("msg{i}"),
+                "",
+                "",
+            );
+        }
+
+        let result = parse_git_log_output(&output, 3);
+        assert_eq!(result.commits.len(), 3);
+        assert!(result.has_more);
+    }
+
+    #[test]
+    fn test_no_has_more_at_exact_limit() {
+        let mut output = String::new();
+        for i in 0..3 {
+            output += &make_record(
+                &format!("hash{i}"),
+                &format!("h{i}"),
+                "A",
+                "a@x",
+                "100",
+                &format!("msg{i}"),
+                "",
+                "",
+            );
+        }
+
+        let result = parse_git_log_output(&output, 3);
+        assert_eq!(result.commits.len(), 3);
+        assert!(!result.has_more);
+    }
+
+    #[test]
+    fn test_parse_multiple_refs() {
+        let output = make_record(
+            "aaa",
+            "aa",
+            "Alice",
+            "a@x",
+            "100",
+            "Merge",
+            "",
+            "HEAD -> main, origin/main, tag: v1.0",
+        );
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(
+            result.commits[0].refs,
+            vec!["HEAD -> main", "origin/main", "tag: v1.0"]
+        );
+    }
+
+    #[test]
+    fn test_parse_no_refs() {
+        let output = make_record("aaa", "aa", "Alice", "a@x", "100", "Commit", "", "");
+        let result = parse_git_log_output(&output, 50);
+        assert!(result.commits[0].refs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_invalid_date() {
+        let output = make_record(
+            "aaa",
+            "aa",
+            "Alice",
+            "a@x",
+            "not_a_number",
+            "Commit",
+            "",
+            "",
+        );
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(result.commits[0].date, 0);
+    }
+
+    #[test]
+    fn test_parse_empty_body() {
+        let output = make_record("aaa", "aa", "Alice", "a@x", "100", "Commit", "", "");
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(result.commits[0].body, "");
+    }
+
+    #[test]
+    fn test_parse_multiline_body() {
+        let output = make_record(
+            "aaa",
+            "aa",
+            "Alice",
+            "a@x",
+            "100",
+            "Commit",
+            "Line 1\nLine 2\nLine 3",
+            "",
+        );
+        let result = parse_git_log_output(&output, 50);
+        assert!(result.commits[0].body.contains("Line 1"));
+        assert!(result.commits[0].body.contains("Line 3"));
+    }
+
+    #[test]
+    fn test_skips_malformed_records() {
+        // A record with too few fields (only 3 NUL-separated parts)
+        let bad = "aaa\0bb\0cc\x1erefs\x1f";
+        let good = make_record("ddd", "dd", "Dave", "d@x", "100", "Good", "", "");
+        let output = format!("{bad}{good}");
+        let result = parse_git_log_output(&output, 50);
+        assert_eq!(result.commits.len(), 1);
+        assert_eq!(result.commits[0].hash, "ddd");
+    }
 }

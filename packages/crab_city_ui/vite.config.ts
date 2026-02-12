@@ -1,12 +1,15 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 import { readFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '..', '..');
 
 function getDaemonPort(): string {
 	try {
-		const portFile = join(homedir(), '.crabcity', 'state', 'daemon.port');
+		const portFile = join(projectRoot, 'local', 'state', 'dev', 'daemon.port');
 		return readFileSync(portFile, 'utf-8').trim();
 	} catch {
 		return '3000';

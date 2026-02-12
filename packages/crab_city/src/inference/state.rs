@@ -93,3 +93,104 @@ pub struct StateUpdate {
     /// Indicates lower confidence in state accuracy during extended thinking
     pub terminal_stale: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_is_not_active() {
+        assert!(!ClaudeState::Idle.is_active());
+    }
+
+    #[test]
+    fn thinking_is_active() {
+        assert!(ClaudeState::Thinking.is_active());
+    }
+
+    #[test]
+    fn responding_is_active() {
+        assert!(ClaudeState::Responding.is_active());
+    }
+
+    #[test]
+    fn tool_executing_is_active() {
+        let state = ClaudeState::ToolExecuting {
+            tool: "Read".to_string(),
+        };
+        assert!(state.is_active());
+    }
+
+    #[test]
+    fn waiting_for_input_is_not_active() {
+        let state = ClaudeState::WaitingForInput {
+            prompt: Some("Continue?".into()),
+        };
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn current_tool_when_executing() {
+        let state = ClaudeState::ToolExecuting {
+            tool: "Bash".to_string(),
+        };
+        assert_eq!(state.current_tool(), Some("Bash"));
+    }
+
+    #[test]
+    fn current_tool_none_for_other_states() {
+        assert!(ClaudeState::Idle.current_tool().is_none());
+        assert!(ClaudeState::Thinking.current_tool().is_none());
+        assert!(ClaudeState::Responding.current_tool().is_none());
+        assert!(
+            ClaudeState::WaitingForInput { prompt: None }
+                .current_tool()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn default_is_idle() {
+        assert_eq!(ClaudeState::default(), ClaudeState::Idle);
+    }
+
+    #[test]
+    fn serde_roundtrip_idle() {
+        let state = ClaudeState::Idle;
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: ClaudeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ClaudeState::Idle);
+    }
+
+    #[test]
+    fn serde_roundtrip_tool_executing() {
+        let state = ClaudeState::ToolExecuting {
+            tool: "Write".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"type\":\"ToolExecuting\""));
+        assert!(json.contains("\"tool\":\"Write\""));
+        let parsed: ClaudeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn serde_roundtrip_waiting_for_input() {
+        let state = ClaudeState::WaitingForInput {
+            prompt: Some("Allow?".into()),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let parsed: ClaudeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, state);
+    }
+
+    #[test]
+    fn serde_state_event() {
+        let event = StateEvent::ToolStarted {
+            tool: "Grep".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"ToolStarted\""));
+        assert!(json.contains("\"tool\":\"Grep\""));
+    }
+}

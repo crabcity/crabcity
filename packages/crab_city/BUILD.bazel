@@ -1,5 +1,5 @@
 load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -123,5 +123,13 @@ rust_binary(
         "@crate_index//:uuid",
         "@crate_index//:vt100",
         "@crate_index//:walkdir",
+    ],
+)
+
+rust_test(
+    name = "crab_city_test",
+    crate = ":crab",
+    deps = [
+        "@crate_index//:tempfile",
     ],
 )

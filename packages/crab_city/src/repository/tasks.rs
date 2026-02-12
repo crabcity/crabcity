@@ -591,6 +591,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remove_task_tag() {
+        let repo = test_helpers::test_repository().await;
+        let id = repo
+            .create_task(&make_task("Tagged task", 1.0))
+            .await
+            .unwrap();
+
+        // Add two tags
+        repo.add_task_tag(id, "bug").await.unwrap();
+        repo.add_task_tag(id, "feature").await.unwrap();
+
+        // Find the tag_id for "bug"
+        let filters = TaskListFilters {
+            status: None,
+            instance_id: None,
+            tag: None,
+            search: None,
+            limit: None,
+            offset: None,
+        };
+        let tasks = repo.list_tasks(&filters).await.unwrap();
+        let bug_tag = tasks[0].tags.iter().find(|t| t.name == "bug").unwrap();
+        let bug_tag_id = bug_tag.id;
+
+        // Remove the "bug" tag
+        repo.remove_task_tag(id, bug_tag_id).await.unwrap();
+
+        // Verify only "feature" remains
+        let tasks = repo.list_tasks(&filters).await.unwrap();
+        assert_eq!(tasks[0].tags.len(), 1);
+        assert_eq!(tasks[0].tags[0].name, "feature");
+    }
+
+    #[tokio::test]
+    async fn remove_task_tag_nonexistent_is_noop() {
+        let repo = test_helpers::test_repository().await;
+        let id = repo.create_task(&make_task("No tags", 1.0)).await.unwrap();
+
+        // Removing a non-existent tag should not error
+        repo.remove_task_tag(id, 9999).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn task_dispatch() {
         let repo = test_helpers::test_repository().await;
         let id = repo

@@ -178,3 +178,281 @@ impl ConversationRepository {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::models::{InputAttribution, User};
+    use crate::repository::test_helpers;
+    use chrono::Utc;
+
+    fn make_user(id: &str) -> User {
+        let now = Utc::now().timestamp();
+        User {
+            id: id.to_string(),
+            username: id.to_string(),
+            display_name: id.to_string(),
+            password_hash: "hashed".to_string(),
+            is_admin: false,
+            is_disabled: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn make_attribution(
+        instance_id: &str,
+        user_id: &str,
+        content: Option<&str>,
+        ts: i64,
+    ) -> InputAttribution {
+        InputAttribution {
+            id: None,
+            instance_id: instance_id.to_string(),
+            user_id: user_id.to_string(),
+            display_name: user_id.to_string(),
+            timestamp: ts,
+            entry_uuid: None,
+            content_preview: content.map(String::from),
+            task_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn record_and_get_by_entry_uuid() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("u-1")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let mut attr = make_attribution("inst-1", "u-1", Some("hello world"), now);
+        attr.entry_uuid = Some("entry-1".into());
+        let id = repo.record_input_attribution(&attr).await.unwrap();
+        assert!(id > 0);
+
+        let fetched = repo
+            .get_attribution_by_entry_uuid("entry-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.user_id, "u-1");
+        assert_eq!(fetched.instance_id, "inst-1");
+    }
+
+    #[tokio::test]
+    async fn get_attribution_by_entry_uuid_not_found() {
+        let repo = test_helpers::test_repository().await;
+        let result = repo
+            .get_attribution_by_entry_uuid("nonexistent")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_by_content_match() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        // Record an uncorrelated attribution (no entry_uuid)
+        let attr = make_attribution("inst-1", "alice", Some("fix the bug in auth"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // Correlate using matching content
+        let result = repo
+            .correlate_attribution("inst-1", "entry-abc", now + 2, Some("fix the bug in auth"))
+            .await
+            .unwrap();
+
+        let matched = result.unwrap();
+        assert_eq!(matched.user_id, "alice");
+        assert_eq!(matched.entry_uuid, Some("entry-abc".to_string()));
+    }
+
+    #[tokio::test]
+    async fn correlate_no_match_without_content() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        // Record an attribution
+        let attr = make_attribution("inst-1", "alice", Some("hello"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // Attempt to correlate without content — should return None (no timestamp-only fallback)
+        let result = repo
+            .correlate_attribution("inst-1", "entry-abc", now, None)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_no_match_empty_content() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let attr = make_attribution("inst-1", "alice", Some("hello"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        let result = repo
+            .correlate_attribution("inst-1", "entry-abc", now, Some("   "))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_outside_time_window() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let attr = make_attribution("inst-1", "alice", Some("hello world"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // 60 seconds later — outside 30s window
+        let result = repo
+            .correlate_attribution("inst-1", "entry-abc", now + 60, Some("hello world"))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_wrong_instance() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let attr = make_attribution("inst-1", "alice", Some("hello"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        let result = repo
+            .correlate_attribution("inst-OTHER", "entry-abc", now, Some("hello"))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_already_claimed_not_reused() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let attr = make_attribution("inst-1", "alice", Some("hello world"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // First correlation claims it
+        let first = repo
+            .correlate_attribution("inst-1", "entry-1", now, Some("hello world"))
+            .await
+            .unwrap();
+        assert!(first.is_some());
+
+        // Second correlation with same content should NOT find it (already claimed)
+        let second = repo
+            .correlate_attribution("inst-1", "entry-2", now, Some("hello world"))
+            .await
+            .unwrap();
+        assert!(second.is_none());
+    }
+
+    #[tokio::test]
+    async fn correlate_picks_correct_content_when_multiple_candidates() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        repo.create_user(&make_user("bob")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        // Two attributions from different users at similar times
+        let attr_alice = make_attribution("inst-1", "alice", Some("hello from alice"), now);
+        let attr_bob = make_attribution("inst-1", "bob", Some("hello from bob"), now + 1);
+        repo.record_input_attribution(&attr_alice).await.unwrap();
+        repo.record_input_attribution(&attr_bob).await.unwrap();
+
+        // Correlate with bob's content — should match bob, not alice
+        let result = repo
+            .correlate_attribution("inst-1", "entry-1", now + 1, Some("hello from bob"))
+            .await
+            .unwrap();
+        let matched = result.unwrap();
+        assert_eq!(matched.user_id, "bob");
+    }
+
+    #[tokio::test]
+    async fn batch_get_attributions() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        repo.create_user(&make_user("bob")).await.unwrap();
+        repo.create_user(&make_user("carol")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        let mut a1 = make_attribution("inst-1", "alice", Some("msg1"), now);
+        a1.entry_uuid = Some("entry-1".to_string());
+        let mut a2 = make_attribution("inst-1", "bob", Some("msg2"), now);
+        a2.entry_uuid = Some("entry-2".to_string());
+        let mut a3 = make_attribution("inst-1", "carol", Some("msg3"), now);
+        a3.entry_uuid = Some("entry-3".to_string());
+        repo.record_input_attribution(&a1).await.unwrap();
+        repo.record_input_attribution(&a2).await.unwrap();
+        repo.record_input_attribution(&a3).await.unwrap();
+
+        let results = repo
+            .get_attributions_for_entry_uuids(&["entry-1", "entry-3"])
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let user_ids: Vec<&str> = results.iter().map(|a| a.user_id.as_str()).collect();
+        assert!(user_ids.contains(&"alice"));
+        assert!(user_ids.contains(&"carol"));
+    }
+
+    #[tokio::test]
+    async fn batch_get_empty_input() {
+        let repo = test_helpers::test_repository().await;
+        let results = repo.get_attributions_for_entry_uuids(&[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_or_correlate_uses_cached_first() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("alice")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        // Record an already-correlated attribution
+        let mut attr = make_attribution("inst-1", "alice", Some("cached"), now);
+        attr.entry_uuid = Some("entry-1".to_string());
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // get_or_correlate should return the cached one immediately
+        let result = repo
+            .get_or_correlate_attribution("inst-1", "entry-1", now, Some("cached"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.user_id, "alice");
+    }
+
+    #[tokio::test]
+    async fn get_or_correlate_falls_back_to_correlation() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("bob")).await.unwrap();
+        let now = Utc::now().timestamp();
+
+        // Record uncorrelated attribution
+        let attr = make_attribution("inst-1", "bob", Some("new message"), now);
+        repo.record_input_attribution(&attr).await.unwrap();
+
+        // get_or_correlate should fall back to correlation
+        let result = repo
+            .get_or_correlate_attribution("inst-1", "entry-new", now, Some("new message"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.user_id, "bob");
+        assert_eq!(result.entry_uuid, Some("entry-new".to_string()));
+    }
+}

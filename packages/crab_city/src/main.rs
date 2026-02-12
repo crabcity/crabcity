@@ -41,6 +41,9 @@ mod virtual_terminal;
 pub mod websocket_proxy;
 mod ws;
 
+#[cfg(test)]
+mod test_helpers;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::Mutex;

@@ -156,6 +156,166 @@ pub async fn reset_admin(repository: &ConversationRepository) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AuthConfig;
+    use crate::repository::test_helpers;
+
+    fn auth_config(enabled: bool) -> AuthConfig {
+        AuthConfig {
+            enabled,
+            session_ttl_secs: 3600,
+            allow_registration: true,
+            https: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_disabled_skips_onboarding() {
+        let repo = test_helpers::test_repository().await;
+        maybe_run_onboarding(&repo, &auth_config(false))
+            .await
+            .unwrap();
+        // No users should be created
+        assert_eq!(repo.user_count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn existing_users_skips_onboarding() {
+        let repo = test_helpers::test_repository().await;
+        // Create a user first
+        let user = User {
+            id: "u1".to_string(),
+            username: "admin".to_string(),
+            display_name: "Admin".to_string(),
+            password_hash: hash_password("testpassword").unwrap(),
+            is_admin: true,
+            is_disabled: false,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
+        };
+        repo.create_user(&user).await.unwrap();
+
+        maybe_run_onboarding(&repo, &auth_config(true))
+            .await
+            .unwrap();
+        // Should still have only the original user
+        assert_eq!(repo.user_count().await.unwrap(), 1);
+    }
+
+    // Helper to safely set/remove env vars in tests.
+    // SAFETY: These tests must not run in parallel with each other or anything
+    // else reading these specific env vars. The tokio test runtime is single-threaded
+    // by default, so this is safe in practice.
+    unsafe fn set_env(key: &str, val: &str) {
+        unsafe { std::env::set_var(key, val) };
+    }
+
+    unsafe fn remove_env(key: &str) {
+        unsafe { std::env::remove_var(key) };
+    }
+
+    #[tokio::test]
+    async fn headless_creates_admin() {
+        let repo = test_helpers::test_repository().await;
+
+        // SAFETY: test-only env vars, single-threaded tokio runtime
+        unsafe {
+            set_env("CRAB_CITY_ADMIN_USERNAME", "headless_admin");
+            set_env("CRAB_CITY_ADMIN_PASSWORD", "securepassword123");
+            set_env("CRAB_CITY_ADMIN_DISPLAY_NAME", "Headless Admin");
+        }
+
+        let result = maybe_run_onboarding(&repo, &auth_config(true)).await;
+
+        unsafe {
+            remove_env("CRAB_CITY_ADMIN_USERNAME");
+            remove_env("CRAB_CITY_ADMIN_PASSWORD");
+            remove_env("CRAB_CITY_ADMIN_DISPLAY_NAME");
+        }
+
+        result.unwrap();
+
+        // Admin should be created
+        assert_eq!(repo.user_count().await.unwrap(), 1);
+        let user = repo
+            .get_user_by_username("headless_admin")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(user.is_admin);
+        assert_eq!(user.display_name, "Headless Admin");
+
+        // Registration should be locked
+        let allow_reg = repo.get_setting("allow_registration").await.unwrap();
+        assert_eq!(allow_reg.as_deref(), Some("false"));
+    }
+
+    #[tokio::test]
+    async fn headless_validation_short_username() {
+        let repo = test_helpers::test_repository().await;
+
+        unsafe {
+            set_env("CRAB_CITY_ADMIN_USERNAME", "a");
+            set_env("CRAB_CITY_ADMIN_PASSWORD", "securepassword123");
+        }
+
+        let result = maybe_run_onboarding(&repo, &auth_config(true)).await;
+
+        unsafe {
+            remove_env("CRAB_CITY_ADMIN_USERNAME");
+            remove_env("CRAB_CITY_ADMIN_PASSWORD");
+        }
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("2-64"));
+    }
+
+    #[tokio::test]
+    async fn headless_validation_short_password() {
+        let repo = test_helpers::test_repository().await;
+
+        unsafe {
+            set_env("CRAB_CITY_ADMIN_USERNAME", "admin");
+            set_env("CRAB_CITY_ADMIN_PASSWORD", "short");
+        }
+
+        let result = maybe_run_onboarding(&repo, &auth_config(true)).await;
+
+        unsafe {
+            remove_env("CRAB_CITY_ADMIN_USERNAME");
+            remove_env("CRAB_CITY_ADMIN_PASSWORD");
+        }
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("8 characters"));
+    }
+
+    #[tokio::test]
+    async fn headless_display_name_defaults_to_username() {
+        let repo = test_helpers::test_repository().await;
+
+        unsafe {
+            set_env("CRAB_CITY_ADMIN_USERNAME", "myuser");
+            set_env("CRAB_CITY_ADMIN_PASSWORD", "securepassword123");
+            remove_env("CRAB_CITY_ADMIN_DISPLAY_NAME");
+        }
+
+        let result = maybe_run_onboarding(&repo, &auth_config(true)).await;
+
+        unsafe {
+            remove_env("CRAB_CITY_ADMIN_USERNAME");
+            remove_env("CRAB_CITY_ADMIN_PASSWORD");
+        }
+
+        result.unwrap();
+
+        let user = repo.get_user_by_username("myuser").await.unwrap().unwrap();
+        assert_eq!(user.display_name, "myuser");
+    }
+}
+
 /// Prompt the operator interactively in the terminal.
 async fn interactive_prompt() -> Result<(String, String, String)> {
     tokio::task::spawn_blocking(|| {

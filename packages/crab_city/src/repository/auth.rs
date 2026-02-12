@@ -637,6 +637,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_expired_sessions() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
+
+        // Create an expired session and a valid session
+        repo.create_session(&make_session("tok-expired", "u-1", -100))
+            .await
+            .unwrap();
+        repo.create_session(&make_session("tok-valid", "u-1", 3600))
+            .await
+            .unwrap();
+
+        let cleaned = repo.cleanup_expired_sessions().await.unwrap();
+        assert_eq!(cleaned, 1);
+
+        // Valid session should still exist
+        assert!(
+            repo.get_session_with_user("tok-valid")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_expired_sessions_none_expired() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
+        repo.create_session(&make_session("tok-1", "u-1", 3600))
+            .await
+            .unwrap();
+
+        let cleaned = repo.cleanup_expired_sessions().await.unwrap();
+        assert_eq!(cleaned, 0);
+    }
+
+    #[tokio::test]
+    async fn touch_session_updates_last_active() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
+        repo.create_session(&make_session("tok-1", "u-1", 3600))
+            .await
+            .unwrap();
+
+        // Touch the session
+        repo.touch_session("tok-1").await.unwrap();
+
+        // Verify it still exists and is accessible
+        let (sess, _) = repo.get_session_with_user("tok-1").await.unwrap().unwrap();
+        assert_eq!(sess.token, "tok-1");
+    }
+
+    #[tokio::test]
+    async fn touch_nonexistent_session_is_noop() {
+        let repo = test_helpers::test_repository().await;
+        // Should not error on missing session
+        repo.touch_session("nonexistent").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_server_invites_empty() {
+        let repo = test_helpers::test_repository().await;
+        let invites = repo.list_server_invites().await.unwrap();
+        assert!(invites.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_server_invites_with_acceptors() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("admin-1", "admin"))
+            .await
+            .unwrap();
+
+        let invite = ServerInvite {
+            token: "srv-tok-1".to_string(),
+            created_by: "admin-1".to_string(),
+            label: Some("Team invite".to_string()),
+            max_uses: Some(10),
+            use_count: 0,
+            expires_at: None,
+            revoked: false,
+            created_at: Utc::now().timestamp(),
+        };
+        repo.create_server_invite(&invite).await.unwrap();
+
+        // Create a second invite
+        let invite2 = ServerInvite {
+            token: "srv-tok-2".to_string(),
+            created_by: "admin-1".to_string(),
+            label: None,
+            max_uses: None,
+            use_count: 0,
+            expires_at: None,
+            revoked: false,
+            created_at: Utc::now().timestamp(),
+        };
+        repo.create_server_invite(&invite2).await.unwrap();
+
+        let invites = repo.list_server_invites().await.unwrap();
+        assert_eq!(invites.len(), 2);
+        // Check the first invite has correct fields
+        let first = invites
+            .iter()
+            .find(|i| i.invite.token == "srv-tok-1")
+            .unwrap();
+        assert_eq!(first.invite.label, Some("Team invite".to_string()));
+        assert!(first.acceptors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn use_server_invite_links_user() {
+        let repo = test_helpers::test_repository().await;
+        repo.create_user(&make_user("admin-1", "admin"))
+            .await
+            .unwrap();
+        repo.create_user(&make_user("new-user", "newbie"))
+            .await
+            .unwrap();
+
+        let invite = ServerInvite {
+            token: "srv-tok".to_string(),
+            created_by: "admin-1".to_string(),
+            label: None,
+            max_uses: None,
+            use_count: 0,
+            expires_at: None,
+            revoked: false,
+            created_at: Utc::now().timestamp(),
+        };
+        repo.create_server_invite(&invite).await.unwrap();
+
+        // Use the invite
+        repo.use_server_invite("srv-tok", "new-user").await.unwrap();
+
+        // use_count should be incremented
+        let fetched = repo.get_server_invite("srv-tok").await.unwrap().unwrap();
+        assert_eq!(fetched.use_count, 1);
+
+        // User should show up as acceptor in list
+        let invites = repo.list_server_invites().await.unwrap();
+        let inv = invites
+            .iter()
+            .find(|i| i.invite.token == "srv-tok")
+            .unwrap();
+        assert_eq!(inv.acceptors.len(), 1);
+        assert_eq!(inv.acceptors[0].user_id, "new-user");
+    }
+
+    #[tokio::test]
     async fn server_invite_revoke() {
         let repo = test_helpers::test_repository().await;
         repo.create_user(&make_user("u-1", "admin")).await.unwrap();

@@ -231,4 +231,101 @@ mod tests {
         assert_eq!(snapshot.instances.active, 1);
         assert_eq!(snapshot.messages.sent, 1);
     }
+
+    #[test]
+    fn test_message_dropped() {
+        let metrics = ServerMetrics::new();
+        metrics.message_dropped();
+        metrics.message_dropped();
+        assert_eq!(metrics.messages_dropped.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_pty_error() {
+        let metrics = ServerMetrics::new();
+        metrics.pty_error();
+        assert_eq!(metrics.pty_errors.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_uptime_secs() {
+        let metrics = ServerMetrics::new();
+        // Uptime should be >= 0 (could be 0 if test is fast)
+        assert!(metrics.uptime_secs() < 5);
+    }
+
+    #[test]
+    fn test_uptime_default_no_start_time() {
+        let metrics = ServerMetrics::default();
+        assert_eq!(metrics.uptime_secs(), 0);
+    }
+
+    #[test]
+    fn test_snapshot_all_fields() {
+        let metrics = ServerMetrics::new();
+
+        // Exercise every counter
+        metrics.connection_opened();
+        metrics.connection_opened();
+        metrics.connection_closed();
+        metrics.instance_created();
+        metrics.instance_created();
+        metrics.instance_created();
+        metrics.instance_stopped();
+        metrics.message_sent();
+        metrics.message_dropped();
+        metrics.pty_error();
+        metrics.websocket_errors.fetch_add(2, Ordering::Relaxed);
+        metrics.messages_received.fetch_add(10, Ordering::Relaxed);
+        metrics.focus_switches.fetch_add(3, Ordering::Relaxed);
+        metrics.history_replays.fetch_add(1, Ordering::Relaxed);
+        metrics
+            .history_bytes_sent
+            .fetch_add(4096, Ordering::Relaxed);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.connections.active, 1);
+        assert_eq!(snap.connections.total, 2);
+        assert_eq!(snap.instances.active, 2);
+        assert_eq!(snap.instances.total_created, 3);
+        assert_eq!(snap.instances.stopped, 1);
+        assert_eq!(snap.messages.received, 10);
+        assert_eq!(snap.messages.sent, 1);
+        assert_eq!(snap.messages.dropped, 1);
+        assert_eq!(snap.errors.pty, 1);
+        assert_eq!(snap.errors.websocket, 2);
+        assert_eq!(snap.performance.focus_switches, 3);
+        assert_eq!(snap.performance.history_replays, 1);
+        assert_eq!(snap.performance.history_bytes_sent, 4096);
+    }
+
+    #[test]
+    fn test_snapshot_serialization() {
+        let metrics = ServerMetrics::new();
+        metrics.connection_opened();
+        let snap = metrics.snapshot();
+        let json = serde_json::to_string(&snap).unwrap();
+        let parsed: MetricsSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.connections.active, 1);
+        assert_eq!(parsed.connections.total, 1);
+    }
+
+    #[test]
+    fn test_health_status_serialization() {
+        let status = HealthStatus {
+            status: "ok".to_string(),
+            instances: InstanceHealth {
+                total: 5,
+                active: 3,
+            },
+            connections: 10,
+            uptime_secs: 3600,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["instances"]["total"], 5);
+        assert_eq!(json["instances"]["active"], 3);
+        assert_eq!(json["connections"], 10);
+        assert_eq!(json["uptime_secs"], 3600);
+    }
 }

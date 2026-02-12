@@ -405,6 +405,152 @@ fn apply_profile_defaults(local: &mut ConfigState) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(host: &str, auth: bool, https: bool) -> ConfigState {
+        ConfigState {
+            profile: None,
+            host: host.to_string(),
+            port: 9000,
+            auth_enabled: auth,
+            https,
+        }
+    }
+
+    // ── detect_profile ────────────────────────────────────────
+
+    #[test]
+    fn detect_local_profile() {
+        let c = config("127.0.0.1", false, false);
+        assert_eq!(detect_profile(&c), Some("local".to_string()));
+    }
+
+    #[test]
+    fn detect_tunnel_profile() {
+        let c = config("127.0.0.1", true, true);
+        assert_eq!(detect_profile(&c), Some("tunnel".to_string()));
+    }
+
+    #[test]
+    fn detect_server_profile() {
+        let c = config("0.0.0.0", true, true);
+        assert_eq!(detect_profile(&c), Some("server".to_string()));
+    }
+
+    #[test]
+    fn detect_no_profile_for_custom() {
+        let c = config("192.168.1.1", true, false);
+        assert_eq!(detect_profile(&c), None);
+    }
+
+    #[test]
+    fn detect_no_profile_partial_match() {
+        // 0.0.0.0 but auth off
+        let c = config("0.0.0.0", false, false);
+        assert_eq!(detect_profile(&c), None);
+    }
+
+    // ── apply_profile_defaults ────────────────────────────────
+
+    #[test]
+    fn apply_local_defaults() {
+        let mut c = config("0.0.0.0", true, true);
+        c.profile = Some("local".to_string());
+        apply_profile_defaults(&mut c);
+        assert_eq!(c.host, "127.0.0.1");
+        assert!(!c.auth_enabled);
+        assert!(!c.https);
+    }
+
+    #[test]
+    fn apply_tunnel_defaults() {
+        let mut c = config("0.0.0.0", false, false);
+        c.profile = Some("tunnel".to_string());
+        apply_profile_defaults(&mut c);
+        assert_eq!(c.host, "127.0.0.1");
+        assert!(c.auth_enabled);
+        assert!(c.https);
+    }
+
+    #[test]
+    fn apply_server_defaults() {
+        let mut c = config("127.0.0.1", false, false);
+        c.profile = Some("server".to_string());
+        apply_profile_defaults(&mut c);
+        assert_eq!(c.host, "0.0.0.0");
+        assert!(c.auth_enabled);
+        assert!(c.https);
+    }
+
+    #[test]
+    fn apply_none_profile_keeps_values() {
+        let mut c = config("10.0.0.1", true, false);
+        c.profile = None;
+        apply_profile_defaults(&mut c);
+        assert_eq!(c.host, "10.0.0.1");
+        assert!(c.auth_enabled);
+        assert!(!c.https);
+    }
+
+    // ── update_profile_after_edit ─────────────────────────────
+
+    #[test]
+    fn update_profile_detects_match() {
+        let mut c = config("127.0.0.1", false, false);
+        c.profile = Some("custom".to_string());
+        update_profile_after_edit(&mut c);
+        assert_eq!(c.profile, Some("local".to_string()));
+    }
+
+    #[test]
+    fn update_profile_sets_custom_when_diverged() {
+        let mut c = config("192.168.1.1", true, false);
+        c.profile = Some("server".to_string());
+        update_profile_after_edit(&mut c);
+        assert_eq!(c.profile, Some("custom".to_string()));
+    }
+
+    #[test]
+    fn update_profile_keeps_none_when_none() {
+        let mut c = config("10.0.0.1", false, false);
+        c.profile = None;
+        update_profile_after_edit(&mut c);
+        assert!(c.profile.is_none());
+    }
+
+    // ── format_edit_or_value ──────────────────────────────────
+
+    #[test]
+    fn format_shows_default_when_no_edit() {
+        let result = format_edit_or_value(&None, Field::Host, "127.0.0.1");
+        assert_eq!(result, "127.0.0.1");
+    }
+
+    #[test]
+    fn format_shows_buffer_when_editing() {
+        let edit = Some(EditState {
+            field: Field::Host,
+            buffer: "10.0.0".to_string(),
+            cursor: 6,
+        });
+        let result = format_edit_or_value(&edit, Field::Host, "127.0.0.1");
+        assert_eq!(result, "10.0.0▏");
+    }
+
+    #[test]
+    fn format_shows_default_when_editing_different_field() {
+        let edit = Some(EditState {
+            field: Field::Port,
+            buffer: "8080".to_string(),
+            cursor: 4,
+        });
+        let result = format_edit_or_value(&edit, Field::Host, "127.0.0.1");
+        assert_eq!(result, "127.0.0.1");
+    }
+}
+
 fn fetch_config(client: &reqwest::blocking::Client, daemon: &DaemonInfo) -> Result<ConfigState> {
     let url = format!("{}/api/admin/config", daemon.base_url());
     let resp = client

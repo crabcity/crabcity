@@ -312,4 +312,201 @@ mod tests {
             "\"hello\" \"world\" \"foo\""
         );
     }
+
+    // --- Integration tests for search_conversations ---
+
+    use crate::models::{Conversation, ConversationEntry};
+    use crate::repository::test_helpers;
+
+    fn make_entry(
+        conversation_id: &str,
+        uuid: &str,
+        role: &str,
+        content: &str,
+    ) -> ConversationEntry {
+        ConversationEntry {
+            id: None,
+            conversation_id: conversation_id.to_string(),
+            entry_uuid: uuid.to_string(),
+            parent_uuid: None,
+            entry_type: "message".to_string(),
+            role: Some(role.to_string()),
+            content: Some(content.to_string()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            raw_json: "{}".to_string(),
+            token_count: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn search_conversations_empty_query() {
+        let repo = test_helpers::test_repository().await;
+        let filters = super::super::SearchFilters::default();
+        let result = repo
+            .search_conversations("", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(result.total, 0);
+        assert!(result.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_conversations_special_chars_only() {
+        let repo = test_helpers::test_repository().await;
+        let filters = super::super::SearchFilters::default();
+        // Query with only special chars → escapes to empty → returns empty
+        let result = repo
+            .search_conversations("!@#$%", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(result.total, 0);
+    }
+
+    #[tokio::test]
+    async fn search_conversations_finds_matching_entries() {
+        let repo = test_helpers::test_repository().await;
+
+        let conv = Conversation::new("conv-1".to_string(), "inst-1".to_string());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let entries = vec![
+            make_entry(
+                "conv-1",
+                "e-1",
+                "user",
+                "Fix the authentication bug in login",
+            ),
+            make_entry(
+                "conv-1",
+                "e-2",
+                "assistant",
+                "I found the issue in the auth module",
+            ),
+        ];
+        repo.add_entries_batch(&entries).await.unwrap();
+
+        let filters = super::super::SearchFilters::default();
+        let result = repo
+            .search_conversations("authentication", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(result.total, 1);
+        assert_eq!(result.items[0].id, "conv-1");
+        assert!(result.items[0].match_count > 0);
+        assert!(!result.items[0].matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_conversations_no_match() {
+        let repo = test_helpers::test_repository().await;
+
+        let conv = Conversation::new("conv-1".to_string(), "inst-1".to_string());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let entries = vec![make_entry("conv-1", "e-1", "user", "Hello world")];
+        repo.add_entries_batch(&entries).await.unwrap();
+
+        let filters = super::super::SearchFilters::default();
+        let result = repo
+            .search_conversations("xyzzyzzy", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(result.total, 0);
+        assert!(result.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_conversations_with_role_filter() {
+        let repo = test_helpers::test_repository().await;
+
+        let conv = Conversation::new("conv-1".to_string(), "inst-1".to_string());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let entries = vec![
+            make_entry("conv-1", "e-1", "user", "Fix the bug please"),
+            make_entry("conv-1", "e-2", "assistant", "I will fix the bug"),
+        ];
+        repo.add_entries_batch(&entries).await.unwrap();
+
+        // Filter to only user messages
+        let filters = super::super::SearchFilters {
+            role: Some("user".to_string()),
+            ..Default::default()
+        };
+        let result = repo
+            .search_conversations("bug", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(result.total, 1);
+        // Snippet should be from the user entry only
+        assert!(
+            result.items[0]
+                .matches
+                .iter()
+                .all(|m| m.role == Some("user".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn search_conversations_pagination() {
+        let repo = test_helpers::test_repository().await;
+
+        // Create 3 conversations each containing the word "test"
+        for i in 0..3 {
+            let conv = Conversation::new(format!("conv-{}", i), "inst-1".to_string());
+            repo.create_conversation(&conv).await.unwrap();
+            let entry = make_entry(
+                &format!("conv-{}", i),
+                &format!("e-{}", i),
+                "user",
+                &format!("This is test number {}", i),
+            );
+            repo.add_entries_batch(&[entry]).await.unwrap();
+        }
+
+        let filters = super::super::SearchFilters::default();
+        let page1 = repo
+            .search_conversations("test", 1, 2, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.total_pages, 2);
+
+        let page2 = repo
+            .search_conversations("test", 2, 2, 3, &filters)
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_conversations_snippet_html_escaping() {
+        let repo = test_helpers::test_repository().await;
+
+        let conv = Conversation::new("conv-1".to_string(), "inst-1".to_string());
+        repo.create_conversation(&conv).await.unwrap();
+
+        // Content with HTML characters
+        let entries = vec![make_entry(
+            "conv-1",
+            "e-1",
+            "user",
+            "Use <script>alert('xss')</script> safely",
+        )];
+        repo.add_entries_batch(&entries).await.unwrap();
+
+        let filters = super::super::SearchFilters::default();
+        let result = repo
+            .search_conversations("safely", 1, 10, 3, &filters)
+            .await
+            .unwrap();
+
+        if !result.items.is_empty() && !result.items[0].matches.is_empty() {
+            let snippet = &result.items[0].matches[0].snippet;
+            // HTML should be escaped
+            assert!(!snippet.contains("<script>"));
+        }
+    }
 }

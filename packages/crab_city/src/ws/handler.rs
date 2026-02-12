@@ -766,3 +766,102 @@ async fn broadcast_terminal_lock_update(state_mgr: &Arc<GlobalStateManager>, ins
     let msg = build_lock_update_message(instance_id, lock);
     state_mgr.broadcast_lifecycle(msg);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::state_manager::TerminalLock;
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn build_lock_update_no_lock() {
+        let msg = build_lock_update_message("inst-1", None);
+        match msg {
+            ServerMessage::TerminalLockUpdate {
+                instance_id,
+                holder,
+                last_activity,
+                expires_in_secs,
+            } => {
+                assert_eq!(instance_id, "inst-1");
+                assert!(holder.is_none());
+                assert!(last_activity.is_none());
+                assert!(expires_in_secs.is_none());
+            }
+            _ => panic!("Expected TerminalLockUpdate"),
+        }
+    }
+
+    #[test]
+    fn build_lock_update_with_recent_lock() {
+        let lock = TerminalLock {
+            holder_connection_id: "conn-1".to_string(),
+            holder_user_id: "user-1".to_string(),
+            holder_display_name: "Alice".to_string(),
+            last_activity: Utc::now(),
+        };
+
+        let msg = build_lock_update_message("inst-1", Some(lock));
+        match msg {
+            ServerMessage::TerminalLockUpdate {
+                instance_id,
+                holder,
+                last_activity,
+                expires_in_secs,
+            } => {
+                assert_eq!(instance_id, "inst-1");
+                let h = holder.unwrap();
+                assert_eq!(h.user_id, "user-1");
+                assert_eq!(h.display_name, "Alice");
+                assert!(last_activity.is_some());
+                // Recent lock should have ~full timeout remaining
+                let remaining = expires_in_secs.unwrap();
+                assert!(remaining > 0);
+                assert!(remaining <= TERMINAL_LOCK_TIMEOUT_SECS as u64);
+            }
+            _ => panic!("Expected TerminalLockUpdate"),
+        }
+    }
+
+    #[test]
+    fn build_lock_update_expired_lock() {
+        let lock = TerminalLock {
+            holder_connection_id: "conn-1".to_string(),
+            holder_user_id: "user-1".to_string(),
+            holder_display_name: "Alice".to_string(),
+            // Way in the past — well beyond any timeout
+            last_activity: Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap(),
+        };
+
+        let msg = build_lock_update_message("inst-1", Some(lock));
+        match msg {
+            ServerMessage::TerminalLockUpdate {
+                expires_in_secs, ..
+            } => {
+                // Expired lock should have 0 remaining (saturating_sub)
+                assert_eq!(expires_in_secs.unwrap(), 0);
+            }
+            _ => panic!("Expected TerminalLockUpdate"),
+        }
+    }
+
+    #[test]
+    fn build_lock_update_last_activity_is_rfc3339() {
+        let lock = TerminalLock {
+            holder_connection_id: "conn-1".to_string(),
+            holder_user_id: "user-1".to_string(),
+            holder_display_name: "Bob".to_string(),
+            last_activity: Utc::now(),
+        };
+
+        let msg = build_lock_update_message("inst-2", Some(lock));
+        match msg {
+            ServerMessage::TerminalLockUpdate { last_activity, .. } => {
+                let ts = last_activity.unwrap();
+                // Should parse as valid RFC 3339
+                chrono::DateTime::parse_from_rfc3339(&ts).unwrap();
+            }
+            _ => panic!("Expected TerminalLockUpdate"),
+        }
+    }
+}

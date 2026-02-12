@@ -401,6 +401,43 @@ mod tests {
         ));
     }
 
+    // -- DaemonInfo URL builders --
+
+    fn make_daemon_info(host: &str, port: u16) -> DaemonInfo {
+        DaemonInfo {
+            pid: 12345,
+            port,
+            host: host.to_string(),
+        }
+    }
+
+    #[test]
+    fn base_url_formats_correctly() {
+        let info = make_daemon_info("127.0.0.1", 9000);
+        assert_eq!(info.base_url(), "http://127.0.0.1:9000");
+    }
+
+    #[test]
+    fn base_url_custom_host() {
+        let info = make_daemon_info("0.0.0.0", 8080);
+        assert_eq!(info.base_url(), "http://0.0.0.0:8080");
+    }
+
+    #[test]
+    fn ws_url_formats_correctly() {
+        let info = make_daemon_info("127.0.0.1", 9000);
+        assert_eq!(
+            info.ws_url("abc-123"),
+            "ws://127.0.0.1:9000/api/instances/abc-123/ws"
+        );
+    }
+
+    #[test]
+    fn mux_ws_url_formats_correctly() {
+        let info = make_daemon_info("192.168.1.1", 9000);
+        assert_eq!(info.mux_ws_url(), "ws://192.168.1.1:9000/api/ws");
+    }
+
     // -- rediscover_daemon --
 
     #[tokio::test]

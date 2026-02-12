@@ -370,6 +370,52 @@ mod tests {
     }
 
     #[test]
+    fn claude_instance_serde() {
+        let inst = ClaudeInstance {
+            id: "inst-1".to_string(),
+            name: "swift-azure-falcon".to_string(),
+            custom_name: Some("My Crab".to_string()),
+            wrapper_port: 0,
+            working_dir: "/tmp".to_string(),
+            command: "claude".to_string(),
+            running: true,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            session_id: Some("sess-abc".to_string()),
+            claude_state: None,
+        };
+        let json = serde_json::to_value(&inst).unwrap();
+        assert_eq!(json["id"], "inst-1");
+        assert_eq!(json["name"], "swift-azure-falcon");
+        assert_eq!(json["custom_name"], "My Crab");
+        assert_eq!(json["running"], true);
+        assert_eq!(json["session_id"], "sess-abc");
+        let rt: ClaudeInstance = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.id, "inst-1");
+        assert_eq!(rt.custom_name, Some("My Crab".to_string()));
+    }
+
+    #[test]
+    fn claude_instance_none_fields() {
+        let inst = ClaudeInstance {
+            id: "i".to_string(),
+            name: "n".to_string(),
+            custom_name: None,
+            wrapper_port: 0,
+            working_dir: "/tmp".to_string(),
+            command: "echo".to_string(),
+            running: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            session_id: None,
+            claude_state: None,
+        };
+        let json = serde_json::to_value(&inst).unwrap();
+        assert!(json["custom_name"].is_null());
+        assert!(json["session_id"].is_null());
+        assert!(json["claude_state"].is_null());
+        assert_eq!(json["running"], false);
+    }
+
+    #[test]
     fn generate_unique_name_nonempty_parts() {
         let mgr = test_manager();
         let name = mgr.generate_unique_name();

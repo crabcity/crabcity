@@ -57,3 +57,8 @@ rust_binary(
         "//conditions:default": [],
     }),
 )
+
+rust_test(
+    name = "tty_wrapper_test",
+    crate = ":tty_wrapper",
+)

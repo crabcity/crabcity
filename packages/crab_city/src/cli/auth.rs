@@ -243,3 +243,79 @@ async fn maybe_create_admin(daemon: &DaemonInfo) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_config() -> (tempfile::TempDir, CrabCityConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(dir.path().to_path_buf())).unwrap();
+        (dir, config)
+    }
+
+    #[test]
+    fn set_auth_enabled_creates_config_file() {
+        let (_dir, config) = temp_config();
+        let path = config.config_toml_path();
+        assert!(!path.exists());
+
+        set_auth_enabled(&config, true).unwrap();
+        assert!(path.exists());
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        let auth = doc["auth"].as_table().unwrap();
+        assert_eq!(auth["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn set_auth_enabled_toggle() {
+        let (_dir, config) = temp_config();
+
+        set_auth_enabled(&config, true).unwrap();
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["auth"]["enabled"].as_bool(), Some(true));
+
+        set_auth_enabled(&config, false).unwrap();
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["auth"]["enabled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn set_auth_enabled_preserves_existing_keys() {
+        let (_dir, config) = temp_config();
+        let path = config.config_toml_path();
+
+        // Write some pre-existing config
+        std::fs::write(
+            &path,
+            "[server]\nport = 8080\n\n[auth]\nsession_ttl_secs = 3600\n",
+        )
+        .unwrap();
+
+        set_auth_enabled(&config, true).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["server"]["port"].as_integer(), Some(8080));
+        assert_eq!(doc["auth"]["session_ttl_secs"].as_integer(), Some(3600));
+        assert_eq!(doc["auth"]["enabled"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn set_auth_enabled_overwrites_existing_enabled() {
+        let (_dir, config) = temp_config();
+        let path = config.config_toml_path();
+
+        std::fs::write(&path, "[auth]\nenabled = false\n").unwrap();
+
+        set_auth_enabled(&config, true).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["auth"]["enabled"].as_bool(), Some(true));
+    }
+}

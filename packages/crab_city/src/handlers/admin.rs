@@ -358,3 +358,370 @@ fn save_overrides_to_config(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CrabCityConfig;
+
+    fn make_config(tmp: &std::path::Path) -> CrabCityConfig {
+        CrabCityConfig::new(Some(tmp.to_path_buf())).unwrap()
+    }
+
+    #[test]
+    fn test_save_host_to_new_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: Some("0.0.0.0".into()),
+            port: None,
+            auth_enabled: None,
+            https: None,
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        let server = doc["server"].as_table().unwrap();
+        assert_eq!(server["host"].as_str().unwrap(), "0.0.0.0");
+    }
+
+    #[test]
+    fn test_save_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: None,
+            port: Some(8080),
+            auth_enabled: None,
+            https: None,
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["server"]["port"].as_integer().unwrap(), 8080);
+    }
+
+    #[test]
+    fn test_save_auth_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: None,
+            port: None,
+            auth_enabled: Some(true),
+            https: Some(true),
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        let auth = doc["auth"].as_table().unwrap();
+        assert!(auth["enabled"].as_bool().unwrap());
+        assert!(auth["https"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_save_preserves_existing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        // Write existing config
+        std::fs::write(
+            config.config_toml_path(),
+            "[server]\nhost = \"127.0.0.1\"\n\n[auth]\nsession_ttl_secs = 3600\n",
+        )
+        .unwrap();
+
+        // Patch only port
+        let req = ConfigPatchRequest {
+            host: None,
+            port: Some(9090),
+            auth_enabled: None,
+            https: None,
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        // Existing values preserved
+        assert_eq!(doc["server"]["host"].as_str().unwrap(), "127.0.0.1");
+        assert_eq!(doc["auth"]["session_ttl_secs"].as_integer().unwrap(), 3600);
+        // New value added
+        assert_eq!(doc["server"]["port"].as_integer().unwrap(), 9090);
+    }
+
+    #[test]
+    fn test_save_all_fields_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: Some("192.168.1.1".into()),
+            port: Some(3000),
+            auth_enabled: Some(true),
+            https: Some(false),
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["server"]["host"].as_str().unwrap(), "192.168.1.1");
+        assert_eq!(doc["server"]["port"].as_integer().unwrap(), 3000);
+        assert!(doc["auth"]["enabled"].as_bool().unwrap());
+        assert!(!doc["auth"]["https"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_save_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: None,
+            port: None,
+            auth_enabled: None,
+            https: None,
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+        // Should create a valid (empty) config file
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let _doc: toml::Table = contents.parse().unwrap();
+    }
+
+    // =========================================================================
+    // Handler tests
+    // =========================================================================
+
+    use axum::{Router, body::Body, http::Request, routing::get, routing::post};
+    use tower::ServiceExt;
+
+    /// Helper to build a router with admin routes using test app state.
+    async fn test_admin_router() -> (Router, AppState, tempfile::TempDir) {
+        let (state, tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/admin/config", get(get_config_handler))
+            .route("/admin/restart", post(restart_handler))
+            .route("/admin/stats", get(get_database_stats))
+            .with_state(state.clone());
+        (router, state, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_get_config_handler_returns_defaults() {
+        let (router, _state, _tmp) = test_admin_router().await;
+
+        let req = Request::builder()
+            .uri("/admin/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Should have the expected fields
+        assert!(json.get("host").is_some());
+        assert!(json.get("port").is_some());
+        assert!(json.get("auth_enabled").is_some());
+        assert!(json.get("https").is_some());
+        assert!(json.get("overrides").is_some());
+        // No overrides active by default
+        let overrides = &json["overrides"];
+        assert!(!overrides["host"].as_bool().unwrap());
+        assert!(!overrides["port"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_restart_handler_returns_ok() {
+        let (router, _state, _tmp) = test_admin_router().await;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/restart")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["ok"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_get_database_stats_returns_ok() {
+        let (router, _state, _tmp) = test_admin_router().await;
+
+        let req = Request::builder()
+            .uri("/admin/stats")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_patch_config_applies_runtime_overrides() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/admin/config", axum::routing::patch(patch_config_handler))
+            .with_state(state.clone());
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/admin/config")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"host":"0.0.0.0","port":9090,"save":false}"#))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Check that runtime overrides were applied
+        let overrides = state.runtime_overrides.read().await;
+        assert_eq!(overrides.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(overrides.port, Some(9090));
+    }
+
+    #[tokio::test]
+    async fn test_patch_config_save_clears_overrides() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/admin/config", axum::routing::patch(patch_config_handler))
+            .with_state(state.clone());
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/admin/config")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"port":8080,"save":true}"#))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["saved"].as_bool().unwrap());
+
+        // Runtime override should be cleared (saved to config.toml)
+        let overrides = state.runtime_overrides.read().await;
+        assert!(overrides.port.is_none());
+    }
+
+    // =========================================================================
+    // Serialization tests for response types
+    // =========================================================================
+
+    #[test]
+    fn test_config_response_serialization() {
+        let resp = ConfigResponse {
+            profile: Some("local".to_string()),
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+            auth_enabled: false,
+            https: false,
+            overrides: OverrideState {
+                host: false,
+                port: true,
+                auth_enabled: false,
+                https: false,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["profile"], "local");
+        assert_eq!(json["host"], "127.0.0.1");
+        assert_eq!(json["port"], 3000);
+        assert!(!json["auth_enabled"].as_bool().unwrap());
+        assert!(json["overrides"]["port"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_import_response_serialization() {
+        let resp = ImportResponse {
+            imported: 5,
+            updated: 3,
+            skipped: 10,
+            failed: 1,
+            total: 19,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["imported"], 5);
+        assert_eq!(json["total"], 19);
+    }
+
+    #[test]
+    fn test_import_request_deserialization() {
+        let req: ImportRequest = serde_json::from_str(r#"{"import_all": true}"#).unwrap();
+        assert!(req.import_all);
+        assert!(req.project_path.is_none());
+
+        let req: ImportRequest =
+            serde_json::from_str(r#"{"import_all": false, "project_path": "/tmp/foo"}"#).unwrap();
+        assert!(!req.import_all);
+        assert_eq!(req.project_path.as_deref(), Some("/tmp/foo"));
+    }
+
+    #[test]
+    fn test_create_server_invite_request_deserialization() {
+        let req: CreateServerInviteRequest = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(req.label.is_none());
+        assert!(req.max_uses.is_none());
+        assert!(req.expires_in_hours.is_none());
+
+        let req: CreateServerInviteRequest =
+            serde_json::from_str(r#"{"label":"test","max_uses":5,"expires_in_hours":24}"#).unwrap();
+        assert_eq!(req.label.as_deref(), Some("test"));
+        assert_eq!(req.max_uses, Some(5));
+        assert_eq!(req.expires_in_hours, Some(24));
+    }
+
+    #[test]
+    fn test_config_patch_request_defaults() {
+        let req: ConfigPatchRequest = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(req.host.is_none());
+        assert!(req.port.is_none());
+        assert!(req.auth_enabled.is_none());
+        assert!(req.https.is_none());
+        assert!(!req.save);
+    }
+
+    #[test]
+    fn test_override_state_serialization() {
+        let state = OverrideState {
+            host: true,
+            port: false,
+            auth_enabled: true,
+            https: false,
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json["host"].as_bool().unwrap());
+        assert!(!json["port"].as_bool().unwrap());
+    }
+}

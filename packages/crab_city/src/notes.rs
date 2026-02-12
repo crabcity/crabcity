@@ -125,3 +125,147 @@ impl NotesStorage {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_storage(tmp: &std::path::Path) -> NotesStorage {
+        NotesStorage::new(&tmp.to_path_buf()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_add_and_get_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+
+        let note = storage
+            .add_note("session1", "Hello".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(note.session_id, "session1");
+        assert_eq!(note.content, "Hello");
+        assert!(!note.id.is_empty());
+
+        let notes = storage.get_notes("session1").await;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "Hello");
+    }
+
+    #[tokio::test]
+    async fn test_get_notes_empty_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+        let notes = storage.get_notes("nonexistent").await;
+        assert!(notes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_multiple_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+
+        storage.add_note("s1", "First".into(), None).await.unwrap();
+        storage.add_note("s1", "Second".into(), None).await.unwrap();
+        storage
+            .add_note("s2", "Other session".into(), None)
+            .await
+            .unwrap();
+
+        let s1_notes = storage.get_notes("s1").await;
+        assert_eq!(s1_notes.len(), 2);
+
+        let s2_notes = storage.get_notes("s2").await;
+        assert_eq!(s2_notes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+
+        let note = storage
+            .add_note("s1", "Original".into(), None)
+            .await
+            .unwrap();
+        storage
+            .update_note("s1", &note.id, "Updated".into())
+            .await
+            .unwrap();
+
+        let notes = storage.get_notes("s1").await;
+        assert_eq!(notes[0].content, "Updated");
+        assert!(notes[0].updated_at >= notes[0].created_at);
+    }
+
+    #[tokio::test]
+    async fn test_delete_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+
+        let note1 = storage.add_note("s1", "Keep".into(), None).await.unwrap();
+        let note2 = storage
+            .add_note("s1", "Delete me".into(), None)
+            .await
+            .unwrap();
+
+        storage.delete_note("s1", &note2.id).await.unwrap();
+
+        let notes = storage.get_notes("s1").await;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note1.id);
+    }
+
+    #[tokio::test]
+    async fn test_note_with_entry_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+
+        let note = storage
+            .add_note("s1", "Annotated".into(), Some("entry-uuid".into()))
+            .await
+            .unwrap();
+        assert_eq!(note.entry_id.as_deref(), Some("entry-uuid"));
+    }
+
+    #[tokio::test]
+    async fn test_persistence_across_instances() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write with one instance
+        {
+            let storage = make_storage(tmp.path());
+            storage
+                .add_note("s1", "Persisted".into(), None)
+                .await
+                .unwrap();
+        }
+
+        // Read with a new instance
+        {
+            let storage = make_storage(tmp.path());
+            let notes = storage.get_notes("s1").await;
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0].content, "Persisted");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_from_nonexistent_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+        // Should not error
+        storage.delete_note("nope", "fake-id").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_nonexistent_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = make_storage(tmp.path());
+        // Should not error
+        storage
+            .update_note("nope", "fake-id", "content".into())
+            .await
+            .unwrap();
+    }
+}

@@ -965,6 +965,408 @@ mod tests {
     }
 
     #[test]
+    fn test_client_message_chat_send_roundtrip() {
+        let original = ClientMessage::ChatSend {
+            scope: "global".to_string(),
+            content: "Hello chat!".to_string(),
+            uuid: "msg-uuid-1".to_string(),
+            topic: Some("general".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::ChatSend {
+                scope,
+                content,
+                uuid,
+                topic,
+            } => {
+                assert_eq!(scope, "global");
+                assert_eq!(content, "Hello chat!");
+                assert_eq!(uuid, "msg-uuid-1");
+                assert_eq!(topic, Some("general".to_string()));
+            }
+            _ => panic!("Expected ChatSend"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_chat_send_no_topic() {
+        let json = r#"{"type":"ChatSend","scope":"inst-1","content":"hi","uuid":"u1"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::ChatSend { topic, .. } => assert!(topic.is_none()),
+            _ => panic!("Expected ChatSend"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_chat_history_roundtrip() {
+        let original = ClientMessage::ChatHistory {
+            scope: "inst-1".to_string(),
+            before_id: Some(42),
+            limit: Some(20),
+            topic: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::ChatHistory {
+                scope,
+                before_id,
+                limit,
+                topic,
+            } => {
+                assert_eq!(scope, "inst-1");
+                assert_eq!(before_id, Some(42));
+                assert_eq!(limit, Some(20));
+                assert!(topic.is_none());
+            }
+            _ => panic!("Expected ChatHistory"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_chat_forward_roundtrip() {
+        let original = ClientMessage::ChatForward {
+            message_id: 99,
+            target_scope: "inst-2".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::ChatForward {
+                message_id,
+                target_scope,
+            } => {
+                assert_eq!(message_id, 99);
+                assert_eq!(target_scope, "inst-2");
+            }
+            _ => panic!("Expected ChatForward"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_chat_topics_roundtrip() {
+        let original = ClientMessage::ChatTopics {
+            scope: "global".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::ChatTopics { scope } => assert_eq!(scope, "global"),
+            _ => panic!("Expected ChatTopics"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_terminal_lock_request() {
+        let json = r#"{"type":"TerminalLockRequest","instance_id":"inst-1"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::TerminalLockRequest { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected TerminalLockRequest"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_terminal_lock_release() {
+        let json = r#"{"type":"TerminalLockRelease","instance_id":"inst-1"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::TerminalLockRelease { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected TerminalLockRelease"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_presence_update_serialization() {
+        let msg = ServerMessage::PresenceUpdate {
+            instance_id: "inst-1".to_string(),
+            users: vec![
+                PresenceUser {
+                    user_id: "u-1".to_string(),
+                    display_name: "Alice".to_string(),
+                },
+                PresenceUser {
+                    user_id: "u-2".to_string(),
+                    display_name: "Bob".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("PresenceUpdate"));
+        assert!(json.contains("Alice"));
+        assert!(json.contains("Bob"));
+
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::PresenceUpdate { users, .. } => assert_eq!(users.len(), 2),
+            _ => panic!("Expected PresenceUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_terminal_lock_update_with_holder() {
+        let msg = ServerMessage::TerminalLockUpdate {
+            instance_id: "inst-1".to_string(),
+            holder: Some(PresenceUser {
+                user_id: "u-1".to_string(),
+                display_name: "Alice".to_string(),
+            }),
+            last_activity: Some("2025-01-01T00:00:00Z".to_string()),
+            expires_in_secs: Some(120),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("TerminalLockUpdate"));
+        assert!(json.contains("Alice"));
+        assert!(json.contains("120"));
+
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::TerminalLockUpdate {
+                holder,
+                expires_in_secs,
+                ..
+            } => {
+                assert!(holder.is_some());
+                assert_eq!(expires_in_secs, Some(120));
+            }
+            _ => panic!("Expected TerminalLockUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_terminal_lock_update_no_holder() {
+        let msg = ServerMessage::TerminalLockUpdate {
+            instance_id: "inst-1".to_string(),
+            holder: None,
+            last_activity: None,
+            expires_in_secs: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("holder"));
+        assert!(!json.contains("last_activity"));
+        assert!(!json.contains("expires_in_secs"));
+    }
+
+    #[test]
+    fn test_server_message_chat_message_serialization() {
+        let msg = ServerMessage::ChatMessage {
+            id: 42,
+            uuid: "uuid-1".to_string(),
+            scope: "global".to_string(),
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+            content: "Hello!".to_string(),
+            created_at: 1700000000,
+            forwarded_from: Some("inst-1".to_string()),
+            topic: Some("general".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("ChatMessage"));
+        assert!(json.contains("Hello!"));
+        assert!(json.contains("forwarded_from"));
+
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::ChatMessage {
+                id,
+                content,
+                forwarded_from,
+                topic,
+                ..
+            } => {
+                assert_eq!(id, 42);
+                assert_eq!(content, "Hello!");
+                assert_eq!(forwarded_from, Some("inst-1".to_string()));
+                assert_eq!(topic, Some("general".to_string()));
+            }
+            _ => panic!("Expected ChatMessage"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_chat_message_no_optional_fields() {
+        let msg = ServerMessage::ChatMessage {
+            id: 1,
+            uuid: "u".to_string(),
+            scope: "s".to_string(),
+            user_id: "uid".to_string(),
+            display_name: "dn".to_string(),
+            content: "c".to_string(),
+            created_at: 0,
+            forwarded_from: None,
+            topic: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("forwarded_from"));
+        assert!(!json.contains("topic"));
+    }
+
+    #[test]
+    fn test_server_message_chat_history_response() {
+        let msg = ServerMessage::ChatHistoryResponse {
+            scope: "global".to_string(),
+            messages: vec![serde_json::json!({"content": "hi"})],
+            has_more: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::ChatHistoryResponse {
+                scope,
+                messages,
+                has_more,
+            } => {
+                assert_eq!(scope, "global");
+                assert_eq!(messages.len(), 1);
+                assert!(has_more);
+            }
+            _ => panic!("Expected ChatHistoryResponse"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_session_ambiguous() {
+        let msg = ServerMessage::SessionAmbiguous {
+            instance_id: "inst-1".to_string(),
+            candidates: vec![SessionCandidate {
+                session_id: "sess-1".to_string(),
+                started_at: Some("2025-01-01T00:00:00Z".to_string()),
+                message_count: 10,
+                preview: Some("Hello...".to_string()),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::SessionAmbiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 1);
+                assert_eq!(candidates[0].session_id, "sess-1");
+                assert_eq!(candidates[0].message_count, 10);
+            }
+            _ => panic!("Expected SessionAmbiguous"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_instance_created() {
+        let msg = ServerMessage::InstanceCreated {
+            instance: ClaudeInstance {
+                id: "inst-1".to_string(),
+                name: "test".to_string(),
+                custom_name: None,
+                wrapper_port: 0,
+                working_dir: "/tmp".to_string(),
+                command: "claude".to_string(),
+                running: true,
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                session_id: None,
+                claude_state: None,
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("InstanceCreated"));
+        assert!(json.contains("inst-1"));
+    }
+
+    #[test]
+    fn test_server_message_instance_stopped() {
+        let msg = ServerMessage::InstanceStopped {
+            instance_id: "inst-1".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InstanceStopped { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected InstanceStopped"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_instance_renamed() {
+        let msg = ServerMessage::InstanceRenamed {
+            instance_id: "inst-1".to_string(),
+            custom_name: Some("My Crab".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InstanceRenamed {
+                instance_id,
+                custom_name,
+            } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(custom_name, Some("My Crab".to_string()));
+            }
+            _ => panic!("Expected InstanceRenamed"),
+        }
+    }
+
+    #[test]
+    fn test_session_candidate_serde() {
+        let candidate = SessionCandidate {
+            session_id: "sess-1".to_string(),
+            started_at: Some("2025-01-01T00:00:00Z".to_string()),
+            message_count: 42,
+            preview: Some("Hello world...".to_string()),
+        };
+        let json = serde_json::to_value(&candidate).unwrap();
+        assert_eq!(json["session_id"], "sess-1");
+        assert_eq!(json["message_count"], 42);
+        assert_eq!(json["preview"], "Hello world...");
+
+        let rt: SessionCandidate = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.session_id, "sess-1");
+        assert_eq!(rt.message_count, 42);
+    }
+
+    #[test]
+    fn test_session_candidate_none_fields() {
+        let candidate = SessionCandidate {
+            session_id: "s".to_string(),
+            started_at: None,
+            message_count: 0,
+            preview: None,
+        };
+        let json = serde_json::to_value(&candidate).unwrap();
+        assert!(json["started_at"].is_null());
+        assert!(json["preview"].is_null());
+    }
+
+    #[test]
+    fn test_ws_user_serde() {
+        let user = WsUser {
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+        };
+        let json = serde_json::to_value(&user).unwrap();
+        assert_eq!(json["user_id"], "u-1");
+        assert_eq!(json["display_name"], "Alice");
+        let rt: WsUser = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.user_id, "u-1");
+    }
+
+    #[test]
+    fn test_presence_user_serde() {
+        let user = PresenceUser {
+            user_id: "u-2".to_string(),
+            display_name: "Bob".to_string(),
+        };
+        let json = serde_json::to_value(&user).unwrap();
+        assert_eq!(json["user_id"], "u-2");
+        let rt: PresenceUser = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.display_name, "Bob");
+    }
+
+    #[test]
     fn test_claude_state_tool_names_preserved() {
         let tools = vec![
             "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",

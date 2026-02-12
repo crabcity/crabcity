@@ -476,7 +476,7 @@ async fn register_handler(
     };
 
     if let Err(e) = state.repository.create_user(&user).await {
-        if e.to_string().contains("UNIQUE") {
+        if format!("{:#}", e).contains("UNIQUE") {
             return (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -824,6 +824,7 @@ pub fn auth_routes() -> Router<AuthState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx;
 
     #[test]
     fn test_hash_password_and_verify() {
@@ -973,5 +974,1186 @@ mod tests {
         // Test with no cookie header
         let headers = HeaderMap::new();
         assert!(extract_session_token(&headers).is_none());
+    }
+
+    // =========================================================================
+    // Handler-level tests (axum router + oneshot)
+    // =========================================================================
+
+    use axum::{body::Body, http::Request, routing::get};
+    use tower::ServiceExt;
+
+    async fn test_auth_state(enabled: bool) -> AuthState {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite");
+        crate::db::run_migrations(&pool).await.expect("migrations");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .expect("pragma");
+        AuthState {
+            repository: Arc::new(ConversationRepository::new(pool)),
+            auth_config: Arc::new(AuthConfig {
+                enabled,
+                session_ttl_secs: 3600,
+                allow_registration: true,
+                https: false,
+            }),
+        }
+    }
+
+    fn auth_router(state: AuthState) -> Router {
+        auth_routes().with_state(state)
+    }
+
+    fn json_body(val: serde_json::Value) -> Body {
+        Body::from(serde_json::to_vec(&val).unwrap())
+    }
+
+    #[tokio::test]
+    async fn handler_register_first_user_becomes_admin() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "admin",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["user"]["username"], "admin");
+        assert_eq!(body["user"]["is_admin"], true);
+        assert!(body["csrf_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn handler_register_second_user_not_admin() {
+        let state = test_auth_state(true).await;
+
+        // Register first user
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "admin",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Register second user
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "user2",
+                        "password": "password123",
+                        "display_name": "User Two"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["user"]["is_admin"], false);
+        assert_eq!(body["user"]["display_name"], "User Two");
+    }
+
+    #[tokio::test]
+    async fn handler_register_validation_short_username() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "a",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn handler_register_validation_short_password() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "testuser",
+                        "password": "short"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn handler_register_duplicate_username() {
+        let state = test_auth_state(true).await;
+
+        // Register first user
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "alice",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Try to register same username
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password456"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn handler_register_auth_disabled() {
+        let state = test_auth_state(false).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "testuser",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn handler_login_success() {
+        let state = test_auth_state(true).await;
+
+        // Register a user first
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "alice",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Login
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        assert!(set_cookie.contains("crab_session="));
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["user"]["username"], "alice");
+    }
+
+    #[tokio::test]
+    async fn handler_login_wrong_password() {
+        let state = test_auth_state(true).await;
+
+        // Register
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "alice",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Login with wrong password
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "wrongpassword"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn handler_login_nonexistent_user() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "nobody",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn handler_login_auth_disabled() {
+        let state = test_auth_state(false).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn handler_logout() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/logout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        assert!(set_cookie.contains("Max-Age=0"));
+    }
+
+    #[tokio::test]
+    async fn handler_me_auth_disabled() {
+        let state = test_auth_state(false).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["auth_enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn handler_me_needs_setup() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["needs_setup"], true);
+        assert_eq!(body["auth_enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn handler_me_with_valid_session() {
+        let state = test_auth_state(true).await;
+
+        // Register to get a session cookie
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        // Extract session token from set-cookie header
+        let session_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("crab_session=")
+            .unwrap();
+
+        // Call /me with the session cookie
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["user"]["username"], "alice");
+        assert!(body["csrf_token"].as_str().is_some());
+        assert_eq!(body["auth_enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn handler_me_no_session() {
+        let state = test_auth_state(true).await;
+
+        // Create a user so needs_setup is false
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "alice",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Call /me without a session cookie
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(body.get("user").is_none() || body["user"].is_null());
+        assert_eq!(body["auth_enabled"], true);
+        assert_eq!(
+            body.get("needs_setup")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_change_password_success() {
+        let state = test_auth_state(true).await;
+
+        // Register a user
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        let session_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("crab_session=")
+            .unwrap()
+            .to_string();
+
+        // Change password
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/change-password")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .body(json_body(serde_json::json!({
+                        "current_password": "password123",
+                        "new_password": "newpassword456"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify new password works for login
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "newpassword456"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn handler_change_password_wrong_current() {
+        let state = test_auth_state(true).await;
+
+        // Register a user
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        let session_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("crab_session=")
+            .unwrap()
+            .to_string();
+
+        // Try to change with wrong current password
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/change-password")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .body(json_body(serde_json::json!({
+                        "current_password": "wrongpassword",
+                        "new_password": "newpassword456"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn handler_change_password_too_short() {
+        let state = test_auth_state(true).await;
+
+        // Register a user
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let set_cookie = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+        let session_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("crab_session=")
+            .unwrap()
+            .to_string();
+
+        // Try to change to short password
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/change-password")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .body(json_body(serde_json::json!({
+                        "current_password": "password123",
+                        "new_password": "short"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn handler_change_password_no_session() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/change-password")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "current_password": "password123",
+                        "new_password": "newpassword456"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn handler_check_invite_valid() {
+        let state = test_auth_state(true).await;
+
+        // Create a server invite directly via the repo
+        let now = chrono::Utc::now().timestamp();
+        let user = crate::models::User {
+            id: "admin-id".to_string(),
+            username: "admin".to_string(),
+            display_name: "Admin".to_string(),
+            password_hash: "hashed".to_string(),
+            is_admin: true,
+            is_disabled: false,
+            created_at: now,
+            updated_at: now,
+        };
+        state.repository.create_user(&user).await.unwrap();
+
+        let invite = crate::models::ServerInvite {
+            token: "test-invite-token".to_string(),
+            created_by: "admin-id".to_string(),
+            label: Some("Test Invite".to_string()),
+            max_uses: Some(5),
+            use_count: 0,
+            expires_at: Some(now + 86400),
+            revoked: false,
+            created_at: now,
+        };
+        state
+            .repository
+            .create_server_invite(&invite)
+            .await
+            .unwrap();
+
+        let app = auth_router(state);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/check-invite?token=test-invite-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["valid"], true);
+        assert_eq!(body["label"], "Test Invite");
+    }
+
+    #[tokio::test]
+    async fn handler_check_invite_invalid() {
+        let state = test_auth_state(true).await;
+        let app = auth_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/check-invite?token=nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["valid"], false);
+    }
+
+    #[tokio::test]
+    async fn handler_register_with_invite() {
+        let state = test_auth_state(true).await;
+
+        // Register first user (admin)
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "admin",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Disable registration
+        state
+            .repository
+            .set_setting("allow_registration", "false")
+            .await
+            .unwrap();
+
+        // Create invite
+        let now = chrono::Utc::now().timestamp();
+        let admin = state
+            .repository
+            .get_user_by_username("admin")
+            .await
+            .unwrap()
+            .unwrap();
+        let invite = crate::models::ServerInvite {
+            token: "invite-tok".to_string(),
+            created_by: admin.id,
+            label: None,
+            max_uses: Some(1),
+            use_count: 0,
+            expires_at: Some(now + 86400),
+            revoked: false,
+            created_at: now,
+        };
+        state
+            .repository
+            .create_server_invite(&invite)
+            .await
+            .unwrap();
+
+        // Register with invite
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "invitee",
+                        "password": "password123",
+                        "invite_token": "invite-tok"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn handler_login_disabled_user() {
+        let state = test_auth_state(true).await;
+
+        // Register a user
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "alice",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Disable the user directly in DB via raw SQL
+        let user = state
+            .repository
+            .get_user_by_username("alice")
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query("UPDATE users SET is_disabled = 1 WHERE id = ?")
+            .bind(&user.id)
+            .execute(&state.repository.pool)
+            .await
+            .unwrap();
+
+        // Try to login with disabled user
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "alice",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // =========================================================================
+    // Auth Middleware Tests
+    // =========================================================================
+
+    /// Helper: a dummy handler that returns 200 with a JSON body.
+    async fn protected_get_handler() -> Json<serde_json::Value> {
+        Json(serde_json::json!({"ok": true}))
+    }
+
+    async fn protected_post_handler() -> Json<serde_json::Value> {
+        Json(serde_json::json!({"ok": true}))
+    }
+
+    fn middleware_router(state: AuthState) -> Router {
+        Router::new()
+            .route("/api/protected", get(protected_get_handler))
+            .route("/api/protected", post(protected_post_handler))
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state)
+    }
+
+    /// Helper: register a user and return (session_token, csrf_token).
+    async fn register_and_get_tokens(state: &AuthState) -> (String, String) {
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "testuser",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let set_cookie = resp
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let session_token = set_cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .strip_prefix("crab_session=")
+            .unwrap()
+            .to_string();
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), 10_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let csrf_token = body["csrf_token"].as_str().unwrap().to_string();
+
+        (session_token, csrf_token)
+    }
+
+    #[tokio::test]
+    async fn middleware_no_session_returns_401() {
+        let state = test_auth_state(true).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_valid_session_passes() {
+        let state = test_auth_state(true).await;
+        let (session_token, _csrf) = register_and_get_tokens(&state).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn middleware_invalid_session_returns_401() {
+        let state = test_auth_state(true).await;
+        // Create a user so DB is populated
+        register_and_get_tokens(&state).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header("cookie", "crab_session=invalid_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn middleware_post_without_csrf_returns_403() {
+        let state = test_auth_state(true).await;
+        let (session_token, _csrf) = register_and_get_tokens(&state).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protected")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn middleware_post_with_valid_csrf_passes() {
+        let state = test_auth_state(true).await;
+        let (session_token, csrf_token) = register_and_get_tokens(&state).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protected")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .header("X-CSRF-Token", csrf_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn middleware_post_with_wrong_csrf_returns_403() {
+        let state = test_auth_state(true).await;
+        let (session_token, _csrf) = register_and_get_tokens(&state).await;
+        let app = middleware_router(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protected")
+                    .header("cookie", format!("crab_session={}", session_token))
+                    .header("X-CSRF-Token", "wrong_csrf_token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn handler_register_closed_without_invite() {
+        let state = test_auth_state(true).await;
+
+        // Register first user
+        let app = auth_router(state.clone());
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(json_body(serde_json::json!({
+                    "username": "admin",
+                    "password": "password123"
+                })))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Disable registration
+        state
+            .repository
+            .set_setting("allow_registration", "false")
+            .await
+            .unwrap();
+
+        // Try to register without invite
+        let app = auth_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/register")
+                    .header("content-type", "application/json")
+                    .body(json_body(serde_json::json!({
+                        "username": "rando",
+                        "password": "password123"
+                    })))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

@@ -386,3 +386,238 @@ impl CrabCityConfig {
         self.data_dir.join("config.toml")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── profile_to_file_config ──────────────────────────────────────────
+
+    #[test]
+    fn test_local_profile() {
+        let fc = profile_to_file_config(Some(&Profile::Local));
+        assert_eq!(fc.profile, Some(Profile::Local));
+        assert!(!fc.auth.enabled);
+        assert!(!fc.auth.https);
+        assert_eq!(fc.server.host.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_tunnel_profile() {
+        let fc = profile_to_file_config(Some(&Profile::Tunnel));
+        assert_eq!(fc.profile, Some(Profile::Tunnel));
+        assert!(fc.auth.enabled);
+        assert!(fc.auth.https);
+        assert_eq!(fc.server.host.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn test_server_profile() {
+        let fc = profile_to_file_config(Some(&Profile::Server));
+        assert_eq!(fc.profile, Some(Profile::Server));
+        assert!(fc.auth.enabled);
+        assert!(fc.auth.https);
+        assert_eq!(fc.server.host.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn test_no_profile() {
+        let fc = profile_to_file_config(None);
+        assert!(fc.profile.is_none());
+        assert!(!fc.auth.enabled);
+        assert!(fc.server.host.is_none());
+    }
+
+    // ── defaults ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_auth_file_config_defaults() {
+        let d = AuthFileConfig::default();
+        assert!(!d.enabled);
+        assert_eq!(d.session_ttl_secs, 604800); // 7 days
+        assert!(d.allow_registration);
+        assert!(!d.https);
+    }
+
+    #[test]
+    fn test_server_file_config_defaults() {
+        let d = ServerFileConfig::default();
+        assert!(d.host.is_none());
+        assert!(d.port.is_none());
+        assert_eq!(d.max_buffer_mb, 25);
+        assert_eq!(d.max_history_kb, 64);
+        assert_eq!(d.hang_timeout_secs, 300);
+    }
+
+    // ── AuthConfig::from_file ───────────────────────────────────────────
+
+    #[test]
+    fn test_auth_config_from_file() {
+        let fc = AuthFileConfig {
+            enabled: true,
+            session_ttl_secs: 3600,
+            allow_registration: false,
+            https: true,
+        };
+        let ac = AuthConfig::from_file(&fc);
+        assert!(ac.enabled);
+        assert_eq!(ac.session_ttl_secs, 3600);
+        assert!(!ac.allow_registration);
+        assert!(ac.https);
+    }
+
+    // ── ServerConfig::from_file ─────────────────────────────────────────
+
+    #[test]
+    fn test_server_config_from_file_defaults() {
+        let fc = ServerFileConfig::default();
+        let sc = ServerConfig::from_file(&fc);
+        assert_eq!(sc.instance.max_buffer_bytes, 25 * 1024 * 1024);
+        assert_eq!(sc.websocket.max_history_replay_bytes, 64 * 1024);
+        assert!(sc.instance.hang_timeout.is_some());
+        assert_eq!(sc.instance.hang_timeout.unwrap().as_secs(), 300);
+    }
+
+    #[test]
+    fn test_server_config_hang_timeout_zero_disables() {
+        let fc = ServerFileConfig {
+            hang_timeout_secs: 0,
+            ..Default::default()
+        };
+        let sc = ServerConfig::from_file(&fc);
+        assert!(sc.instance.hang_timeout.is_none());
+    }
+
+    #[test]
+    fn test_server_config_custom_values() {
+        let fc = ServerFileConfig {
+            max_buffer_mb: 100,
+            max_history_kb: 256,
+            hang_timeout_secs: 600,
+            ..Default::default()
+        };
+        let sc = ServerConfig::from_file(&fc);
+        assert_eq!(sc.instance.max_buffer_bytes, 100 * 1024 * 1024);
+        assert_eq!(sc.websocket.max_history_replay_bytes, 256 * 1024);
+        assert_eq!(sc.instance.hang_timeout.unwrap().as_secs(), 600);
+    }
+
+    // ── CrabCityConfig ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_crab_city_config_with_custom_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(tmp.path().to_path_buf())).unwrap();
+
+        assert_eq!(config.data_dir, tmp.path());
+        assert_eq!(config.db_path, tmp.path().join("crabcity.db"));
+        assert_eq!(config.exports_dir, tmp.path().join("exports"));
+        assert_eq!(config.logs_dir, tmp.path().join("logs"));
+        assert!(tmp.path().join("exports").exists());
+        assert!(tmp.path().join("logs").exists());
+        assert!(tmp.path().join("state").exists());
+    }
+
+    #[test]
+    fn test_db_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(tmp.path().to_path_buf())).unwrap();
+        let url = config.db_url();
+        assert!(url.starts_with("sqlite://"));
+        assert!(url.contains("crabcity.db"));
+        assert!(url.ends_with("?mode=rwc"));
+    }
+
+    #[test]
+    fn test_path_helpers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(tmp.path().to_path_buf())).unwrap();
+
+        assert_eq!(config.state_dir(), tmp.path().join("state"));
+        assert_eq!(
+            config.daemon_pid_path(),
+            tmp.path().join("state/daemon.pid")
+        );
+        assert_eq!(
+            config.daemon_port_path(),
+            tmp.path().join("state/daemon.port")
+        );
+        assert_eq!(config.daemon_log_path(), tmp.path().join("logs/daemon.log"));
+        assert_eq!(config.daemon_err_path(), tmp.path().join("logs/daemon.err"));
+        assert_eq!(config.config_toml_path(), tmp.path().join("config.toml"));
+    }
+
+    #[test]
+    fn test_reset_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(tmp.path().to_path_buf())).unwrap();
+
+        // Create fake db files
+        std::fs::write(&config.db_path, "fake db").unwrap();
+        let wal = config.db_path.with_extension("db-wal");
+        std::fs::write(&wal, "wal").unwrap();
+        let shm = config.db_path.with_extension("db-shm");
+        std::fs::write(&shm, "shm").unwrap();
+
+        config.reset_database().unwrap();
+
+        assert!(!config.db_path.exists());
+        assert!(!wal.exists());
+        assert!(!shm.exists());
+    }
+
+    #[test]
+    fn test_reset_database_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = CrabCityConfig::new(Some(tmp.path().to_path_buf())).unwrap();
+        // Should not error when file doesn't exist
+        config.reset_database().unwrap();
+    }
+
+    // ── load_config ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_load_config_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fc: FileConfig = load_config(tmp.path(), None).extract().unwrap();
+        assert!(!fc.auth.enabled);
+        assert!(fc.profile.is_none());
+        assert!(fc.server.host.is_none());
+    }
+
+    #[test]
+    fn test_load_config_with_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fc: FileConfig = load_config(tmp.path(), Some(&Profile::Server))
+            .extract()
+            .unwrap();
+        assert!(fc.auth.enabled);
+        assert!(fc.auth.https);
+        assert_eq!(fc.server.host.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn test_load_config_toml_overrides_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Server profile defaults auth.enabled=true, but config.toml says false
+        std::fs::write(tmp.path().join("config.toml"), "[auth]\nenabled = false\n").unwrap();
+        let fc: FileConfig = load_config(tmp.path(), Some(&Profile::Server))
+            .extract()
+            .unwrap();
+        assert!(!fc.auth.enabled);
+    }
+
+    #[test]
+    fn test_load_config_toml_sets_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[server]\nhost = \"192.168.1.1\"\nport = 8080\nmax_buffer_mb = 50\n",
+        )
+        .unwrap();
+        let fc: FileConfig = load_config(tmp.path(), None).extract().unwrap();
+        assert_eq!(fc.server.host.as_deref(), Some("192.168.1.1"));
+        assert_eq!(fc.server.port, Some(8080));
+        assert_eq!(fc.server.max_buffer_mb, 50);
+    }
+}

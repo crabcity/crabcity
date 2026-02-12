@@ -694,3 +694,184 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     info!("Database migrations completed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        run_migrations(&pool).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn get_stats_empty_db() {
+        let pool = test_pool().await;
+        let db = Database { pool };
+        let stats = db.get_stats().await.unwrap();
+        assert_eq!(stats.conversations, 0);
+        assert_eq!(stats.sessions, 0);
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.comments, 0);
+        assert_eq!(stats.shares, 0);
+        assert!(stats.database_size_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn get_stats_with_data() {
+        let pool = test_pool().await;
+
+        // Insert a conversation
+        sqlx::query(
+            "INSERT INTO conversations (id, instance_id, created_at, updated_at) VALUES ('c1', 'i1', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert an entry
+        sqlx::query(
+            "INSERT INTO conversation_entries (conversation_id, entry_uuid, entry_type, timestamp, raw_json) VALUES ('c1', 'e1', 'message', '2024-01-01', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let db = Database { pool };
+        let stats = db.get_stats().await.unwrap();
+        assert_eq!(stats.conversations, 1);
+        assert_eq!(stats.entries, 1);
+    }
+
+    #[tokio::test]
+    async fn run_migrations_idempotent() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        // Run migrations twice — should not error
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn schema_version_recorded() {
+        let pool = test_pool().await;
+        let version: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM schema_version")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn get_stats_counts_all_types() {
+        let pool = test_pool().await;
+
+        // Insert 2 conversations (one with session_id, one without)
+        sqlx::query("INSERT INTO conversations (id, instance_id, session_id, created_at, updated_at) VALUES ('c1', 'i1', 'sess-1', 0, 0)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO conversations (id, instance_id, created_at, updated_at) VALUES ('c2', 'i1', 0, 0)")
+            .execute(&pool).await.unwrap();
+
+        // Insert 3 entries across 2 conversations
+        for (cid, uuid) in [("c1", "e1"), ("c1", "e2"), ("c2", "e3")] {
+            sqlx::query("INSERT INTO conversation_entries (conversation_id, entry_uuid, entry_type, timestamp, raw_json) VALUES (?, ?, 'message', '2024-01-01', '{}')")
+                .bind(cid).bind(uuid)
+                .execute(&pool).await.unwrap();
+        }
+
+        // Insert a comment
+        sqlx::query("INSERT INTO comments (conversation_id, author, content, created_at) VALUES ('c1', 'user', 'hello', 0)")
+            .execute(&pool).await.unwrap();
+
+        // Insert a share
+        sqlx::query("INSERT INTO conversation_shares (conversation_id, share_token, created_at) VALUES ('c1', 'tok-1', 0)")
+            .execute(&pool).await.unwrap();
+
+        let db = Database { pool };
+        let stats = db.get_stats().await.unwrap();
+        assert_eq!(stats.conversations, 2);
+        assert_eq!(stats.sessions, 1); // Only c1 has a session_id
+        assert_eq!(stats.entries, 3);
+        assert_eq!(stats.comments, 1);
+        assert_eq!(stats.shares, 1);
+    }
+
+    #[tokio::test]
+    async fn get_stats_excludes_deleted_conversations() {
+        let pool = test_pool().await;
+
+        sqlx::query("INSERT INTO conversations (id, instance_id, is_deleted, created_at, updated_at) VALUES ('c1', 'i1', 0, 0, 0)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO conversations (id, instance_id, is_deleted, created_at, updated_at) VALUES ('c2', 'i1', 1, 0, 0)")
+            .execute(&pool).await.unwrap();
+
+        let db = Database { pool };
+        let stats = db.get_stats().await.unwrap();
+        assert_eq!(stats.conversations, 1); // Deleted conversation excluded
+    }
+
+    #[test]
+    fn db_stats_serialization() {
+        let stats = DbStats {
+            conversations: 10,
+            sessions: 5,
+            entries: 100,
+            comments: 3,
+            shares: 2,
+            database_size_bytes: 1024,
+        };
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["conversations"], 10);
+        assert_eq!(json["sessions"], 5);
+        assert_eq!(json["entries"], 100);
+        assert_eq!(json["comments"], 3);
+        assert_eq!(json["shares"], 2);
+        assert_eq!(json["database_size_bytes"], 1024);
+    }
+
+    #[tokio::test]
+    async fn all_tables_exist_after_migration() {
+        let pool = test_pool().await;
+
+        // Verify core tables exist by querying each
+        let tables = [
+            "conversations",
+            "conversation_entries",
+            "comments",
+            "conversation_shares",
+        ];
+
+        for table in tables {
+            let count: (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {}", table))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count.0, 0, "Table {} should exist and be empty", table);
+        }
+
+        // schema_version should have migration entries
+        let sv_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            sv_count.0 > 0,
+            "schema_version should have migration entries"
+        );
+    }
+}

@@ -317,4 +317,377 @@ mod tests {
                 .any(|e| matches!(e, StateEvent::ToolStarted { tool } if tool == "Read"))
         );
     }
+
+    #[test]
+    fn test_default_is_same_as_new() {
+        let d = StateInferrer::default();
+        assert_eq!(*d.state(), ClaudeState::Idle);
+    }
+
+    // ── Tool pattern coverage ──────────────────────────────────────
+
+    #[test]
+    fn test_all_tool_patterns_detected() {
+        let tools = [
+            ("Write(", "Write"),
+            ("Edit(", "Edit"),
+            ("Bash(", "Bash"),
+            ("Glob(", "Glob"),
+            ("Grep(", "Grep"),
+            ("WebFetch(", "WebFetch"),
+            ("WebSearch(", "WebSearch"),
+            ("Task(", "Task"),
+            ("AskUserQuestion(", "AskUserQuestion"),
+        ];
+
+        for (pattern, expected_tool) in tools {
+            let mut inf = StateInferrer::new();
+            inf.on_input("cmd");
+            inf.on_output("starting");
+            inf.on_output(pattern);
+            assert!(
+                matches!(
+                    inf.state(),
+                    ClaudeState::ToolExecuting { tool } if tool == expected_tool
+                ),
+                "Expected ToolExecuting({}) for pattern '{}'",
+                expected_tool,
+                pattern
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_tool_start_no_match() {
+        let inf = StateInferrer::new();
+        assert!(inf.detect_tool_start("just some text").is_none());
+    }
+
+    // ── Tool completion ────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_completion_checkmark() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Bash(ls)");
+        assert!(matches!(inf.state(), ClaudeState::ToolExecuting { .. }));
+
+        inf.on_output("✓");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+    }
+
+    #[test]
+    fn test_tool_completion_done() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Edit(file)");
+        inf.on_output("Done");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+    }
+
+    #[test]
+    fn test_tool_completion_heavy_checkmark() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Glob(*.rs)");
+        inf.on_output("✔");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+    }
+
+    #[test]
+    fn test_detect_tool_complete_no_match() {
+        let inf = StateInferrer::new();
+        assert!(!inf.detect_tool_complete("just regular output"));
+    }
+
+    // ── Tool switching ─────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_switch_emits_completed_and_started() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Read(a.txt)");
+        assert!(matches!(
+            inf.state(),
+            ClaudeState::ToolExecuting { tool } if tool == "Read"
+        ));
+
+        let events = inf.on_output("Write(b.txt)");
+        assert!(matches!(
+            inf.state(),
+            ClaudeState::ToolExecuting { tool } if tool == "Write"
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StateEvent::ToolCompleted { tool } if tool == "Read"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StateEvent::ToolStarted { tool } if tool == "Write"))
+        );
+    }
+
+    // ── Input prompt detection ─────────────────────────────────────
+
+    #[test]
+    fn test_detect_input_prompt_patterns() {
+        // Patterns without trailing whitespace work with trim_end()
+        let patterns = ["(y/n)", "[y/N]", "[Y/n]"];
+        for pat in patterns {
+            let mut inf = StateInferrer::new();
+            inf.on_input("cmd");
+            inf.on_output("some output ");
+            inf.on_output(pat);
+            assert!(
+                matches!(inf.state(), ClaudeState::WaitingForInput { .. }),
+                "Should detect '{}' as input prompt",
+                pat
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_input_prompt_long_buffer() {
+        let inf = StateInferrer::new();
+        // Prompt pattern in the last 100 chars (no trailing space issue)
+        let mut buf = "x".repeat(200);
+        buf.push_str("Continue? [Y/n]");
+        assert!(inf.detect_input_prompt(&buf));
+    }
+
+    #[test]
+    fn test_detect_input_prompt_no_match() {
+        let inf = StateInferrer::new();
+        assert!(!inf.detect_input_prompt("regular text without a prompt"));
+    }
+
+    #[test]
+    fn test_prompt_detection_clears_tool() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Bash(ls)");
+        assert!(matches!(inf.state(), ClaudeState::ToolExecuting { .. }));
+
+        let events = inf.on_output("Allow? (y/n)");
+        assert!(matches!(inf.state(), ClaudeState::WaitingForInput { .. }));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StateEvent::ToolCompleted { tool } if tool == "Bash"))
+        );
+    }
+
+    // ── extract_prompt ─────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_prompt_last_line() {
+        let inf = StateInferrer::new();
+        assert_eq!(
+            inf.extract_prompt("some output\nDo you want to continue? "),
+            Some("Do you want to continue?".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_prompt_empty_last_line() {
+        let inf = StateInferrer::new();
+        // Empty last line returns None
+        assert!(inf.extract_prompt("some output\n   ").is_none());
+    }
+
+    #[test]
+    fn test_extract_prompt_empty_buffer() {
+        let inf = StateInferrer::new();
+        assert!(inf.extract_prompt("").is_none());
+    }
+
+    // ── Tick / timeout behavior ────────────────────────────────────
+
+    #[test]
+    fn test_tick_responding_to_idle() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("some output");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+
+        // Force last_output_time into the past
+        inf.last_output_time = Some(Instant::now() - Duration::from_secs(10));
+        let events = inf.tick();
+        assert_eq!(*inf.state(), ClaudeState::Idle);
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn test_tick_responding_with_prompt_to_waiting() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Allow? (y/n)");
+        // If not already detected, push to buffer and expire
+        inf.state = ClaudeState::Responding;
+        inf.last_output_time = Some(Instant::now() - Duration::from_secs(10));
+        inf.tick();
+        assert!(matches!(inf.state(), ClaudeState::WaitingForInput { .. }));
+    }
+
+    #[test]
+    fn test_tick_tool_executing_to_idle() {
+        let mut inf = StateInferrer::new();
+        inf.state = ClaudeState::ToolExecuting {
+            tool: "Bash".to_string(),
+        };
+        inf.current_tool = Some("Bash".to_string());
+        inf.last_output_time = Some(Instant::now() - Duration::from_secs(10));
+
+        let events = inf.tick();
+        assert_eq!(*inf.state(), ClaudeState::Idle);
+        assert!(inf.current_tool.is_none());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StateEvent::ToolCompleted { tool } if tool == "Bash"))
+        );
+    }
+
+    #[test]
+    fn test_tick_thinking_no_transition() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        assert_eq!(*inf.state(), ClaudeState::Thinking);
+        // Even after a long time thinking, state doesn't change
+        inf.last_input_time = Some(Instant::now() - Duration::from_secs(60));
+        let events = inf.tick();
+        assert_eq!(*inf.state(), ClaudeState::Thinking);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_tick_idle_no_transition() {
+        let mut inf = StateInferrer::new();
+        let events = inf.tick();
+        assert_eq!(*inf.state(), ClaudeState::Idle);
+        assert!(events.is_empty());
+    }
+
+    // ── Reset ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_reset_clears_state() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Bash(ls)");
+        assert!(matches!(inf.state(), ClaudeState::ToolExecuting { .. }));
+
+        inf.reset();
+        assert_eq!(*inf.state(), ClaudeState::Idle);
+        assert!(inf.current_tool.is_none());
+        assert!(inf.last_input_time.is_none());
+        assert!(inf.last_output_time.is_none());
+        assert!(inf.buffer.is_empty());
+    }
+
+    // ── Buffer overflow ────────────────────────────────────────────
+
+    #[test]
+    fn test_buffer_overflow_protection() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+
+        // Write 100KB to exceed 64KB limit
+        let chunk = "x".repeat(10_000);
+        for _ in 0..11 {
+            inf.on_output(&chunk);
+        }
+
+        // Buffer should be capped at ~32KB (half of 64KB max)
+        assert!(
+            inf.buffer.len() <= 64 * 1024,
+            "Buffer should be capped, got {} bytes",
+            inf.buffer.len()
+        );
+    }
+
+    // ── Confirmation input ─────────────────────────────────────────
+
+    #[test]
+    fn test_confirmation_input_while_waiting() {
+        let mut inf = StateInferrer::new();
+        inf.state = ClaudeState::WaitingForInput {
+            prompt: Some("Continue? (y/n)".to_string()),
+        };
+
+        // 'y' is a confirmation — should NOT transition to Thinking
+        let events = inf.on_input("y");
+        assert!(matches!(inf.state(), ClaudeState::WaitingForInput { .. }));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_non_confirmation_input_while_waiting() {
+        let mut inf = StateInferrer::new();
+        inf.state = ClaudeState::WaitingForInput {
+            prompt: Some("Enter filename:".to_string()),
+        };
+
+        // A longer input is not a confirmation
+        let events = inf.on_input("my_file.txt");
+        assert_eq!(*inf.state(), ClaudeState::Thinking);
+        assert!(!events.is_empty());
+    }
+
+    // ── Output while already responding (no duplicate transition) ──
+
+    #[test]
+    fn test_output_while_responding_stays_responding() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("first output");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+
+        let events = inf.on_output("more output");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+        // No StateChanged event since we're already Responding
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StateEvent::StateChanged { .. }))
+        );
+    }
+
+    // ── Same tool detected again — no duplicate events ─────────────
+
+    #[test]
+    fn test_same_tool_again_no_duplicate() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("cmd");
+        inf.on_output("Read(a.txt)");
+        assert!(matches!(
+            inf.state(),
+            ClaudeState::ToolExecuting { tool } if tool == "Read"
+        ));
+
+        let events = inf.on_output("Read(b.txt)");
+        // Same tool — no ToolStarted/ToolCompleted events
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StateEvent::ToolStarted { .. }))
+        );
+    }
+
+    // ── Input during Responding transitions to Thinking ─────────────
+
+    #[test]
+    fn test_input_during_responding_no_transition() {
+        let mut inf = StateInferrer::new();
+        inf.on_input("first");
+        inf.on_output("response");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+
+        // Input during Responding doesn't transition (not Idle or WaitingForInput)
+        let events = inf.on_input("second");
+        assert_eq!(*inf.state(), ClaudeState::Responding);
+        assert!(events.is_empty());
+    }
 }

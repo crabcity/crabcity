@@ -495,4 +495,97 @@ mod tests {
         let title = ConversationImporter::extract_title(&entry);
         assert!(title.is_none());
     }
+
+    #[test]
+    fn test_extract_title_from_parts_content() {
+        use claude_convo::ContentPart;
+
+        let entry = make_entry(
+            "123",
+            "user",
+            Some(make_message(
+                MessageRole::User,
+                Some(MessageContent::Parts(vec![ContentPart::Text {
+                    text: "Hello from parts".to_string(),
+                }])),
+            )),
+        );
+
+        let title = ConversationImporter::extract_title(&entry);
+        assert_eq!(title, Some("Hello from parts".to_string()));
+    }
+
+    #[test]
+    fn test_extract_title_from_parts_no_text() {
+        use claude_convo::ContentPart;
+
+        let entry = make_entry(
+            "123",
+            "user",
+            Some(make_message(
+                MessageRole::User,
+                Some(MessageContent::Parts(vec![ContentPart::ToolUse {
+                    id: "t1".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({}),
+                }])),
+            )),
+        );
+
+        let title = ConversationImporter::extract_title(&entry);
+        assert_eq!(title, Some("Imported Conversation".to_string()));
+    }
+
+    #[test]
+    fn test_extract_title_parts_truncates() {
+        use claude_convo::ContentPart;
+        let long = "z".repeat(200);
+
+        let entry = make_entry(
+            "123",
+            "user",
+            Some(make_message(
+                MessageRole::User,
+                Some(MessageContent::Parts(vec![ContentPart::Text {
+                    text: long,
+                }])),
+            )),
+        );
+
+        let title = ConversationImporter::extract_title(&entry);
+        assert_eq!(title.as_ref().map(|t| t.len()), Some(100));
+    }
+
+    #[test]
+    fn test_import_stats_default() {
+        let stats = ImportStats::default();
+        assert_eq!(stats.imported, 0);
+        assert_eq!(stats.updated, 0);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.total(), 0);
+    }
+
+    #[test]
+    fn test_file_stat_existing_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "hello").unwrap();
+
+        let result = ConversationImporter::file_stat(tmp.path());
+        assert!(result.is_some());
+        let (mtime, size) = result.unwrap();
+        assert!(mtime > 0);
+        assert_eq!(size, 5);
+    }
+
+    #[test]
+    fn test_file_stat_nonexistent() {
+        let result = ConversationImporter::file_stat(std::path::Path::new("/nonexistent/file.txt"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_import_format_version_is_positive() {
+        assert!(IMPORT_FORMAT_VERSION >= 1);
+    }
 }

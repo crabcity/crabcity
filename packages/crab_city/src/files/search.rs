@@ -67,6 +67,126 @@ pub fn is_glob_pattern(query: &str) -> bool {
     query.contains('*') || query.contains('?') || query.contains('[')
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_glob_pattern ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_glob_star() {
+        assert!(is_glob_pattern("*.rs"));
+        assert!(is_glob_pattern("src/**/*.ts"));
+    }
+
+    #[test]
+    fn test_glob_question() {
+        assert!(is_glob_pattern("file?.txt"));
+    }
+
+    #[test]
+    fn test_glob_bracket() {
+        assert!(is_glob_pattern("[abc].rs"));
+    }
+
+    #[test]
+    fn test_not_glob() {
+        assert!(!is_glob_pattern("main.rs"));
+        assert!(!is_glob_pattern("src/lib"));
+        assert!(!is_glob_pattern(""));
+    }
+
+    // ── fuzzy_match ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_empty_pattern_matches_everything() {
+        let result = fuzzy_match("", "anything");
+        assert!(result.is_some());
+        let (indices, score) = result.unwrap();
+        assert!(indices.is_empty());
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn test_exact_match() {
+        let result = fuzzy_match("main", "main");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_case_insensitive() {
+        let result = fuzzy_match("main", "MAIN.rs");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_no_match() {
+        assert!(fuzzy_match("xyz", "main.rs").is_none());
+    }
+
+    #[test]
+    fn test_subsequence_match() {
+        let result = fuzzy_match("mr", "main.rs");
+        assert!(result.is_some());
+        let (indices, _) = result.unwrap();
+        // 'm' at 0, 'r' at 5
+        assert_eq!(indices[0], 0);
+    }
+
+    #[test]
+    fn test_start_bonus() {
+        // Pattern starting at index 0 should score better
+        let (_, score_start) = fuzzy_match("ma", "main.rs").unwrap();
+        let (_, score_mid) = fuzzy_match("rs", "main.rs").unwrap();
+        assert!(
+            score_start < score_mid,
+            "start match should score lower (better)"
+        );
+    }
+
+    #[test]
+    fn test_consecutive_bonus() {
+        // "mai" in "main.rs" (all consecutive) should score better than "m.r" spread out
+        let (_, score_consec) = fuzzy_match("mai", "main.rs").unwrap();
+        let (_, score_spread) = fuzzy_match("mis", "main.rss").unwrap();
+        // consecutive gets -5 per pair, spread gets gap penalty
+        assert!(score_consec < score_spread);
+    }
+
+    #[test]
+    fn test_shorter_string_preferred() {
+        // Same pattern against shorter vs longer strings
+        let (_, score_short) = fuzzy_match("ab", "ab").unwrap();
+        let (_, score_long) = fuzzy_match("ab", "axxxxb_very_long_name").unwrap();
+        assert!(score_short < score_long);
+    }
+
+    #[test]
+    fn test_case_match_bonus() {
+        // Exact case match should score better
+        let (_, score_exact) = fuzzy_match("Main", "Main.rs").unwrap();
+        let (_, score_wrong) = fuzzy_match("main", "Main.rs").unwrap();
+        assert!(score_exact < score_wrong);
+    }
+
+    #[test]
+    fn test_pattern_longer_than_text() {
+        assert!(fuzzy_match("toolong", "short").is_none());
+    }
+
+    #[test]
+    fn test_single_char_match() {
+        let result = fuzzy_match("r", "src/main.rs");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_match_indices_correct() {
+        let (indices, _) = fuzzy_match("abc", "aXbXc").unwrap();
+        assert_eq!(indices, vec![0, 2, 4]);
+    }
+}
+
 /// Search for files recursively within the instance's working directory
 /// Supports both fuzzy matching and glob patterns (e.g., *.rs, src/**/*.ts)
 pub async fn search_instance_files(

@@ -147,7 +147,7 @@ impl PersistenceService {
         });
     }
 
-    async fn add_to_buffer(&self, entry: ConversationEntry) {
+    pub(crate) async fn add_to_buffer(&self, entry: ConversationEntry) {
         let mut buffer = self.buffer.lock().await;
         buffer.push(entry);
 
@@ -183,6 +183,120 @@ impl PersistenceService {
 
     pub async fn flush_all(&self) -> Result<()> {
         self.flush_buffer().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repository::test_helpers;
+
+    fn make_entry(conversation_id: &str, uuid: &str) -> ConversationEntry {
+        ConversationEntry {
+            id: None,
+            conversation_id: conversation_id.to_string(),
+            entry_uuid: uuid.to_string(),
+            parent_uuid: None,
+            entry_type: "user".to_string(),
+            role: Some("user".to_string()),
+            content: Some("test content".to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            raw_json: "{}".to_string(),
+            token_count: None,
+            model: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn new_creates_service_with_defaults() {
+        let repo = test_helpers::test_repository().await;
+        let svc = PersistenceService::new(Arc::new(repo));
+        assert_eq!(svc.batch_size, 50);
+        assert_eq!(svc.flush_interval, Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn flush_all_empty_buffer_is_noop() {
+        let repo = test_helpers::test_repository().await;
+        let svc = PersistenceService::new(Arc::new(repo));
+        // Should succeed without error
+        svc.flush_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_to_buffer_and_flush_persists_entries() {
+        let repo = Arc::new(test_helpers::test_repository().await);
+
+        // Create a conversation first (foreign key constraint)
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let svc = PersistenceService::new(repo.clone());
+
+        svc.add_to_buffer(make_entry("conv-1", "entry-1")).await;
+        svc.add_to_buffer(make_entry("conv-1", "entry-2")).await;
+
+        // Buffer should have 2 entries (below batch_size)
+        assert_eq!(svc.buffer.lock().await.len(), 2);
+
+        // Flush should persist them
+        svc.flush_all().await.unwrap();
+
+        // Buffer should now be empty
+        assert_eq!(svc.buffer.lock().await.len(), 0);
+
+        // Entries should be in the database
+        let fetched = repo.get_conversation_with_entries("conv-1").await.unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn flush_all_twice_is_safe() {
+        let repo = Arc::new(test_helpers::test_repository().await);
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let svc = PersistenceService::new(repo.clone());
+        svc.add_to_buffer(make_entry("conv-1", "entry-1")).await;
+        svc.flush_all().await.unwrap();
+        // Second flush on empty buffer should be fine
+        svc.flush_all().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn batch_size_triggers_auto_flush() {
+        let repo = Arc::new(test_helpers::test_repository().await);
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        repo.create_conversation(&conv).await.unwrap();
+
+        let svc = PersistenceService {
+            repository: repo.clone(),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            flush_interval: Duration::from_secs(5),
+            batch_size: 3, // Small batch size for testing
+        };
+
+        // Add entries up to batch_size
+        svc.add_to_buffer(make_entry("conv-1", "e1")).await;
+        svc.add_to_buffer(make_entry("conv-1", "e2")).await;
+
+        // Buffer should have 2 (below batch_size)
+        assert_eq!(svc.buffer.lock().await.len(), 2);
+
+        // Adding the 3rd should trigger auto-flush
+        svc.add_to_buffer(make_entry("conv-1", "e3")).await;
+
+        // Buffer should be empty after auto-flush
+        assert_eq!(svc.buffer.lock().await.len(), 0);
+
+        // All entries should be in the database
+        let fetched = repo
+            .get_conversation_with_entries("conv-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.entries.len(), 3);
     }
 }
 

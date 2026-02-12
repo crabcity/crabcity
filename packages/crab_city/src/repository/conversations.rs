@@ -561,6 +561,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_conversation_file_metadata() {
+        let repo = test_helpers::test_repository().await;
+        let conv = Conversation::new("conv-1".to_string(), "inst-1".to_string())
+            .with_session_id("session-1".to_string());
+        repo.create_conversation(&conv).await.unwrap();
+
+        // Update file metadata
+        let now = chrono::Utc::now().timestamp();
+        repo.update_conversation_file_metadata("session-1", "abc123hash", 9999, 2, now)
+            .await
+            .unwrap();
+
+        // Verify
+        let fetched = repo.get_conversation("conv-1").await.unwrap().unwrap();
+        assert_eq!(fetched.file_hash, Some("abc123hash".to_string()));
+        assert_eq!(fetched.file_mtime, Some(9999));
+        assert_eq!(fetched.import_version, Some(2));
+        assert_eq!(fetched.updated_at, now);
+    }
+
+    #[tokio::test]
+    async fn update_conversation_file_metadata_noop_for_missing_session() {
+        let repo = test_helpers::test_repository().await;
+        // Should succeed (SQL UPDATE with no matching rows is not an error)
+        repo.update_conversation_file_metadata("nonexistent", "hash", 0, 1, 0)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn delete_conversation_entries() {
         let repo = test_helpers::test_repository().await;
         let conv = make_conversation("conv-1", "inst-1");

@@ -1198,4 +1198,239 @@ mod tests {
             assert!(users.is_empty());
         }
     }
+
+    // =========================================================================
+    // touch_terminal_lock tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_touch_terminal_lock_updates_activity() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let user = make_ws_user("u-1", "Alice");
+
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "conn-1", &user)
+            .await;
+
+        let before = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        // Sleep briefly so the timestamp differs
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        state_mgr.touch_terminal_lock("inst-1", "conn-1").await;
+
+        let after = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        assert!(after >= before);
+    }
+
+    #[tokio::test]
+    async fn test_touch_terminal_lock_wrong_connection_ignored() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let user = make_ws_user("u-1", "Alice");
+
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "conn-1", &user)
+            .await;
+
+        let before = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        // Touch with wrong connection_id — should not update
+        state_mgr.touch_terminal_lock("inst-1", "conn-other").await;
+
+        let after = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn test_touch_terminal_lock_no_lock_noop() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        // Touch on non-existent lock — should not panic
+        state_mgr.touch_terminal_lock("inst-1", "conn-1").await;
+        assert!(state_mgr.get_terminal_lock("inst-1").await.is_none());
+    }
+
+    // =========================================================================
+    // reconcile_terminal_lock_with_presence tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_reconcile_clears_disconnected_holder() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let alice = make_ws_user("u-1", "Alice");
+
+        // Alice joins and gets the lock
+        state_mgr.add_presence("inst-1", "conn-1", &alice).await;
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "conn-1", &alice)
+            .await;
+
+        // Alice disconnects
+        state_mgr
+            .remove_presence_from_instance("inst-1", "conn-1")
+            .await;
+
+        // Reconcile should clear the lock
+        let changed = state_mgr
+            .reconcile_terminal_lock_with_presence("inst-1")
+            .await;
+        assert!(changed);
+        assert!(state_mgr.get_terminal_lock("inst-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_auto_grants_sole_user() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let alice = make_ws_user("u-1", "Alice");
+
+        // Alice joins but no lock is held
+        state_mgr.add_presence("inst-1", "conn-1", &alice).await;
+
+        // Reconcile should auto-grant to sole user
+        let changed = state_mgr
+            .reconcile_terminal_lock_with_presence("inst-1")
+            .await;
+        assert!(changed);
+
+        let lock = state_mgr.get_terminal_lock("inst-1").await.unwrap();
+        assert_eq!(lock.holder_user_id, "u-1");
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_no_change_when_holder_present() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let alice = make_ws_user("u-1", "Alice");
+        let bob = make_ws_user("u-2", "Bob");
+
+        // Alice and Bob both present, Alice holds lock
+        state_mgr.add_presence("inst-1", "conn-1", &alice).await;
+        state_mgr.add_presence("inst-1", "conn-2", &bob).await;
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "conn-1", &alice)
+            .await;
+
+        // No change needed — holder is still present
+        let changed = state_mgr
+            .reconcile_terminal_lock_with_presence("inst-1")
+            .await;
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_no_auto_grant_multiple_users() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let alice = make_ws_user("u-1", "Alice");
+        let bob = make_ws_user("u-2", "Bob");
+
+        // Two users present, no lock — should NOT auto-grant
+        state_mgr.add_presence("inst-1", "conn-1", &alice).await;
+        state_mgr.add_presence("inst-1", "conn-2", &bob).await;
+
+        let changed = state_mgr
+            .reconcile_terminal_lock_with_presence("inst-1")
+            .await;
+        assert!(!changed);
+        assert!(state_mgr.get_terminal_lock("inst-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_empty_instance_no_change() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        // No presence at all — no change
+        let changed = state_mgr
+            .reconcile_terminal_lock_with_presence("inst-1")
+            .await;
+        assert!(!changed);
+    }
+
+    // =========================================================================
+    // Lifecycle broadcast tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_subscribe_lifecycle_receives_events() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let mut rx = state_mgr.subscribe_lifecycle();
+
+        state_mgr.broadcast_lifecycle(ServerMessage::InstanceStopped {
+            instance_id: "inst-1".to_string(),
+        });
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            ServerMessage::InstanceStopped { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected InstanceStopped"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_state_broadcast() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let mut rx = state_mgr.subscribe();
+
+        // Manually broadcast via the underlying channel
+        // (normally done by state manager forwarding)
+        let _ = state_mgr
+            .broadcast_tx
+            .send(("inst-1".to_string(), ClaudeState::Idle, false));
+
+        let (id, state, stale) = rx.recv().await.unwrap();
+        assert_eq!(id, "inst-1");
+        assert!(matches!(state, ClaudeState::Idle));
+        assert!(!stale);
+    }
+
+    // =========================================================================
+    // Unregister instance cleanup tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_unregister_cleans_up_all_state() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let alice = make_ws_user("u-1", "Alice");
+
+        // Set up state for an instance
+        state_mgr.try_claim_session("sess-1", "inst-1").await;
+        state_mgr.mark_first_input("inst-1").await;
+        state_mgr
+            .push_pending_attribution("inst-1", "u-1".into(), "Alice".into(), "hello", None)
+            .await;
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "conn-1", &alice)
+            .await;
+
+        // Unregister should clean up everything
+        state_mgr.unregister_instance("inst-1").await;
+
+        assert!(state_mgr.get_first_input_at("inst-1").await.is_none());
+        assert!(state_mgr.get_terminal_lock("inst-1").await.is_none());
+        // Session should be reclaimable
+        assert!(state_mgr.try_claim_session("sess-1", "inst-2").await);
+        // Attribution queue should be gone
+        assert!(
+            state_mgr
+                .consume_pending_attribution("inst-1", "hello")
+                .await
+                .is_none()
+        );
+    }
 }

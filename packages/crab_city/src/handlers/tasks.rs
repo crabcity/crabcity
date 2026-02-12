@@ -313,3 +313,432 @@ pub async fn migrate_tasks_handler(
 
     Ok(Json(serde_json::json!({ "ok": true, "ids": ids })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        Router,
+        body::Body,
+        http::Request,
+        routing::{delete, get, patch, post},
+    };
+    use tower::ServiceExt;
+
+    async fn test_router() -> (Router, tempfile::TempDir) {
+        let (state, tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/tasks", get(list_tasks_handler).post(create_task_handler))
+            .route("/tasks/migrate", post(migrate_tasks_handler))
+            .route(
+                "/tasks/{id}",
+                get(get_task_handler)
+                    .patch(update_task_handler)
+                    .delete(delete_task_handler),
+            )
+            .with_state(state);
+        (router, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_empty() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_task() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", get(get_task_handler))
+            .with_state(state);
+
+        // Create
+        let create_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Test task","body":"Do the thing"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(created["title"], "Test task");
+        assert_eq!(created["status"], "pending");
+
+        // Get by ID
+        let id = created["id"].as_i64().unwrap();
+        let get_resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/tasks/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let fetched: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(fetched["title"], "Test task");
+    }
+
+    #[tokio::test]
+    async fn test_update_task() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", patch(update_task_handler))
+            .with_state(state);
+
+        // Create
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Original"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Update
+        let update_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/tasks/{}", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Updated","status":"in_progress"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_delete_task() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", delete(delete_task_handler))
+            .with_state(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"To delete"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        let del_resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/tasks/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_task_not_found() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tasks/99999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_task_with_priority() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"High pri","priority":5}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["priority"], 5);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_tasks() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks/migrate")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"[{"title":"Migrated task 1"},{"title":"Migrated task 2"}]"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["ok"].as_bool().unwrap());
+        assert_eq!(json["ids"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_and_remove_task_tag() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", get(get_task_handler))
+            .route("/tasks/{id}/tags", post(add_task_tag_handler))
+            .route("/tasks/{id}/tags/{tag_id}", delete(remove_task_tag_handler))
+            .with_state(state);
+
+        // Create a task
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Tag test task"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Add a tag
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tasks/{}/tags", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tag":"urgent"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Get task to see tags
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/tasks/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let fetched: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let tags = fetched["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["name"], "urgent");
+        let tag_id = tags[0]["id"].as_i64().unwrap();
+
+        // Remove the tag
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/tasks/{}/tags/{}", id, tag_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_dispatch() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}/dispatch", post(create_dispatch_handler))
+            .with_state(state);
+
+        // Create a task
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Dispatch test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Create dispatch
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tasks/{}/dispatch", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"instance_id":"inst-1","sent_text":"do the thing"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["ok"].as_bool().unwrap());
+        assert!(json["dispatch_id"].as_i64().is_some());
+        // Task should transition from pending to in_progress
+        assert_eq!(json["status"], "in_progress");
+    }
+
+    #[tokio::test]
+    async fn test_create_dispatch_task_not_found() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks/{id}/dispatch", post(create_dispatch_handler))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks/99999/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"instance_id":"inst-1","sent_text":"test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_list_tasks_with_filters() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", get(list_tasks_handler).post(create_task_handler))
+            .with_state(state);
+
+        // Create a task with status
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"Filtered task","status":"in_progress"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Filter by status
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tasks?status=in_progress")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let tasks: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(!tasks.as_array().unwrap().is_empty());
+    }
+}

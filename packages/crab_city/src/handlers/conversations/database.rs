@@ -203,3 +203,331 @@ pub async fn get_shared_conversation(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        Router,
+        body::Body,
+        http::Request,
+        routing::{get, post},
+    };
+    use tower::ServiceExt;
+
+    async fn test_router() -> (Router, tempfile::TempDir) {
+        let (state, tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/conversations", get(list_conversations))
+            .route("/conversations/search", get(search_conversations_handler))
+            .route("/conversations/{id}", get(get_conversation_by_id))
+            .route(
+                "/conversations/{id}/comments",
+                post(add_comment).get(get_comments),
+            )
+            .route("/conversations/{id}/share", post(create_share))
+            .route("/share/{token}", get(get_shared_conversation))
+            .with_state(state);
+        (router, tmp)
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_empty() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_pagination() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations?page=1&per_page=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_conversation_not_found() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/nonexistent-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_search_conversations() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/search?q=test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_search_with_filters() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/search?q=test&role=user&date_from=0&date_to=9999999999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_comments_empty() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/some-id/comments")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_shared_conversation_not_found() {
+        let (app, _tmp) = test_router().await;
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/share/invalid-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_add_comment() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        // Insert a conversation first
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        let app = Router::new()
+            .route(
+                "/conversations/{id}/comments",
+                post(add_comment).get(get_comments),
+            )
+            .with_state(state);
+
+        // Add comment
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations/conv-1/comments")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"content":"Great insight!","author":"Alice"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["id"].as_i64().is_some());
+
+        // Verify via get_comments
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/conv-1/comments")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let comments: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(comments.as_array().unwrap().len(), 1);
+        assert_eq!(comments[0]["content"], "Great insight!");
+    }
+
+    #[tokio::test]
+    async fn test_get_conversation_by_id_success() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let mut conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        conv.title = Some("Test Conversation".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        let app = Router::new()
+            .route("/conversations/{id}", get(get_conversation_by_id))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations/conv-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["conversation"]["id"], "conv-1");
+        assert_eq!(json["conversation"]["title"], "Test Conversation");
+    }
+
+    #[tokio::test]
+    async fn test_create_share() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        let app = Router::new()
+            .route("/conversations/{id}/share", post(create_share))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations/conv-1/share")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"expires_in_days":7,"title":"My Share","description":"A shared convo"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["share_token"].as_str().is_some());
+        assert!(json["url"].as_str().unwrap().contains("/api/share/"));
+    }
+
+    #[tokio::test]
+    async fn test_get_shared_conversation_success() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+
+        // Create a conversation with entries
+        let conv = crate::models::Conversation::new("conv-1".into(), "inst-1".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        // Create a share
+        let share = crate::models::ConversationShare::new("conv-1".into(), Some(7));
+        let token = state.repository.create_share(&share).await.unwrap();
+
+        let app = Router::new()
+            .route("/share/{token}", get(get_shared_conversation))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/share/{}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_add_comment_with_entry_uuid() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let conv = crate::models::Conversation::new("conv-2".into(), "inst-1".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        let app = Router::new()
+            .route("/conversations/{id}/comments", post(add_comment))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations/conv-2/comments")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"content":"Note on entry","entry_uuid":"entry-uuid-123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_create_share_defaults() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let conv = crate::models::Conversation::new("conv-3".into(), "inst-1".into());
+        state.repository.create_conversation(&conv).await.unwrap();
+
+        let app = Router::new()
+            .route("/conversations/{id}/share", post(create_share))
+            .with_state(state);
+
+        // No optional fields
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations/conv-3/share")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}

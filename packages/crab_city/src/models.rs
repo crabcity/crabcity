@@ -547,6 +547,283 @@ pub fn attribution_content_matches(stored_content: &str, entry_content: &str) ->
 }
 
 #[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    // ── Conversation ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_conversation_new() {
+        let c = Conversation::new("conv-1".into(), "inst-1".into());
+        assert_eq!(c.id, "conv-1");
+        assert_eq!(c.instance_id, "inst-1");
+        assert!(c.session_id.is_none());
+        assert!(c.title.is_none());
+        assert!(!c.is_public);
+        assert!(!c.is_deleted);
+        assert!(c.created_at > 0);
+        assert_eq!(c.created_at, c.updated_at);
+    }
+
+    #[test]
+    fn test_conversation_with_session_id() {
+        let c = Conversation::new("c".into(), "i".into()).with_session_id("sess-123".into());
+        assert_eq!(c.session_id.as_deref(), Some("sess-123"));
+    }
+
+    // ── Comment ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_comment_new_with_author() {
+        let c = Comment::new(
+            "conv-1".into(),
+            "Great work!".into(),
+            Some("alice".into()),
+            None,
+        );
+        assert_eq!(c.conversation_id, "conv-1");
+        assert_eq!(c.content, "Great work!");
+        assert_eq!(c.author, "alice");
+        assert!(c.entry_uuid.is_none());
+        assert!(c.id.is_none());
+        assert!(c.updated_at.is_none());
+        assert!(c.created_at > 0);
+    }
+
+    #[test]
+    fn test_comment_new_anonymous() {
+        let c = Comment::new(
+            "conv-1".into(),
+            "Note".into(),
+            None,
+            Some("entry-uuid".into()),
+        );
+        assert_eq!(c.author, "anonymous");
+        assert_eq!(c.entry_uuid.as_deref(), Some("entry-uuid"));
+    }
+
+    // ── ConversationShare ───────────────────────────────────────────────
+
+    #[test]
+    fn test_share_new() {
+        let s = ConversationShare::new("conv-1".into(), None);
+        assert_eq!(s.conversation_id, "conv-1");
+        assert!(!s.share_token.is_empty());
+        assert!(s.expires_at.is_none());
+        assert_eq!(s.access_count, 0);
+        assert!(s.max_access_count.is_none());
+    }
+
+    #[test]
+    fn test_share_new_with_expiry() {
+        let s = ConversationShare::new("conv-1".into(), Some(7));
+        assert!(s.expires_at.is_some());
+        let expected_delta = 7 * 24 * 60 * 60;
+        let actual_delta = s.expires_at.unwrap() - s.created_at;
+        assert_eq!(actual_delta, expected_delta);
+    }
+
+    #[test]
+    fn test_share_is_expired_no_expiry() {
+        let s = ConversationShare::new("conv-1".into(), None);
+        assert!(!s.is_expired());
+    }
+
+    #[test]
+    fn test_share_is_expired_future() {
+        let s = ConversationShare::new("conv-1".into(), Some(30));
+        assert!(!s.is_expired());
+    }
+
+    #[test]
+    fn test_share_is_expired_past() {
+        let mut s = ConversationShare::new("conv-1".into(), None);
+        s.expires_at = Some(0); // epoch = definitely past
+        assert!(s.is_expired());
+    }
+
+    #[test]
+    fn test_share_access_limit_not_reached() {
+        let mut s = ConversationShare::new("conv-1".into(), None);
+        s.max_access_count = Some(10);
+        s.access_count = 5;
+        assert!(!s.is_access_limit_reached());
+    }
+
+    #[test]
+    fn test_share_access_limit_reached() {
+        let mut s = ConversationShare::new("conv-1".into(), None);
+        s.max_access_count = Some(10);
+        s.access_count = 10;
+        assert!(s.is_access_limit_reached());
+    }
+
+    #[test]
+    fn test_share_access_limit_none() {
+        let s = ConversationShare::new("conv-1".into(), None);
+        assert!(!s.is_access_limit_reached());
+    }
+
+    // ── InstanceInvitation ──────────────────────────────────────────────
+
+    #[test]
+    fn test_invitation_is_expired_no_expiry() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: None,
+            use_count: 0,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(!inv.is_expired());
+    }
+
+    #[test]
+    fn test_invitation_is_expired_past() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: None,
+            use_count: 0,
+            expires_at: Some(0),
+            created_at: 0,
+        };
+        assert!(inv.is_expired());
+    }
+
+    #[test]
+    fn test_invitation_is_used_up() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: Some(3),
+            use_count: 3,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(inv.is_used_up());
+    }
+
+    #[test]
+    fn test_invitation_not_used_up() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: Some(3),
+            use_count: 1,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(!inv.is_used_up());
+    }
+
+    #[test]
+    fn test_invitation_unlimited_uses() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: None,
+            use_count: 1000,
+            expires_at: None,
+            created_at: 0,
+        };
+        assert!(!inv.is_used_up());
+    }
+
+    // ── ServerInvite ────────────────────────────────────────────────────
+
+    fn make_server_invite() -> ServerInvite {
+        ServerInvite {
+            token: "tok".into(),
+            created_by: "admin".into(),
+            label: None,
+            max_uses: None,
+            use_count: 0,
+            expires_at: None,
+            revoked: false,
+            created_at: Utc::now().timestamp(),
+        }
+    }
+
+    #[test]
+    fn test_server_invite_is_valid() {
+        let inv = make_server_invite();
+        assert!(inv.is_valid());
+    }
+
+    #[test]
+    fn test_server_invite_revoked_not_valid() {
+        let mut inv = make_server_invite();
+        inv.revoked = true;
+        assert!(!inv.is_valid());
+    }
+
+    #[test]
+    fn test_server_invite_expired_not_valid() {
+        let mut inv = make_server_invite();
+        inv.expires_at = Some(0);
+        assert!(!inv.is_valid());
+    }
+
+    #[test]
+    fn test_server_invite_used_up_not_valid() {
+        let mut inv = make_server_invite();
+        inv.max_uses = Some(1);
+        inv.use_count = 1;
+        assert!(!inv.is_valid());
+    }
+
+    // ── UserInfo ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_user_to_user_info() {
+        let user = User {
+            id: "u1".into(),
+            username: "alice".into(),
+            display_name: "Alice".into(),
+            password_hash: "secret_hash".into(),
+            is_admin: true,
+            is_disabled: false,
+            created_at: 100,
+            updated_at: 200,
+        };
+        let info: UserInfo = user.into();
+        assert_eq!(info.id, "u1");
+        assert_eq!(info.username, "alice");
+        assert_eq!(info.display_name, "Alice");
+        assert!(info.is_admin);
+    }
+
+    // ── normalize_attribution_content ───────────────────────────────────
+
+    #[test]
+    fn test_normalize_strips_cr() {
+        assert_eq!(
+            normalize_attribution_content("line1\r\nline2\r\n"),
+            "line1\nline2"
+        );
+    }
+
+    #[test]
+    fn test_normalize_truncates() {
+        let long = "a".repeat(200);
+        let normalized = normalize_attribution_content(&long);
+        assert_eq!(normalized.len(), ATTRIBUTION_CONTENT_PREFIX_LEN);
+    }
+}
+
+#[cfg(test)]
 mod attribution_tests {
     use super::*;
 
@@ -636,5 +913,746 @@ mod attribution_tests {
     fn test_normalize_preserves_meaningful_content() {
         let normalized = normalize_attribution_content("  hello world  ");
         assert_eq!(normalized, "hello world");
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn paginated_response_serde() {
+        let resp = PaginatedResponse {
+            items: vec!["a".to_string(), "b".to_string()],
+            total: 10,
+            page: 1,
+            per_page: 2,
+            total_pages: 5,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["total"], 10);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["per_page"], 2);
+        assert_eq!(json["total_pages"], 5);
+        assert_eq!(json["items"].as_array().unwrap().len(), 2);
+        let rt: PaginatedResponse<String> = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.items, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn chat_message_serde() {
+        let msg = ChatMessage {
+            id: Some(42),
+            uuid: "msg-uuid".into(),
+            scope: "global".into(),
+            user_id: "u-1".into(),
+            display_name: "Alice".into(),
+            content: "Hello!".into(),
+            created_at: 1000,
+            forwarded_from: Some("inst-1".into()),
+            topic: Some("general".into()),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["uuid"], "msg-uuid");
+        assert_eq!(json["scope"], "global");
+        assert_eq!(json["forwarded_from"], "inst-1");
+        assert_eq!(json["topic"], "general");
+        let rt: ChatMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.id, Some(42));
+        assert_eq!(rt.content, "Hello!");
+    }
+
+    #[test]
+    fn chat_message_none_fields() {
+        let msg = ChatMessage {
+            id: None,
+            uuid: "u".into(),
+            scope: "global".into(),
+            user_id: "u".into(),
+            display_name: "A".into(),
+            content: "x".into(),
+            created_at: 0,
+            forwarded_from: None,
+            topic: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json["forwarded_from"].is_null());
+        assert!(json["topic"].is_null());
+    }
+
+    #[test]
+    fn chat_topic_summary_serde() {
+        let s = ChatTopicSummary {
+            topic: "general".into(),
+            message_count: 42,
+            latest_at: 9999,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["topic"], "general");
+        assert_eq!(json["message_count"], 42);
+        let rt: ChatTopicSummary = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.latest_at, 9999);
+    }
+
+    #[test]
+    fn task_serde() {
+        let t = Task {
+            id: Some(1),
+            uuid: "task-uuid".into(),
+            title: "Fix bug".into(),
+            body: Some("Details here".into()),
+            status: "open".into(),
+            priority: 2,
+            instance_id: Some("inst-1".into()),
+            creator_id: Some("u-1".into()),
+            creator_name: "Alice".into(),
+            sort_order: 1.5,
+            created_at: 100,
+            updated_at: 200,
+            completed_at: None,
+            is_deleted: false,
+            sent_text: None,
+            conversation_id: None,
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["title"], "Fix bug");
+        assert_eq!(json["priority"], 2);
+        assert_eq!(json["sort_order"], 1.5);
+        let rt: Task = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.uuid, "task-uuid");
+        assert!(rt.completed_at.is_none());
+    }
+
+    #[test]
+    fn task_dispatch_serde() {
+        let d = TaskDispatch {
+            id: Some(10),
+            task_id: 1,
+            instance_id: "inst-1".into(),
+            sent_text: "Do this".into(),
+            conversation_id: Some("conv-1".into()),
+            sent_at: 500,
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["task_id"], 1);
+        assert_eq!(json["sent_text"], "Do this");
+        let rt: TaskDispatch = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.conversation_id, Some("conv-1".into()));
+    }
+
+    #[test]
+    fn task_with_tags_serde() {
+        let tw = TaskWithTags {
+            task: Task {
+                id: Some(1),
+                uuid: "t".into(),
+                title: "T".into(),
+                body: None,
+                status: "open".into(),
+                priority: 0,
+                instance_id: None,
+                creator_id: None,
+                creator_name: "A".into(),
+                sort_order: 0.0,
+                created_at: 0,
+                updated_at: 0,
+                completed_at: None,
+                is_deleted: false,
+                sent_text: None,
+                conversation_id: None,
+            },
+            tags: vec![Tag {
+                id: 1,
+                name: "bug".into(),
+                color: Some("#ff0000".into()),
+            }],
+            dispatches: vec![],
+        };
+        let json = serde_json::to_value(&tw).unwrap();
+        // #[serde(flatten)] means task fields appear at top level
+        assert_eq!(json["title"], "T");
+        assert_eq!(json["tags"][0]["name"], "bug");
+        // dispatches should be omitted when empty (skip_serializing_if)
+        assert!(json.get("dispatches").is_none());
+    }
+
+    #[test]
+    fn task_with_tags_with_dispatches() {
+        let tw = TaskWithTags {
+            task: Task {
+                id: Some(1),
+                uuid: "t".into(),
+                title: "T".into(),
+                body: None,
+                status: "open".into(),
+                priority: 0,
+                instance_id: None,
+                creator_id: None,
+                creator_name: "A".into(),
+                sort_order: 0.0,
+                created_at: 0,
+                updated_at: 0,
+                completed_at: None,
+                is_deleted: false,
+                sent_text: None,
+                conversation_id: None,
+            },
+            tags: vec![],
+            dispatches: vec![TaskDispatch {
+                id: None,
+                task_id: 1,
+                instance_id: "i".into(),
+                sent_text: "go".into(),
+                conversation_id: None,
+                sent_at: 0,
+            }],
+        };
+        let json = serde_json::to_value(&tw).unwrap();
+        assert_eq!(json["dispatches"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_task_request_serde() {
+        let req = CreateTaskRequest {
+            title: "New task".into(),
+            body: None,
+            status: Some("open".into()),
+            priority: Some(1),
+            instance_id: None,
+            tags: Some(vec!["bug".into()]),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["title"], "New task");
+        assert_eq!(json["tags"][0], "bug");
+        let rt: CreateTaskRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.priority, Some(1));
+    }
+
+    #[test]
+    fn update_task_request_default() {
+        let req = UpdateTaskRequest::default();
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json["title"].is_null());
+        assert!(json["status"].is_null());
+    }
+
+    #[test]
+    fn task_list_filters_deserialize() {
+        let json = serde_json::json!({
+            "status": "open",
+            "tag": "bug",
+            "limit": 10
+        });
+        let f: TaskListFilters = serde_json::from_value(json).unwrap();
+        assert_eq!(f.status, Some("open".into()));
+        assert_eq!(f.tag, Some("bug".into()));
+        assert_eq!(f.limit, Some(10));
+        assert!(f.instance_id.is_none());
+        assert!(f.search.is_none());
+        assert!(f.offset.is_none());
+    }
+
+    #[test]
+    fn migrate_task_item_serde() {
+        let m = MigrateTaskItem {
+            title: "Migrate me".into(),
+            instance_id: Some("inst-1".into()),
+            created_at: Some(12345),
+        };
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["title"], "Migrate me");
+        let rt: MigrateTaskItem = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.created_at, Some(12345));
+    }
+
+    #[test]
+    fn input_attribution_serde() {
+        let attr = InputAttribution {
+            id: Some(1),
+            instance_id: "inst-1".into(),
+            user_id: "u-1".into(),
+            display_name: "Alice".into(),
+            timestamp: 999,
+            entry_uuid: Some("entry-1".into()),
+            content_preview: Some("hello".into()),
+            task_id: None,
+        };
+        let json = serde_json::to_value(&attr).unwrap();
+        assert_eq!(json["instance_id"], "inst-1");
+        assert_eq!(json["entry_uuid"], "entry-1");
+        let rt: InputAttribution = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.timestamp, 999);
+        assert!(rt.task_id.is_none());
+    }
+
+    #[test]
+    fn conversation_summary_serde() {
+        let cs = ConversationSummary {
+            id: "conv-1".into(),
+            title: Some("My convo".into()),
+            instance_id: "inst-1".into(),
+            created_at: 100,
+            updated_at: 200,
+            entry_count: 5,
+            is_public: true,
+        };
+        let json = serde_json::to_value(&cs).unwrap();
+        assert_eq!(json["id"], "conv-1");
+        assert_eq!(json["entry_count"], 5);
+        assert_eq!(json["is_public"], true);
+        let rt: ConversationSummary = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.title, Some("My convo".into()));
+    }
+
+    #[test]
+    fn search_result_conversation_serde() {
+        let sr = SearchResultConversation {
+            id: "conv-1".into(),
+            title: None,
+            instance_id: "inst-1".into(),
+            created_at: 100,
+            updated_at: 200,
+            entry_count: 10,
+            match_count: 3,
+            matches: vec![SearchMatchEntry {
+                entry_uuid: "e-1".into(),
+                role: Some("assistant".into()),
+                snippet: "found it".into(),
+                timestamp: "2025-01-01T00:00:00Z".into(),
+            }],
+        };
+        let json = serde_json::to_value(&sr).unwrap();
+        assert_eq!(json["match_count"], 3);
+        assert_eq!(json["matches"][0]["snippet"], "found it");
+        let rt: SearchResultConversation = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.matches.len(), 1);
+        assert_eq!(rt.matches[0].role, Some("assistant".into()));
+    }
+
+    #[test]
+    fn entry_attribution_serde() {
+        let ea = EntryAttribution {
+            entry_uuid: "e-1".into(),
+            user_id: "u-1".into(),
+            display_name: "Alice".into(),
+            task_id: Some(42),
+        };
+        let json = serde_json::to_value(&ea).unwrap();
+        assert_eq!(json["task_id"], 42);
+        let rt: EntryAttribution = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.entry_uuid, "e-1");
+    }
+
+    #[test]
+    fn entry_attribution_skip_none_task_id() {
+        let ea = EntryAttribution {
+            entry_uuid: "e-1".into(),
+            user_id: "u-1".into(),
+            display_name: "Alice".into(),
+            task_id: None,
+        };
+        let json = serde_json::to_value(&ea).unwrap();
+        assert!(json.get("task_id").is_none());
+    }
+
+    #[test]
+    fn conversation_with_entries_serde() {
+        let cwe = ConversationWithEntries {
+            conversation: Conversation::new("conv-1".into(), "inst-1".into()),
+            entries: vec![],
+            comments: vec![],
+            tags: vec![Tag {
+                id: 1,
+                name: "important".into(),
+                color: None,
+            }],
+            attributions: vec![],
+        };
+        let json = serde_json::to_value(&cwe).unwrap();
+        assert_eq!(json["conversation"]["id"], "conv-1");
+        assert_eq!(json["tags"][0]["name"], "important");
+        // attributions empty → should be skipped
+        assert!(json.get("attributions").is_none());
+    }
+
+    #[test]
+    fn conversation_with_entries_with_attributions() {
+        let cwe = ConversationWithEntries {
+            conversation: Conversation::new("conv-1".into(), "inst-1".into()),
+            entries: vec![],
+            comments: vec![],
+            tags: vec![],
+            attributions: vec![EntryAttribution {
+                entry_uuid: "e-1".into(),
+                user_id: "u-1".into(),
+                display_name: "Alice".into(),
+                task_id: None,
+            }],
+        };
+        let json = serde_json::to_value(&cwe).unwrap();
+        assert_eq!(json["attributions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_password_hash_not_serialized() {
+        let user = User {
+            id: "u-1".into(),
+            username: "alice".into(),
+            display_name: "Alice".into(),
+            password_hash: "super_secret".into(),
+            is_admin: false,
+            is_disabled: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let json = serde_json::to_value(&user).unwrap();
+        // password_hash has #[serde(skip_serializing)]
+        assert!(json.get("password_hash").is_none());
+    }
+
+    #[test]
+    fn session_serde() {
+        let s = Session {
+            token: "tok".into(),
+            user_id: "u-1".into(),
+            csrf_token: "csrf".into(),
+            expires_at: 9999,
+            last_active_at: 1000,
+            user_agent: Some("test-agent".into()),
+            ip_address: None,
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["csrf_token"], "csrf");
+        let rt: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.expires_at, 9999);
+        assert!(rt.ip_address.is_none());
+    }
+
+    #[test]
+    fn instance_permission_serde() {
+        let p = InstancePermission {
+            instance_id: "inst-1".into(),
+            user_id: "u-1".into(),
+            role: "owner".into(),
+            granted_at: 500,
+            granted_by: Some("admin".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["role"], "owner");
+        let rt: InstancePermission = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.granted_by, Some("admin".into()));
+    }
+
+    #[test]
+    fn server_invite_with_acceptors_serde() {
+        let siwa = ServerInviteWithAcceptors {
+            invite: ServerInvite {
+                token: "tok".into(),
+                created_by: "admin".into(),
+                label: Some("Team invite".into()),
+                max_uses: Some(5),
+                use_count: 2,
+                expires_at: None,
+                revoked: false,
+                created_at: 100,
+            },
+            acceptors: vec![InviteAcceptor {
+                user_id: "u-1".into(),
+                username: "alice".into(),
+                display_name: "Alice".into(),
+                created_at: 200,
+            }],
+        };
+        let json = serde_json::to_value(&siwa).unwrap();
+        assert_eq!(json["invite"]["label"], "Team invite");
+        assert_eq!(json["acceptors"][0]["username"], "alice");
+        let rt: ServerInviteWithAcceptors = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.acceptors.len(), 1);
+    }
+
+    #[test]
+    fn conversation_share_serde() {
+        let cs = ConversationShare::new("conv-1".into(), Some(7));
+        let json = serde_json::to_value(&cs).unwrap();
+        assert_eq!(json["conversation_id"], "conv-1");
+        assert!(json["share_token"].as_str().unwrap().len() > 0);
+        let rt: ConversationShare = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.conversation_id, "conv-1");
+    }
+
+    #[test]
+    fn conversation_serde() {
+        let c = Conversation::new("conv-1".into(), "inst-1".into());
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["id"], "conv-1");
+        assert_eq!(json["is_public"], false);
+        assert_eq!(json["is_deleted"], false);
+        let rt: Conversation = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.instance_id, "inst-1");
+    }
+
+    #[test]
+    fn conversation_entry_serde() {
+        let ce = ConversationEntry {
+            id: Some(1),
+            conversation_id: "conv-1".into(),
+            entry_uuid: "e-uuid".into(),
+            parent_uuid: Some("p-uuid".into()),
+            entry_type: "human".into(),
+            role: Some("user".into()),
+            content: Some("Hello".into()),
+            timestamp: "2025-01-01T00:00:00Z".into(),
+            raw_json: "{}".into(),
+            token_count: Some(5),
+            model: None,
+        };
+        let json = serde_json::to_value(&ce).unwrap();
+        assert_eq!(json["entry_type"], "human");
+        assert_eq!(json["token_count"], 5);
+        let rt: ConversationEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.entry_uuid, "e-uuid");
+    }
+
+    #[test]
+    fn tag_serde() {
+        let t = Tag {
+            id: 1,
+            name: "bug".into(),
+            color: Some("#ff0000".into()),
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["name"], "bug");
+        let rt: Tag = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.color, Some("#ff0000".into()));
+    }
+
+    #[test]
+    fn instance_invitation_serde() {
+        let inv = InstanceInvitation {
+            invite_token: "tok".into(),
+            instance_id: "inst-1".into(),
+            created_by: "alice".into(),
+            role: "collaborator".into(),
+            max_uses: Some(3),
+            use_count: 1,
+            expires_at: Some(99999),
+            created_at: 100,
+        };
+        let json = serde_json::to_value(&inv).unwrap();
+        assert_eq!(json["role"], "collaborator");
+        assert_eq!(json["max_uses"], 3);
+        let rt: InstanceInvitation = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.use_count, 1);
+    }
+
+    #[test]
+    fn comment_serde() {
+        let c = Comment::new("conv-1".into(), "Nice".into(), Some("bob".into()), None);
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["author"], "bob");
+        assert_eq!(json["content"], "Nice");
+        let rt: Comment = serde_json::from_value(json).unwrap();
+        assert_eq!(rt.conversation_id, "conv-1");
+    }
+}
+
+#[cfg(test)]
+mod from_claude_entry_tests {
+    use super::*;
+    use claude_convo::{ContentPart, Message, MessageContent, MessageRole};
+    use std::collections::HashMap;
+
+    fn make_claude_entry(message: Option<Message>) -> claude_convo::ConversationEntry {
+        claude_convo::ConversationEntry {
+            parent_uuid: Some("parent-1".to_string()),
+            is_sidechain: false,
+            entry_type: "human".to_string(),
+            uuid: "test-uuid-1".to_string(),
+            timestamp: "2025-01-15T10:00:00Z".to_string(),
+            session_id: None,
+            cwd: None,
+            git_branch: None,
+            version: None,
+            message,
+            user_type: None,
+            request_id: None,
+            tool_use_result: None,
+            snapshot: None,
+            message_id: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    fn make_message(role: MessageRole, content: Option<MessageContent>) -> Message {
+        Message {
+            role,
+            content,
+            model: None,
+            id: None,
+            message_type: None,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn no_message_yields_none_fields() {
+        let entry = make_claude_entry(None);
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.conversation_id, "conv-1");
+        assert_eq!(ce.entry_uuid, "test-uuid-1");
+        assert_eq!(ce.parent_uuid.as_deref(), Some("parent-1"));
+        assert_eq!(ce.entry_type, "human");
+        assert_eq!(ce.timestamp, "2025-01-15T10:00:00Z");
+        assert!(ce.role.is_none());
+        assert!(ce.content.is_none());
+        assert!(ce.model.is_none());
+        assert!(ce.id.is_none()); // new entry
+    }
+
+    #[test]
+    fn user_role_text_content() {
+        let msg = make_message(
+            MessageRole::User,
+            Some(MessageContent::Text("Hello Claude".into())),
+        );
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.role.as_deref(), Some("user"));
+        assert_eq!(ce.content.as_deref(), Some("Hello Claude"));
+    }
+
+    #[test]
+    fn assistant_role() {
+        let msg = make_message(MessageRole::Assistant, None);
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.role.as_deref(), Some("assistant"));
+        assert!(ce.content.is_none());
+    }
+
+    #[test]
+    fn system_role() {
+        let msg = make_message(
+            MessageRole::System,
+            Some(MessageContent::Text("system prompt".into())),
+        );
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.role.as_deref(), Some("system"));
+        assert_eq!(ce.content.as_deref(), Some("system prompt"));
+    }
+
+    #[test]
+    fn model_is_extracted() {
+        let mut msg = make_message(MessageRole::Assistant, None);
+        msg.model = Some("claude-sonnet-4-5-20250929".into());
+
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
+    }
+
+    #[test]
+    fn parts_text_content_joined() {
+        let parts = vec![
+            ContentPart::Text {
+                text: "First part".into(),
+            },
+            ContentPart::Text {
+                text: "Second part".into(),
+            },
+        ];
+        let msg = make_message(MessageRole::Assistant, Some(MessageContent::Parts(parts)));
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.content.as_deref(), Some("First part\nSecond part"));
+    }
+
+    #[test]
+    fn parts_non_text_filtered_out() {
+        let parts = vec![
+            ContentPart::Text {
+                text: "Some text".into(),
+            },
+            ContentPart::ToolUse {
+                id: "tool-1".into(),
+                name: "Read".into(),
+                input: serde_json::json!({"path": "/tmp"}),
+            },
+        ];
+        let msg = make_message(MessageRole::Assistant, Some(MessageContent::Parts(parts)));
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.content.as_deref(), Some("Some text"));
+    }
+
+    #[test]
+    fn parts_only_non_text_yields_none() {
+        let parts = vec![ContentPart::ToolUse {
+            id: "tool-1".into(),
+            name: "Bash".into(),
+            input: serde_json::json!({"cmd": "ls"}),
+        }];
+        let msg = make_message(MessageRole::Assistant, Some(MessageContent::Parts(parts)));
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert!(ce.content.is_none());
+    }
+
+    #[test]
+    fn message_content_none() {
+        let msg = make_message(MessageRole::User, None);
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.role.as_deref(), Some("user"));
+        assert!(ce.content.is_none());
+    }
+
+    #[test]
+    fn raw_json_is_valid() {
+        let msg = make_message(MessageRole::User, Some(MessageContent::Text("test".into())));
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        // raw_json should be valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&ce.raw_json).unwrap();
+        assert_eq!(parsed["uuid"], "test-uuid-1");
+        assert_eq!(parsed["type"], "human");
+    }
+
+    #[test]
+    fn token_count_is_none() {
+        let entry = make_claude_entry(None);
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+        assert!(ce.token_count.is_none());
+    }
+
+    #[test]
+    fn thinking_part_filtered_out() {
+        let parts = vec![
+            ContentPart::Thinking {
+                thinking: "Let me think...".into(),
+                signature: None,
+            },
+            ContentPart::Text {
+                text: "Here is the answer".into(),
+            },
+        ];
+        let msg = make_message(MessageRole::Assistant, Some(MessageContent::Parts(parts)));
+        let entry = make_claude_entry(Some(msg));
+        let ce = ConversationEntry::from_claude_entry("conv-1".into(), &entry);
+
+        assert_eq!(ce.content.as_deref(), Some("Here is the answer"));
     }
 }

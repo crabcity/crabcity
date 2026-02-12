@@ -438,7 +438,12 @@ async fn create_instance(
 
 async fn resolve_instance(daemon: &DaemonInfo, target: &str) -> Result<String> {
     let instances = fetch_instances(daemon).await?;
+    match_instance(&instances, target)
+}
 
+/// Pure matching logic: resolve an instance target against a list of instances.
+/// Tries exact ID match, then name match, then ID prefix match.
+fn match_instance(instances: &[InstanceInfo], target: &str) -> Result<String> {
     if instances.is_empty() {
         anyhow::bail!("No running instances. Use `crab` to create one.");
     }
@@ -464,5 +469,122 @@ async fn resolve_instance(daemon: &DaemonInfo, target: &str) -> Result<String> {
             target,
             n
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inst(id: &str, name: &str) -> InstanceInfo {
+        InstanceInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            running: true,
+            working_dir: "/tmp".to_string(),
+            command: "echo".to_string(),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn match_instance_empty_list() {
+        let result = match_instance(&[], "anything");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No running instances")
+        );
+    }
+
+    #[test]
+    fn match_instance_exact_id() {
+        let instances = vec![
+            inst("abc-123-def", "swift-azure-falcon"),
+            inst("xyz-456-ghi", "calm-ruby-dragon"),
+        ];
+        let result = match_instance(&instances, "abc-123-def").unwrap();
+        assert_eq!(result, "abc-123-def");
+    }
+
+    #[test]
+    fn match_instance_by_name() {
+        let instances = vec![
+            inst("abc-123-def", "swift-azure-falcon"),
+            inst("xyz-456-ghi", "calm-ruby-dragon"),
+        ];
+        let result = match_instance(&instances, "calm-ruby-dragon").unwrap();
+        assert_eq!(result, "xyz-456-ghi");
+    }
+
+    #[test]
+    fn match_instance_id_prefix() {
+        let instances = vec![inst("abc-123-def", "falcon"), inst("xyz-456-ghi", "dragon")];
+        let result = match_instance(&instances, "abc").unwrap();
+        assert_eq!(result, "abc-123-def");
+    }
+
+    #[test]
+    fn match_instance_ambiguous_prefix() {
+        let instances = vec![inst("abc-111", "falcon"), inst("abc-222", "dragon")];
+        let result = match_instance(&instances, "abc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ambiguous"));
+    }
+
+    #[test]
+    fn match_instance_no_match() {
+        let instances = vec![inst("abc-123", "falcon")];
+        let result = match_instance(&instances, "zzz");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No instance found")
+        );
+    }
+
+    #[test]
+    fn match_instance_id_takes_priority_over_name() {
+        // If target matches both an ID and a name, ID wins
+        let instances = vec![inst("falcon", "name-a"), inst("other-id", "falcon")];
+        let result = match_instance(&instances, "falcon").unwrap();
+        // Should match the first instance by exact ID, not the second by name
+        assert_eq!(result, "falcon");
+    }
+
+    #[test]
+    fn instance_info_serde_roundtrip() {
+        let info = inst("id-1", "name-1");
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: InstanceInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "id-1");
+        assert_eq!(parsed.name, "name-1");
+        assert!(parsed.running);
+    }
+
+    #[test]
+    fn instance_info_defaults() {
+        // command and created_at have #[serde(default)]
+        let json = r#"{"id":"x","name":"y","running":false,"working_dir":"/tmp"}"#;
+        let info: InstanceInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.command, "");
+        assert_eq!(info.created_at, "");
+    }
+
+    #[test]
+    fn ws_lifecycle_event_deserialization() {
+        // Uses #[serde(tag = "type")] so "type" field is inline
+        let json = r#"{"type":"InstanceStopped","instance_id":"inst-1"}"#;
+        let event: WsLifecycleEvent = serde_json::from_str(json).unwrap();
+        match event {
+            WsLifecycleEvent::InstanceStopped { instance_id } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            _ => panic!("Expected InstanceStopped"),
+        }
     }
 }
