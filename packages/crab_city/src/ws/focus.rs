@@ -15,6 +15,43 @@ use super::conversation_watcher::run_conversation_watcher;
 use super::protocol::ServerMessage;
 use super::state_manager::GlobalStateManager;
 
+/// Streaming UTF-8 decoder that buffers incomplete multi-byte sequences
+/// across chunk boundaries so that raw PTY reads never produce replacement
+/// characters from split characters.
+pub(crate) struct Utf8StreamDecoder {
+    buf: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    pub fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    /// Feed a chunk of bytes and return the longest valid UTF-8 string.
+    /// Any trailing incomplete multi-byte sequence is retained for the next call.
+    pub fn decode(&mut self, chunk: &[u8]) -> String {
+        self.buf.extend_from_slice(chunk);
+        let (data, consumed) = match std::str::from_utf8(&self.buf) {
+            Ok(s) => (s.to_string(), self.buf.len()),
+            Err(e) if e.error_len().is_none() => {
+                // Incomplete sequence at end — send the valid prefix,
+                // keep the trailing 1-3 bytes for the next event.
+                let n = e.valid_up_to();
+                (String::from_utf8(self.buf[..n].to_vec()).unwrap(), n)
+            }
+            Err(_) => {
+                // Genuinely invalid bytes — flush lossy
+                (
+                    String::from_utf8_lossy(&self.buf).to_string(),
+                    self.buf.len(),
+                )
+            }
+        };
+        self.buf = self.buf[consumed..].to_vec();
+        data
+    }
+}
+
 /// Send conversation entries since a given UUID (or full conversation if None)
 pub async fn send_conversation_since(
     instance_id: &str,
@@ -214,6 +251,7 @@ pub async fn handle_focus(
     // so we only need to forward output to the focused client here.
     let tx_output = tx.clone();
     let instance_id_output = instance_id.clone();
+    let mut decoder = Utf8StreamDecoder::new();
 
     loop {
         tokio::select! {
@@ -224,13 +262,15 @@ pub async fn handle_focus(
             result = output_rx.recv() => {
                 match result {
                     Ok(event) => {
-                        let data = String::from_utf8_lossy(&event.data).to_string();
-                        // Send to client only - state tracking is done by background task
-                        if tx_output.send(ServerMessage::Output {
-                            instance_id: instance_id_output.clone(),
-                            data,
-                        }).await.is_err() {
-                            break;
+                        let data = decoder.decode(&event.data);
+                        if !data.is_empty() {
+                            // Send to client only - state tracking is done by background task
+                            if tx_output.send(ServerMessage::Output {
+                                instance_id: instance_id_output.clone(),
+                                data,
+                            }).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -256,5 +296,235 @@ pub async fn handle_focus(
     // Clean up conversation task
     if let Some(task) = convo_task {
         task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Utf8StreamDecoder ──────────────────────────────────────────────
+
+    #[test]
+    fn decode_clean_ascii() {
+        let mut dec = Utf8StreamDecoder::new();
+        assert_eq!(dec.decode(b"hello world"), "hello world");
+    }
+
+    #[test]
+    fn decode_clean_multibyte() {
+        let mut dec = Utf8StreamDecoder::new();
+        assert_eq!(dec.decode("─".as_bytes()), "─");
+        assert_eq!(dec.decode("🦀".as_bytes()), "🦀");
+    }
+
+    #[test]
+    fn decode_3byte_split_2_1() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "─".as_bytes(); // [0xE2, 0x94, 0x80]
+        assert_eq!(bytes, &[0xE2, 0x94, 0x80]);
+
+        let r1 = dec.decode(&bytes[..2]);
+        assert_eq!(r1, ""); // incomplete — held
+        let r2 = dec.decode(&bytes[2..]);
+        assert_eq!(r2, "─"); // completed
+    }
+
+    #[test]
+    fn decode_3byte_split_1_2() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "─".as_bytes();
+
+        let r1 = dec.decode(&bytes[..1]);
+        assert_eq!(r1, "");
+        let r2 = dec.decode(&bytes[1..]);
+        assert_eq!(r2, "─");
+    }
+
+    #[test]
+    fn decode_3byte_split_1_1_1() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "─".as_bytes();
+
+        assert_eq!(dec.decode(&bytes[..1]), "");
+        assert_eq!(dec.decode(&bytes[1..2]), "");
+        assert_eq!(dec.decode(&bytes[2..3]), "─");
+    }
+
+    #[test]
+    fn decode_4byte_split_2_2() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "🦀".as_bytes(); // [0xF0, 0x9F, 0xA6, 0x80]
+        assert_eq!(bytes.len(), 4);
+
+        assert_eq!(dec.decode(&bytes[..2]), "");
+        assert_eq!(dec.decode(&bytes[2..]), "🦀");
+    }
+
+    #[test]
+    fn decode_4byte_split_3_1() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "🦀".as_bytes();
+
+        assert_eq!(dec.decode(&bytes[..3]), "");
+        assert_eq!(dec.decode(&bytes[3..]), "🦀");
+    }
+
+    #[test]
+    fn decode_4byte_split_1_1_1_1() {
+        let mut dec = Utf8StreamDecoder::new();
+        let bytes = "🦀".as_bytes();
+
+        assert_eq!(dec.decode(&bytes[..1]), "");
+        assert_eq!(dec.decode(&bytes[1..2]), "");
+        assert_eq!(dec.decode(&bytes[2..3]), "");
+        assert_eq!(dec.decode(&bytes[3..4]), "🦀");
+    }
+
+    #[test]
+    fn decode_ascii_before_split() {
+        let mut dec = Utf8StreamDecoder::new();
+        // "abc─def" — split so ─ straddles the boundary
+        let bytes = "abc─def".as_bytes();
+        // "abc" = 3 bytes, "─" = 3 bytes, "def" = 3 bytes
+
+        let r1 = dec.decode(&bytes[..4]); // b"abc\xE2"
+        assert_eq!(r1, "abc");
+        let r2 = dec.decode(&bytes[4..]); // b"\x94\x80def"
+        assert_eq!(r2, "─def");
+    }
+
+    #[test]
+    fn decode_consecutive_multibyte_split() {
+        let mut dec = Utf8StreamDecoder::new();
+        // "──" = 6 bytes, split at byte 4
+        let bytes = "──".as_bytes();
+        assert_eq!(bytes.len(), 6);
+
+        let r1 = dec.decode(&bytes[..4]); // first ─ complete, 1 byte of second
+        assert_eq!(r1, "─");
+        let r2 = dec.decode(&bytes[4..]); // remaining 2 bytes of second ─
+        assert_eq!(r2, "─");
+    }
+
+    #[test]
+    fn decode_no_replacement_chars_ever() {
+        let bytes = "─".as_bytes();
+
+        // Split every possible way; concatenated result must never contain U+FFFD
+        for split_at in 1..bytes.len() {
+            let mut d = Utf8StreamDecoder::new();
+            let r1 = d.decode(&bytes[..split_at]);
+            let r2 = d.decode(&bytes[split_at..]);
+            let combined = format!("{}{}", r1, r2);
+            assert!(
+                !combined.contains('\u{FFFD}'),
+                "split_at={}: got replacement char in {:?}",
+                split_at,
+                combined,
+            );
+            assert_eq!(combined, "─", "split_at={}", split_at);
+        }
+    }
+
+    #[test]
+    fn decode_no_replacement_chars_4byte() {
+        // Same as above but for a 4-byte character
+        let bytes = "🦀".as_bytes();
+        for split_at in 1..bytes.len() {
+            let mut d = Utf8StreamDecoder::new();
+            let r1 = d.decode(&bytes[..split_at]);
+            let r2 = d.decode(&bytes[split_at..]);
+            let combined = format!("{}{}", r1, r2);
+            assert!(
+                !combined.contains('\u{FFFD}'),
+                "split_at={}: got replacement char in {:?}",
+                split_at,
+                combined,
+            );
+            assert_eq!(combined, "🦀", "split_at={}", split_at);
+        }
+    }
+
+    #[test]
+    fn decode_prompt_box_line_split() {
+        // Simulate exactly the user's scenario: a line of box-drawing chars
+        // gets split at an arbitrary byte boundary during PTY read()
+        let prompt_line = "─".repeat(40); // 120 bytes of box-drawing
+        let bytes = prompt_line.as_bytes();
+
+        // Try every possible split point
+        for split_at in 1..bytes.len() {
+            let mut d = Utf8StreamDecoder::new();
+            let r1 = d.decode(&bytes[..split_at]);
+            let r2 = d.decode(&bytes[split_at..]);
+            let combined = format!("{}{}", r1, r2);
+            assert!(
+                !combined.contains('\u{FFFD}'),
+                "split_at={}: replacement char in reconstructed prompt line",
+                split_at,
+            );
+            assert_eq!(combined, prompt_line, "split_at={}", split_at);
+        }
+    }
+
+    #[test]
+    fn decode_mixed_ascii_and_multibyte_all_splits() {
+        // Simulate realistic Claude Code output: ANSI escapes + box drawing
+        let content = "abc─def─ghi";
+        let bytes = content.as_bytes();
+
+        for split_at in 1..bytes.len() {
+            let mut d = Utf8StreamDecoder::new();
+            let r1 = d.decode(&bytes[..split_at]);
+            let r2 = d.decode(&bytes[split_at..]);
+            let combined = format!("{}{}", r1, r2);
+            assert!(
+                !combined.contains('\u{FFFD}'),
+                "split_at={}: got replacement char in {:?}",
+                split_at,
+                combined,
+            );
+            assert_eq!(combined, content, "split_at={}", split_at);
+        }
+    }
+
+    #[test]
+    fn decode_three_way_split() {
+        // Three chunks: common when PTY output is bursty
+        let content = "hello─world";
+        let bytes = content.as_bytes();
+
+        for s1 in 1..bytes.len() - 1 {
+            for s2 in s1 + 1..bytes.len() {
+                let mut d = Utf8StreamDecoder::new();
+                let r1 = d.decode(&bytes[..s1]);
+                let r2 = d.decode(&bytes[s1..s2]);
+                let r3 = d.decode(&bytes[s2..]);
+                let combined = format!("{}{}{}", r1, r2, r3);
+                assert!(
+                    !combined.contains('\u{FFFD}'),
+                    "splits=({},{}): got replacement char",
+                    s1,
+                    s2,
+                );
+                assert_eq!(combined, content, "splits=({},{})", s1, s2);
+            }
+        }
+    }
+
+    #[test]
+    fn decode_empty_chunk() {
+        let mut dec = Utf8StreamDecoder::new();
+        assert_eq!(dec.decode(b""), "");
+        assert_eq!(dec.decode(b"hello"), "hello");
+    }
+
+    #[test]
+    fn decode_repeated_calls_clean() {
+        let mut dec = Utf8StreamDecoder::new();
+        assert_eq!(dec.decode(b"chunk1 "), "chunk1 ");
+        assert_eq!(dec.decode(b"chunk2 "), "chunk2 ");
+        assert_eq!(dec.decode("├──┤".as_bytes()), "├──┤");
     }
 }

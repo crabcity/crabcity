@@ -150,10 +150,13 @@ impl VirtualTerminal {
         if let Some((rows, cols)) = new_dims {
             if (rows, cols) != self.effective_dims {
                 self.effective_dims = (rows, cols);
-                // Resize the vt100 parser to match
-                self.parser.set_size(rows, cols);
-                // Invalidate current keyframe (screen layout changed)
+                // Fresh parser at new dimensions — old screen content was
+                // rendered at stale dimensions and vt100's set_size merges
+                // soft-wrapped lines, corrupting the display.  The PTY resize
+                // will SIGWINCH the application, which redraws cleanly.
+                self.parser = vt100::Parser::new(rows, cols, 0);
                 self.keyframe = None;
+                self.deltas.clear();
                 return Some((rows, cols));
             }
         }
@@ -450,19 +453,24 @@ mod tests {
         vt.compact();
         assert!(vt.keyframe.is_some());
 
-        // Resize via update_viewport — invalidates keyframe
+        // Resize via update_viewport — resets parser and clears deltas
         let dims_changed = vt.update_viewport("cli", 40, 120, ClientType::Web);
         assert_eq!(dims_changed, Some((40, 120)));
-        assert!(vt.keyframe.is_none()); // keyframe invalidated
+        assert!(vt.keyframe.is_none());
+        assert!(vt.deltas.is_empty());
 
-        // Replay should re-generate a keyframe at the new dimensions
+        // Replay on clean parser: just the reset sequence, no stale content
         let replay = vt.replay();
         assert!(!replay.is_empty());
-        assert!(vt.keyframe.is_some()); // keyframe regenerated
+        assert!(vt.keyframe.is_some());
         assert_eq!(vt.effective_dims(), (40, 120));
-
-        // Content should still be present (vt100 re-renders on resize)
         let replay_str = String::from_utf8_lossy(&replay);
-        assert!(replay_str.contains("Content at 24x80"));
+        assert!(!replay_str.contains("Content at 24x80"));
+
+        // New output at the correct width IS captured
+        vt.process_output(b"Content at 40x120");
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+        assert!(replay_str.contains("Content at 40x120"));
     }
 }

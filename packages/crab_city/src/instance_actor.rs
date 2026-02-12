@@ -390,7 +390,13 @@ async fn handle_vt_command(
             let mut vt = vt.write().await;
             let replay = vt.replay();
             let data = if replay.len() > max_bytes {
-                replay[replay.len() - max_bytes..].to_vec()
+                let mut start = replay.len() - max_bytes;
+                // Skip past UTF-8 continuation bytes (10xxxxxx) so we
+                // don't slice in the middle of a multi-byte character.
+                while start < replay.len() && (replay[start] & 0xC0) == 0x80 {
+                    start += 1;
+                }
+                replay[start..].to_vec()
             } else {
                 replay
             };
@@ -757,5 +763,79 @@ mod tests {
         // Remove nonexistent → no dims change, no resize, still Ok
         let result = handle.remove_client_and_resize("nonexistent").await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_truncation_never_splits_utf8() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // Write box-drawing characters (3 bytes each in UTF-8)
+        let content = "─".repeat(40); // 120 bytes
+        vt.write().await.process_output(content.as_bytes());
+
+        // The replay includes a keyframe prefix (ANSI escapes), so the
+        // total is larger than 120 bytes.  Try various max_bytes values
+        // that are likely to land mid-character.
+        for max_bytes in 1..=150 {
+            let output = handle.get_recent_output(max_bytes).await;
+            if output.is_empty() {
+                continue;
+            }
+            assert!(
+                !output[0].contains('\u{FFFD}'),
+                "max_bytes={}: truncation produced replacement character in {:?}",
+                max_bytes,
+                &output[0][..output[0].len().min(40)],
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_truncation_preserves_content() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // Mix of ASCII and multi-byte: "hello──world" (5 + 6 + 5 = 16 bytes text)
+        let content = "hello──world";
+        vt.write().await.process_output(content.as_bytes());
+
+        // Full replay should contain the content
+        let full = handle.get_recent_output(100_000).await;
+        assert!(full[0].contains("hello"));
+        assert!(full[0].contains("──"));
+        assert!(full[0].contains("world"));
+
+        // Truncated replay should also be valid UTF-8 (no replacement chars)
+        for max_bytes in 1..=60 {
+            let output = handle.get_recent_output(max_bytes).await;
+            if output.is_empty() {
+                continue;
+            }
+            assert!(
+                !output[0].contains('\u{FFFD}'),
+                "max_bytes={}: got replacement char",
+                max_bytes,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_truncation_4byte_chars() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        // 4-byte emoji characters
+        let content = "🦀".repeat(10); // 40 bytes
+        vt.write().await.process_output(content.as_bytes());
+
+        for max_bytes in 1..=80 {
+            let output = handle.get_recent_output(max_bytes).await;
+            if output.is_empty() {
+                continue;
+            }
+            assert!(
+                !output[0].contains('\u{FFFD}'),
+                "max_bytes={}: truncation split a 4-byte character",
+                max_bytes,
+            );
+        }
     }
 }
