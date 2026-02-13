@@ -666,15 +666,15 @@ pub async fn handle_multiplexed_ws(
         _ = input_task => debug!("Input task ended"),
     }
 
-    // Clean up VirtualTerminal viewports on disconnect
-    if let Some(focused_id) = focused_instance.read().await.clone() {
-        if let Some(handle) = state_manager.get_handle(&focused_id).await {
-            if let Err(e) = handle.remove_client_and_resize(&connection_id).await {
-                warn!(
-                    "Failed to resize PTY for {} on disconnect: {}",
-                    focused_id, e
-                );
-            }
+    // Clean up VirtualTerminal viewports on disconnect — iterate ALL instances,
+    // not just the focused one, to remove any ghost viewport registrations left
+    // by instance switches.
+    for (instance_id, handle) in state_manager.all_handles().await {
+        if let Err(e) = handle.remove_client_and_resize(&connection_id).await {
+            warn!(
+                instance = %instance_id,
+                "Failed to clean up viewport on disconnect: {}", e
+            );
         }
     }
 

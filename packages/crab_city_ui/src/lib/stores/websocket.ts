@@ -216,23 +216,23 @@ export function sendRaw(data: string, taskId?: number): void {
 	addPendingInput(instanceId, data);
 }
 
-/** Send terminal resize notification. */
-export function sendResize(rows: number, cols: number): void {
-	const instanceId = get(currentInstanceId);
+/** Send terminal resize notification. Uses explicit instanceId to avoid races during instance switching. */
+export function sendResize(rows: number, cols: number, explicitInstanceId?: string): void {
+	const instanceId = explicitInstanceId ?? get(currentInstanceId);
 	if (socket?.readyState !== WebSocket.OPEN || !instanceId) return;
 	socket.send(JSON.stringify({ type: 'Resize', instance_id: instanceId, rows, cols } as MuxClientMessage));
 }
 
 /** Notify server that terminal panel is visible (include in dimension negotiation). */
-export function sendTerminalVisible(rows: number, cols: number): void {
-	const instanceId = get(currentInstanceId);
+export function sendTerminalVisible(rows: number, cols: number, explicitInstanceId?: string): void {
+	const instanceId = explicitInstanceId ?? get(currentInstanceId);
 	if (socket?.readyState !== WebSocket.OPEN || !instanceId) return;
 	socket.send(JSON.stringify({ type: 'TerminalVisible', instance_id: instanceId, rows, cols } as MuxClientMessage));
 }
 
 /** Notify server that terminal panel is hidden (exclude from dimension negotiation). */
-export function sendTerminalHidden(): void {
-	const instanceId = get(currentInstanceId);
+export function sendTerminalHidden(explicitInstanceId?: string): void {
+	const instanceId = explicitInstanceId ?? get(currentInstanceId);
 	if (socket?.readyState !== WebSocket.OPEN || !instanceId) return;
 	socket.send(JSON.stringify({ type: 'TerminalHidden', instance_id: instanceId } as MuxClientMessage));
 }

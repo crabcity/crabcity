@@ -47,6 +47,10 @@
 	let isReady = $state(false);
 	let error = $state<string | null>(null);
 
+	// Capture instance ID at mount time so onDestroy targets the correct instance
+	// (currentInstanceId store may have already changed by the time onDestroy fires)
+	let mountedInstanceId: string | null = null;
+
 	// Derived state for showing status banner
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
@@ -104,6 +108,11 @@
 
 	async function initTerminal() {
 		try {
+			// Capture the instance ID NOW — before any async work — so that
+			// onDestroy always targets the correct instance even if the user
+			// switches instances while this component is still alive.
+			mountedInstanceId = get(currentInstanceId);
+
 			// Wait for DOM to be ready - retry a few times as bind:this is async in Svelte 5
 			let attempts = 0;
 			while (!terminalEl && attempts < 10) {
@@ -149,7 +158,7 @@
 
 				// Register this terminal in server-side dimension negotiation
 				if (terminal) {
-					sendTerminalVisible(terminal.rows, terminal.cols);
+					sendTerminalVisible(terminal.rows, terminal.cols, mountedInstanceId!);
 				}
 			});
 
@@ -173,7 +182,7 @@
 			resizeObserver = new ResizeObserver(() => {
 				if (fitAddon && terminal && isReady && document.visibilityState === 'visible') {
 					fitAddon.fit();
-					sendResize(terminal.rows, terminal.cols);
+					sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
 				}
 			});
 			resizeObserver.observe(terminalEl);
@@ -194,8 +203,12 @@
 	});
 
 	onDestroy(() => {
-		// Unregister from server-side dimension negotiation before cleanup
-		sendTerminalHidden();
+		// Unregister from server-side dimension negotiation before cleanup.
+		// Use the captured mountedInstanceId — NOT the store — because
+		// currentInstanceId may have already changed to the next instance.
+		if (mountedInstanceId) {
+			sendTerminalHidden(mountedInstanceId);
+		}
 
 		themeUnsubscribe();
 		outputUnsubscribe?.();

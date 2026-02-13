@@ -578,6 +578,16 @@ impl GlobalStateManager {
             .map(|t| t.handle.clone())
     }
 
+    /// Get all instance handles (for disconnect cleanup across all instances).
+    pub async fn all_handles(&self) -> Vec<(String, InstanceHandle)> {
+        self.trackers
+            .read()
+            .await
+            .iter()
+            .map(|(id, t)| (id.clone(), t.handle.clone()))
+            .collect()
+    }
+
     /// Get tracker info for an instance
     pub async fn get_tracker_info(
         &self,
