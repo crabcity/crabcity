@@ -57,9 +57,6 @@
 	let isMultiUser = $derived(presence.length > 1);
 	let showLockBanner = $derived($isLockedByOther || $iHoldLock);
 
-	// Track if user has scrolled away from bottom
-	let userScrolledUp = false;
-
 	// Set up output subscription after terminal is ready
 	function setupOutputSubscription() {
 		if (outputUnsubscribe) return;
@@ -75,15 +72,17 @@
 
 			if (buffer.shouldClear) {
 				terminal.clear();
-				userScrolledUp = false;
 			}
+
+			// Check viewport position BEFORE writing so writes don't change the answer
+			const wasAtBottom = isAtBottom();
 
 			for (const chunk of buffer.chunks) {
 				terminal.write(chunk);
 			}
 
-			// Auto-scroll to bottom if user hasn't scrolled up
-			if (!userScrolledUp) {
+			// Auto-scroll only if the viewport was already at the bottom
+			if (wasAtBottom) {
 				terminal.scrollToBottom();
 			}
 		});
@@ -169,12 +168,6 @@
 				sendInput(data);
 				// Scroll to bottom when user types
 				terminal?.scrollToBottom();
-				userScrolledUp = false;
-			});
-
-			// Track when user scrolls away from bottom
-			terminal.onScroll(() => {
-				userScrolledUp = !isAtBottom();
 			});
 
 			resizeObserver = new ResizeObserver(() => {
