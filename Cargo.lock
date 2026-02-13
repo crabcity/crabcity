@@ -463,6 +463,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "compositor"
+version = "0.1.0"
+dependencies = [
+ "vt100",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -510,6 +517,7 @@ dependencies = [
  "chrono",
  "clap",
  "claude_convo",
+ "compositor",
  "crab_city_ui",
  "dirs 5.0.1",
  "figment",
@@ -553,6 +561,7 @@ dependencies = [
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "uuid",
+ "virtual_terminal",
  "vt100",
 ]
 
@@ -3947,6 +3956,13 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtual_terminal"
+version = "0.1.0"
+dependencies = [
+ "vt100",
+]
 
 [[package]]
 name = "vt100"

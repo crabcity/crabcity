@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "virtual_terminal",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crate_index//:vt100",
+    ],
+)
+
+rust_test(
+    name = "virtual_terminal_test",
+    crate = ":virtual_terminal",
+)

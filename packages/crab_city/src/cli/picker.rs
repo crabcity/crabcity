@@ -15,6 +15,10 @@ use super::InstanceInfo;
 pub enum PickerResult {
     Attach(String),
     NewInstance,
+    Rename {
+        id: String,
+        custom_name: Option<String>,
+    },
     Kill(String),
     KillServer,
     Settings,
@@ -25,6 +29,17 @@ pub enum PickerResult {
 pub enum PickerEvent {
     Created(InstanceInfo),
     Stopped(String),
+    Renamed {
+        instance_id: String,
+        custom_name: Option<String>,
+    },
+}
+
+/// Inline rename editing state.
+struct RenameState {
+    instance_id: String,
+    buffer: String,
+    cursor: usize,
 }
 
 /// Show an interactive TUI picker for instances.
@@ -35,9 +50,10 @@ pub fn run_picker(
     base_url: &str,
     instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
+    selected_id: Option<&str>,
 ) -> Result<PickerResult> {
     match terminal {
-        Some(term) => picker_loop(term, base_url, instances, events),
+        Some(term) => picker_loop(term, base_url, instances, events, selected_id),
         None => {
             // No TTY — fall back to most recent instance or new
             Ok(match instances.last() {
@@ -53,13 +69,25 @@ fn picker_loop(
     base_url: &str,
     mut instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
+    selected_id: Option<&str>,
 ) -> Result<PickerResult> {
-    let mut state = ListState::default().with_selected(Some(0));
+    let initial = selected_id
+        .and_then(|id| instances.iter().position(|i| i.id == id))
+        .unwrap_or(0);
+    let mut state = ListState::default().with_selected(Some(initial));
     let mut confirming_kill_server = false;
+    let mut rename: Option<RenameState> = None;
 
     loop {
         // Drain any pending live-update events
         while let Ok(ev) = events.try_recv() {
+            // Remember the ID of the currently-selected instance so we can
+            // restore the selection after mutating the vector.
+            let selected_id = state
+                .selected()
+                .and_then(|i| instances.get(i))
+                .map(|inst| inst.id.clone());
+
             match ev {
                 PickerEvent::Created(inst) => {
                     if !instances.iter().any(|i| i.id == inst.id) {
@@ -68,22 +96,36 @@ fn picker_loop(
                 }
                 PickerEvent::Stopped(id) => {
                     instances.retain(|i| i.id != id);
+                    // Cancel rename if the renamed instance was removed
+                    if let Some(ref r) = rename {
+                        if r.instance_id == id {
+                            rename = None;
+                        }
+                    }
+                }
+                PickerEvent::Renamed {
+                    instance_id,
+                    custom_name,
+                } => {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
+                        inst.custom_name = custom_name;
+                    }
                 }
             }
-            // Keep selection in bounds
+            // Restore selection by ID (falls back to clamped position)
             let total = instances.len() + 1;
-            if let Some(sel) = state.selected() {
-                if sel >= total {
-                    state.select(Some(total.saturating_sub(1)));
-                }
-            }
+            let new_sel = selected_id
+                .and_then(|id| instances.iter().position(|i| i.id == id))
+                .unwrap_or_else(|| state.selected().unwrap_or(0).min(total.saturating_sub(1)));
+            state.select(Some(new_sel));
         }
 
         let total = instances.len() + 1;
+        let renaming = rename.is_some();
 
         terminal.draw(|frame| {
             let area = frame.area();
-            let items = build_items(&instances, area.width);
+            let items = build_items(&instances, &rename);
 
             let bottom_bar = if confirming_kill_server {
                 let running = instances.iter().filter(|i| i.running).count();
@@ -98,8 +140,12 @@ fn picker_loop(
                     ),
                     Span::raw("y to confirm · any key to cancel "),
                 ])
+            } else if renaming {
+                Line::raw(" type to rename · enter confirm · esc cancel · backspace clear name ")
             } else {
-                Line::raw(" ↑↓ navigate · enter select · x kill · s settings · Q kill server · q/esc quit ")
+                Line::raw(
+                    " ↑↓ navigate · enter select · r rename · x kill · s settings · Q kill server · q/esc quit ",
+                )
             };
 
             let list = List::new(items)
@@ -117,7 +163,9 @@ fn picker_loop(
                         .borders(Borders::ALL)
                         .padding(Padding::horizontal(1)),
                 )
-                .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+                .highlight_style(
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                )
                 .highlight_symbol("▸ ");
             frame.render_stateful_widget(list, area, &mut state);
         })?;
@@ -128,6 +176,55 @@ fn picker_loop(
         }
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            // Handle rename editing mode
+            if let Some(ref mut r) = rename {
+                match key.code {
+                    KeyCode::Esc => {
+                        rename = None;
+                    }
+                    KeyCode::Enter => {
+                        let rename_id = r.instance_id.clone();
+                        let trimmed = r.buffer.trim().to_string();
+                        if let Some(inst) = instances.iter_mut().find(|i| i.id == rename_id) {
+                            let custom_name = if trimmed.is_empty() || trimmed == inst.name {
+                                None
+                            } else {
+                                Some(trimmed)
+                            };
+                            // Optimistic update
+                            inst.custom_name = custom_name.clone();
+                            drop(rename.take());
+                            return Ok(PickerResult::Rename {
+                                id: rename_id,
+                                custom_name,
+                            });
+                        }
+                        // Instance was removed while renaming
+                        rename = None;
+                    }
+                    KeyCode::Backspace => {
+                        if r.cursor > 0 {
+                            r.buffer.remove(r.cursor - 1);
+                            r.cursor -= 1;
+                        }
+                    }
+                    KeyCode::Left => {
+                        r.cursor = r.cursor.saturating_sub(1);
+                    }
+                    KeyCode::Right => {
+                        if r.cursor < r.buffer.len() {
+                            r.cursor += 1;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        r.buffer.insert(r.cursor, c);
+                        r.cursor += 1;
+                    }
+                    _ => {}
+                }
                 continue;
             }
 
@@ -154,16 +251,28 @@ fn picker_loop(
                 }
                 KeyCode::Enter => {
                     let i = state.selected().unwrap_or(0);
-                    return if i < instances.len() {
-                        Ok(PickerResult::Attach(instances[i].id.clone()))
+                    return if let Some(inst) = instances.get(i) {
+                        Ok(PickerResult::Attach(inst.id.clone()))
                     } else {
                         Ok(PickerResult::NewInstance)
                     };
                 }
+                KeyCode::Char('r') => {
+                    let i = state.selected().unwrap_or(0);
+                    if let Some(inst) = instances.get(i) {
+                        let buf = inst.display_name().to_string();
+                        let cursor = buf.len();
+                        rename = Some(RenameState {
+                            instance_id: inst.id.clone(),
+                            buffer: buf,
+                            cursor,
+                        });
+                    }
+                }
                 KeyCode::Char('x') => {
                     let i = state.selected().unwrap_or(0);
-                    if i < instances.len() {
-                        return Ok(PickerResult::Kill(instances[i].id.clone()));
+                    if let Some(inst) = instances.get(i) {
+                        return Ok(PickerResult::Kill(inst.id.clone()));
                     }
                 }
                 KeyCode::Char('s') => {
@@ -175,7 +284,7 @@ fn picker_loop(
     }
 }
 
-fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>> {
+fn build_items<'a>(instances: &[InstanceInfo], rename: &Option<RenameState>) -> Vec<ListItem<'a>> {
     let mut items: Vec<ListItem> = instances
         .iter()
         .map(|inst| {
@@ -185,11 +294,26 @@ fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>
             } else {
                 &inst.id
             };
-            let line = Line::from(vec![
+
+            // Check if this row is being renamed
+            let is_renaming = rename.as_ref().is_some_and(|r| r.instance_id == inst.id);
+
+            let name_span = if is_renaming {
+                let buf = &rename.as_ref().unwrap().buffer;
                 Span::styled(
-                    format!("{:<20}", inst.name),
+                    format!("{:<20}", format!("{}▏", buf)),
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                )
+            } else {
+                let display = inst.display_name();
+                Span::styled(
+                    format!("{:<20}", display),
                     Style::default().add_modifier(Modifier::BOLD),
-                ),
+                )
+            };
+
+            let mut spans = vec![
+                name_span,
                 Span::raw(format!(" {:<10}", short_id)),
                 Span::styled(
                     format!(" {:<8}", status),
@@ -199,9 +323,19 @@ fn build_items(instances: &[InstanceInfo], _width: u16) -> Vec<ListItem<'static>
                         Style::default().add_modifier(Modifier::DIM)
                     },
                 ),
-                Span::raw(format!(" {}", inst.working_dir)),
-            ]);
-            ListItem::new(line)
+            ];
+
+            // Show auto-generated name dimmed when a custom name is set (and not renaming)
+            if !is_renaming && inst.custom_name.is_some() {
+                spans.push(Span::styled(
+                    format!(" ({})", inst.name),
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            } else {
+                spans.push(Span::raw(format!(" {}", inst.working_dir)));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 

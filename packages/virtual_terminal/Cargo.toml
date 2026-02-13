@@ -1,0 +1,12 @@
+[package]
+name = "virtual_terminal"
+version = "0.1.0"
+edition = "2024"
+description = "Virtual terminal with vt100 screen buffer, keyframe/delta replay, and viewport negotiation"
+
+[lib]
+name = "virtual_terminal"
+path = "src/lib.rs"
+
+[dependencies]
+vt100 = "0.15"

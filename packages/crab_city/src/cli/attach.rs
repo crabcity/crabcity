@@ -59,18 +59,31 @@ async fn attach_session(
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
     // 3. Enter raw mode
-    let _guard = TerminalGuard::new();
-    _guard.enter_raw_mode();
+    let mut guard = TerminalGuard::new();
+    guard.enter_raw_mode();
 
-    eprintln!("\r[crab: attached -- press Ctrl-] to detach]");
+    // 4. Send initial resize + paint overlay badge
+    const OVERLAY_TEXT: &str = "attached -- Ctrl-] to detach";
+    let overlay_timer = tokio::time::sleep(std::time::Duration::ZERO);
+    tokio::pin!(overlay_timer);
+    let mut overlay_armed = false;
 
-    // 4. Send initial resize
     if let Ok((rows, cols)) = get_terminal_size() {
         let msg = WsMessage::Resize { rows, cols };
         let json = serde_json::to_string(&msg)?;
         ws_write
             .send(tungstenite::Message::Text(json.into()))
             .await?;
+        guard.show_overlay(OVERLAY_TEXT, cols);
+        overlay_timer
+            .as_mut()
+            .reset(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+        overlay_armed = true;
+    } else {
+        // Fallback: inline status when terminal size unavailable
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(b"\r[crab: attached -- press Ctrl-] to detach]");
+        let _ = stdout.flush();
     }
 
     // 5. Set up SIGWINCH handler
@@ -154,6 +167,7 @@ async fn attach_session(
                                 WsMessage::Output { data } => {
                                     let mut stdout = std::io::stdout().lock();
                                     let _ = stdout.write_all(data.as_bytes());
+                                    let _ = stdout.write_all(guard.overlay_paint_bytes());
                                     let _ = stdout.flush();
                                 }
                                 _ => {
@@ -175,14 +189,21 @@ async fn attach_session(
                     let msg = WsMessage::Resize { rows, cols };
                     let json = serde_json::to_string(&msg)?;
                     let _ = ws_write.send(tungstenite::Message::Text(json.into())).await;
+                    guard.repaint_overlay(cols);
                 }
+            }
+
+            // Overlay auto-clear timer
+            () = &mut overlay_timer, if overlay_armed => {
+                guard.clear_overlay();
+                overlay_armed = false;
             }
         }
     }
 
-    // 8. Clean exit — shut down stdin reader before restoring terminal
+    // 8. Clean exit — shut down stdin reader, restore terminal (guard clears overlay on drop)
     stdin_shutdown.store(true, Ordering::Relaxed);
-    drop(_guard);
+    drop(guard);
     if detached {
         eprintln!("\r\n[crab: detached]");
         Ok(AttachOutcome::Detached)

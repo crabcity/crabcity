@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "compositor",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crate_index//:vt100",
+    ],
+)
+
+rust_test(
+    name = "compositor_test",
+    crate = ":compositor",
+)

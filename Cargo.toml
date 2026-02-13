@@ -2,19 +2,23 @@
 
 members = [
     "packages/claude_convo",
+    "packages/compositor",
     "packages/crab_city",
     "packages/crab_city_ui/crate",
     "packages/pty_manager",
     "packages/tty_wrapper",
+    "packages/virtual_terminal",
 ]
 # crab_city_ui/crate requires CRAB_CITY_UI_PATH env var pointing to SvelteKit build output.
 # Exclude from default `cargo build` to avoid build failures. Build with:
 #   CRAB_CITY_UI_PATH=packages/crab_city_ui/build cargo build -p crab_city_ui
 default-members = [
     "packages/claude_convo",
+    "packages/compositor",
     "packages/crab_city",
     "packages/pty_manager",
     "packages/tty_wrapper",
+    "packages/virtual_terminal",
 ]
 resolver = "2"
 

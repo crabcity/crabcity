@@ -1,0 +1,12 @@
+[package]
+name = "compositor"
+version = "0.1.0"
+edition = "2024"
+description = "Cell-level terminal compositor with overlay layers and ANSI rendering"
+
+[lib]
+name = "compositor"
+path = "src/lib.rs"
+
+[dependencies]
+vt100 = "0.15"

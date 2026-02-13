@@ -14,7 +14,9 @@ rust_binary(
     edition = "2024",
     deps = [
         "//packages/claude_convo",
+        "//packages/compositor",
         "//packages/pty_manager",
+        "//packages/virtual_terminal",
         "@crate_index//:anyhow",
         "@crate_index//:argon2",
         "@crate_index//:axum",
@@ -73,8 +75,10 @@ rust_binary(
     edition = "2024",
     deps = [
         "//packages/claude_convo",
+        "//packages/compositor",
         "//packages/crab_city_ui/crate:crab_city_ui_crate",
         "//packages/pty_manager",
+        "//packages/virtual_terminal",
         "@crate_index//:anyhow",
         "@crate_index//:argon2",
         "@crate_index//:axum",
@@ -126,10 +130,40 @@ rust_binary(
     ],
 )
 
-rust_test(
-    name = "crab_city_test",
+# Test targets split by module for parallel execution and caching.
+# Each target filters to a module prefix via TESTBRIDGE_TEST_ONLY.
+_TEST_DEPS = ["@crate_index//:tempfile"]
+
+_TEST_FILTERS = {
+    "models_test": "models::tests",
+    "ws_test": "ws::",
+    "git_test": "git::",
+    "handlers_test": "handlers::",
+    "repository_test": "repository::",
+    "inference_test": "inference::",
+    "cli_test": "cli::",
+    "files_test": "files::",
+}
+
+[rust_test(
+    name = name,
     crate = ":crab",
-    deps = [
-        "@crate_index//:tempfile",
-    ],
+    env = {"TESTBRIDGE_TEST_ONLY": test_filter},
+    deps = _TEST_DEPS,
+) for name, test_filter in _TEST_FILTERS.items()]
+
+# Remaining tests not covered by filtered targets above
+rust_test(
+    name = "misc_test",
+    args = [arg for test_filter in _TEST_FILTERS.values() for arg in [
+        "--skip",
+        test_filter,
+    ]],
+    crate = ":crab",
+    deps = _TEST_DEPS,
+)
+
+test_suite(
+    name = "crab_city_tests",
+    tests = [":" + name for name in _TEST_FILTERS.keys()] + [":misc_test"],
 )

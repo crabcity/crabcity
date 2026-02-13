@@ -1,4 +1,5 @@
 use anyhow::Result;
+use compositor::{Anchor, Attrs, Compositor, LayerId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
@@ -75,6 +76,24 @@ pub enum InstanceCommand {
         connection_id: String,
         respond_to: oneshot::Sender<Option<(u16, u16)>>,
     },
+    /// Add a compositor overlay layer.
+    AddLayer {
+        anchor: Anchor,
+        width: u16,
+        height: u16,
+        z_order: i16,
+        respond_to: oneshot::Sender<LayerId>,
+    },
+    /// Fill text into a compositor layer.
+    UpdateLayerText {
+        id: LayerId,
+        row: u16,
+        col: u16,
+        text: String,
+        attrs: Attrs,
+    },
+    /// Remove a compositor layer.
+    RemoveLayer { id: LayerId },
     Stop {
         respond_to: oneshot::Sender<Result<()>>,
     },
@@ -325,6 +344,55 @@ impl InstanceHandle {
         Ok(())
     }
 
+    /// Add a compositor overlay layer. Returns the layer ID.
+    pub async fn add_layer(
+        &self,
+        anchor: Anchor,
+        width: u16,
+        height: u16,
+        z_order: i16,
+    ) -> Result<LayerId> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(InstanceCommand::AddLayer {
+                anchor,
+                width,
+                height,
+                z_order,
+                respond_to: tx,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Instance actor is gone"))?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))
+    }
+
+    /// Fill text into a compositor layer at the given position.
+    pub async fn update_layer_text(
+        &self,
+        id: LayerId,
+        row: u16,
+        col: u16,
+        text: &str,
+        attrs: Attrs,
+    ) {
+        let _ = self
+            .sender
+            .send(InstanceCommand::UpdateLayerText {
+                id,
+                row,
+                col,
+                text: text.to_string(),
+                attrs,
+            })
+            .await;
+    }
+
+    /// Remove a compositor layer.
+    pub async fn remove_layer(&self, id: LayerId) {
+        let _ = self.sender.send(InstanceCommand::RemoveLayer { id }).await;
+    }
+
     pub fn id(&self) -> String {
         self.info.blocking_read().id.clone()
     }
@@ -345,10 +413,11 @@ pub struct SpawnOptions {
     pub max_buffer_bytes: usize,
 }
 
-/// Handle VT-related commands.
+/// Handle VT and compositor commands.
 /// Returns `None` if handled, `Some(cmd)` for PTY/metadata commands.
 async fn handle_vt_command(
     vt: &RwLock<VirtualTerminal>,
+    compositor: &RwLock<Compositor>,
     cmd: InstanceCommand,
 ) -> Option<InstanceCommand> {
     match cmd {
@@ -388,7 +457,14 @@ async fn handle_vt_command(
             respond_to,
         } => {
             let mut vt = vt.write().await;
-            let replay = vt.replay();
+            let comp = compositor.read().await;
+            let replay = if comp.has_visible_layers() {
+                // Compose screen with overlay layers
+                comp.compose(vt.screen())
+            } else {
+                vt.replay()
+            };
+            drop(comp);
             let data = if replay.len() > max_bytes {
                 let mut start = replay.len() - max_bytes;
                 // Skip past UTF-8 continuation bytes (10xxxxxx) so we
@@ -403,6 +479,36 @@ async fn handle_vt_command(
             let _ = respond_to.send(vec![String::from_utf8_lossy(&data).to_string()]);
             None
         }
+        InstanceCommand::AddLayer {
+            anchor,
+            width,
+            height,
+            z_order,
+            respond_to,
+        } => {
+            let mut comp = compositor.write().await;
+            let id = comp.add_layer(anchor, width, height, z_order);
+            let _ = respond_to.send(id);
+            None
+        }
+        InstanceCommand::UpdateLayerText {
+            id,
+            row,
+            col,
+            text,
+            attrs,
+        } => {
+            let mut comp = compositor.write().await;
+            if let Some(layer) = comp.layer_mut(id) {
+                layer.fill_text(row, col, &text, attrs);
+            }
+            None
+        }
+        InstanceCommand::RemoveLayer { id } => {
+            let mut comp = compositor.write().await;
+            comp.remove_layer(id);
+            None
+        }
         other => Some(other),
     }
 }
@@ -413,6 +519,7 @@ struct InstanceActor {
     pty: PtyHandle,
     receiver: mpsc::Receiver<InstanceCommand>,
     virtual_terminal: Arc<RwLock<VirtualTerminal>>,
+    compositor: Arc<RwLock<Compositor>>,
 }
 
 impl InstanceActor {
@@ -466,12 +573,14 @@ impl InstanceActor {
             80,
             opts.max_buffer_bytes,
         )));
+        let compositor = Arc::new(RwLock::new(Compositor::new()));
 
         let actor = InstanceActor {
             info: info.clone(),
             pty: pty.clone(),
             receiver,
             virtual_terminal: virtual_terminal.clone(),
+            compositor: compositor.clone(),
         };
 
         // Start the output collection task - feed PTY output to VirtualTerminal
@@ -497,7 +606,7 @@ impl InstanceActor {
         debug!("Instance actor '{}' started", name);
 
         while let Some(cmd) = self.receiver.recv().await {
-            let cmd = match handle_vt_command(&self.virtual_terminal, cmd).await {
+            let cmd = match handle_vt_command(&self.virtual_terminal, &self.compositor, cmd).await {
                 Some(cmd) => cmd,
                 None => continue,
             };
@@ -624,10 +733,12 @@ impl InstanceHandle {
             cols,
             max_delta_bytes,
         )));
+        let comp = Arc::new(RwLock::new(Compositor::new()));
         let vt_actor = vt.clone();
+        let comp_actor = comp.clone();
         tokio::spawn(async move {
             while let Some(cmd) = receiver.recv().await {
-                let cmd = match handle_vt_command(&vt_actor, cmd).await {
+                let cmd = match handle_vt_command(&vt_actor, &comp_actor, cmd).await {
                     Some(cmd) => cmd,
                     None => continue,
                 };
