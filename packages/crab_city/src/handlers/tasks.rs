@@ -4,11 +4,27 @@ use axum::{
     http::StatusCode,
 };
 use serde::Deserialize;
-use sqlx::Row;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::MaybeAuthUser;
+use crate::ws;
+
+/// Broadcast a full task snapshot (with tags + dispatches) to all WS clients.
+fn broadcast_task(state: &AppState, task_with_tags: &crate::models::TaskWithTags) {
+    state
+        .global_state_manager
+        .broadcast_lifecycle(ws::ServerMessage::TaskUpdate {
+            task: serde_json::to_value(task_with_tags).unwrap_or_default(),
+        });
+}
+
+/// Fetch a full task snapshot and broadcast it. Silently no-ops if the task is gone.
+async fn broadcast_task_by_id(state: &AppState, id: i64) {
+    if let Ok(Some(twt)) = state.repository.get_task_with_tags(id).await {
+        broadcast_task(state, &twt);
+    }
+}
 
 pub async fn list_tasks_handler(
     State(state): State<AppState>,
@@ -70,10 +86,10 @@ pub async fn create_task_handler(
         }
     }
 
-    // Get the newly created task
-    let task = state
+    // Fetch the full task (with tags + dispatches)
+    let task_with_tags = state
         .repository
-        .get_task(id)
+        .get_task_with_tags(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
@@ -83,11 +99,9 @@ pub async fn create_task_handler(
             )
         })?;
 
-    Ok(Json(crate::models::TaskWithTags {
-        task,
-        tags: vec![],
-        dispatches: vec![],
-    }))
+    broadcast_task(&state, &task_with_tags);
+
+    Ok(Json(task_with_tags))
 }
 
 pub async fn get_task_handler(
@@ -95,43 +109,14 @@ pub async fn get_task_handler(
     _maybe_user: MaybeAuthUser,
     Path(id): Path<i64>,
 ) -> Result<Json<crate::models::TaskWithTags>, (StatusCode, String)> {
-    let task = state
+    let task_with_tags = state
         .repository
-        .get_task(id)
+        .get_task_with_tags(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Task not found".to_string()))?;
 
-    // Fetch tags
-    let tag_rows = sqlx::query(
-        "SELECT tg.id, tg.name, tg.color FROM tags tg JOIN task_tags tt ON tg.id = tt.tag_id WHERE tt.task_id = ?",
-    )
-    .bind(id)
-    .fetch_all(&state.db.pool)
-    .await
-    .unwrap_or_default();
-
-    let tags: Vec<crate::models::Tag> = tag_rows
-        .into_iter()
-        .map(|r| crate::models::Tag {
-            id: r.get("id"),
-            name: r.get("name"),
-            color: r.get("color"),
-        })
-        .collect();
-
-    // Fetch dispatches
-    let dispatches = state
-        .repository
-        .get_dispatches_for_tasks(&[id])
-        .await
-        .unwrap_or_default();
-
-    Ok(Json(crate::models::TaskWithTags {
-        task,
-        tags,
-        dispatches,
-    }))
+    Ok(Json(task_with_tags))
 }
 
 pub async fn update_task_handler(
@@ -146,6 +131,8 @@ pub async fn update_task_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    broadcast_task_by_id(&state, id).await;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -159,6 +146,10 @@ pub async fn delete_task_handler(
         .delete_task(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    state
+        .global_state_manager
+        .broadcast_lifecycle(ws::ServerMessage::TaskDeleted { task_id: id });
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -213,16 +204,21 @@ pub async fn send_task_handler(
         .create_task_dispatch(id, instance_id, text)
         .await;
 
-    if task.status == "pending" {
+    let new_status = if task.status == "pending" {
         let update = crate::models::UpdateTaskRequest {
             status: Some("in_progress".to_string()),
             ..Default::default()
         };
         let _ = state.repository.update_task(id, &update).await;
-    }
+        "in_progress"
+    } else {
+        &task.status
+    };
+
+    broadcast_task_by_id(&state, id).await;
 
     Ok(Json(
-        serde_json::json!({ "ok": true, "status": "in_progress" }),
+        serde_json::json!({ "ok": true, "status": new_status }),
     ))
 }
 
@@ -259,6 +255,8 @@ pub async fn create_dispatch_handler(
         let _ = state.repository.update_task(id, &update).await;
     }
 
+    broadcast_task_by_id(&state, id).await;
+
     Ok(Json(serde_json::json!({
         "ok": true,
         "dispatch_id": dispatch.id,
@@ -283,6 +281,8 @@ pub async fn add_task_tag_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    broadcast_task_by_id(&state, id).await;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -296,6 +296,8 @@ pub async fn remove_task_tag_handler(
         .remove_task_tag(id, tag_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    broadcast_task_by_id(&state, id).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -700,6 +702,181 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_task_with_tags_returns_tags() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"Tagged on create","tags":["bug","urgent"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["title"], "Tagged on create");
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 2);
+        let tag_names: Vec<&str> = tags.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(tag_names.contains(&"bug"));
+        assert!(tag_names.contains(&"urgent"));
+    }
+
+    #[tokio::test]
+    async fn test_create_dispatch_preserves_non_pending_status() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", patch(update_task_handler))
+            .route("/tasks/{id}/dispatch", post(create_dispatch_handler))
+            .with_state(state);
+
+        // Create a task
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Already running"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Move to in_progress first
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/tasks/{}", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"status":"in_progress"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Create dispatch on an already in_progress task
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tasks/{}/dispatch", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"instance_id":"inst-1","sent_text":"more work"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Status should remain in_progress, not be overwritten
+        assert_eq!(json["status"], "in_progress");
+    }
+
+    #[tokio::test]
+    async fn test_get_task_includes_tags_and_dispatches() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let app = Router::new()
+            .route("/tasks", post(create_task_handler))
+            .route("/tasks/{id}", get(get_task_handler))
+            .route("/tasks/{id}/tags", post(add_task_tag_handler))
+            .route("/tasks/{id}/dispatch", post(create_dispatch_handler))
+            .with_state(state);
+
+        // Create
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Full task"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Add tag
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tasks/{}/tags", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"tag":"feature"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Add dispatch
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/tasks/{}/dispatch", id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"instance_id":"inst-1","sent_text":"do it"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Get should include both
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/tasks/{}", id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["tags"].as_array().unwrap().len(), 1);
+        assert_eq!(json["tags"][0]["name"], "feature");
+        assert_eq!(json["dispatches"].as_array().unwrap().len(), 1);
+        assert_eq!(json["dispatches"][0]["sent_text"], "do it");
     }
 
     #[tokio::test]

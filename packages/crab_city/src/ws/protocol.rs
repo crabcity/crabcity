@@ -279,6 +279,12 @@ pub enum ServerMessage {
         topics: Vec<crate::models::ChatTopicSummary>,
     },
 
+    // === Tasks ===
+    /// A task was created or updated — full snapshot for idempotent merge
+    TaskUpdate { task: serde_json::Value },
+    /// A task was deleted
+    TaskDeleted { task_id: i64 },
+
     // === Terminal lock ===
     /// Terminal lock state update (idempotent snapshot — covers acquire/release/expire/steal)
     TerminalLockUpdate {
@@ -1385,6 +1391,73 @@ mod tests {
                 }
                 _ => panic!("Wrong state type"),
             }
+        }
+    }
+
+    #[test]
+    fn test_server_message_task_update_serialization() {
+        let task_value = serde_json::json!({
+            "id": 42,
+            "title": "Fix the bug",
+            "status": "pending",
+            "tags": [{"id": 1, "name": "urgent", "color": null}],
+        });
+        let msg = ServerMessage::TaskUpdate {
+            task: task_value.clone(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("TaskUpdate"));
+        assert!(json.contains("Fix the bug"));
+
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::TaskUpdate { task } => {
+                assert_eq!(task["id"], 42);
+                assert_eq!(task["title"], "Fix the bug");
+                assert_eq!(task["tags"][0]["name"], "urgent");
+            }
+            _ => panic!("Expected TaskUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_task_deleted_serialization() {
+        let msg = ServerMessage::TaskDeleted { task_id: 99 };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("TaskDeleted"));
+        assert!(json.contains("99"));
+
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::TaskDeleted { task_id } => {
+                assert_eq!(task_id, 99);
+            }
+            _ => panic!("Expected TaskDeleted"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_task_update_from_raw_json() {
+        let json = r#"{"type":"TaskUpdate","task":{"id":1,"title":"Test"}}"#;
+        let msg: ServerMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ServerMessage::TaskUpdate { task } => {
+                assert_eq!(task["id"], 1);
+                assert_eq!(task["title"], "Test");
+            }
+            _ => panic!("Expected TaskUpdate"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_task_deleted_from_raw_json() {
+        let json = r#"{"type":"TaskDeleted","task_id":42}"#;
+        let msg: ServerMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ServerMessage::TaskDeleted { task_id } => {
+                assert_eq!(task_id, 42);
+            }
+            _ => panic!("Expected TaskDeleted"),
         }
     }
 }

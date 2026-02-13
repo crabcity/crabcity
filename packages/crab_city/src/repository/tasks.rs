@@ -70,6 +70,41 @@ impl ConversationRepository {
         }))
     }
 
+    /// Fetch a single task with its tags and dispatches.
+    pub async fn get_task_with_tags(&self, id: i64) -> Result<Option<TaskWithTags>> {
+        let task = match self.get_task(id).await? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let tag_rows = sqlx::query(
+            "SELECT tg.id, tg.name, tg.color FROM tags tg JOIN task_tags tt ON tg.id = tt.tag_id WHERE tt.task_id = ?",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let tags = tag_rows
+            .into_iter()
+            .map(|r| Tag {
+                id: r.get("id"),
+                name: r.get("name"),
+                color: r.get("color"),
+            })
+            .collect();
+
+        let dispatches = self
+            .get_dispatches_for_tasks(&[id])
+            .await
+            .unwrap_or_default();
+
+        Ok(Some(TaskWithTags {
+            task,
+            tags,
+            dispatches,
+        }))
+    }
+
     pub async fn list_tasks(&self, filters: &TaskListFilters) -> Result<Vec<TaskWithTags>> {
         let mut conditions = vec!["t.is_deleted = 0".to_string()];
 
@@ -651,6 +686,55 @@ mod tests {
         let dispatches = repo.get_dispatches_for_tasks(&[id]).await.unwrap();
         assert_eq!(dispatches.len(), 1);
         assert_eq!(dispatches[0].sent_text, "fix this bug");
+    }
+
+    #[tokio::test]
+    async fn get_task_with_tags_includes_tags_and_dispatches() {
+        let repo = test_helpers::test_repository().await;
+        let id = repo
+            .create_task(&make_task("Full task", 1.0))
+            .await
+            .unwrap();
+
+        // Add tags
+        repo.add_task_tag(id, "bug").await.unwrap();
+        repo.add_task_tag(id, "urgent").await.unwrap();
+
+        // Add a dispatch
+        repo.create_task_dispatch(id, "inst-1", "fix it")
+            .await
+            .unwrap();
+
+        // get_task_with_tags should return everything
+        let twt = repo.get_task_with_tags(id).await.unwrap().unwrap();
+        assert_eq!(twt.task.title, "Full task");
+        assert_eq!(twt.tags.len(), 2);
+        let tag_names: Vec<&str> = twt.tags.iter().map(|t| t.name.as_str()).collect();
+        assert!(tag_names.contains(&"bug"));
+        assert!(tag_names.contains(&"urgent"));
+        assert_eq!(twt.dispatches.len(), 1);
+        assert_eq!(twt.dispatches[0].sent_text, "fix it");
+    }
+
+    #[tokio::test]
+    async fn get_task_with_tags_nonexistent_returns_none() {
+        let repo = test_helpers::test_repository().await;
+        let result = repo.get_task_with_tags(99999).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_task_with_tags_no_tags_no_dispatches() {
+        let repo = test_helpers::test_repository().await;
+        let id = repo
+            .create_task(&make_task("Bare task", 1.0))
+            .await
+            .unwrap();
+
+        let twt = repo.get_task_with_tags(id).await.unwrap().unwrap();
+        assert_eq!(twt.task.title, "Bare task");
+        assert!(twt.tags.is_empty());
+        assert!(twt.dispatches.is_empty());
     }
 
     #[tokio::test]

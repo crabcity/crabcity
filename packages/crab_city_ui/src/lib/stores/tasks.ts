@@ -54,6 +54,27 @@ export function openTaskForEdit(taskId: number): void {
 }
 
 // =============================================================================
+// WebSocket Handler (called by ws-handlers.ts for real-time sync)
+// =============================================================================
+
+/** Idempotent upsert: updates if existing, inserts if new. */
+export function handleTaskUpdate(task: Task): void {
+	tasks.update(($t) => {
+		const idx = $t.findIndex((t) => t.id === task.id);
+		if (idx >= 0) {
+			$t[idx] = task;
+			return [...$t];
+		}
+		return [...$t, task];
+	});
+}
+
+/** Remove a task by ID (idempotent — no-ops if already gone). */
+export function handleTaskDeleted(taskId: number): void {
+	tasks.update(($t) => $t.filter((t) => t.id !== taskId));
+}
+
+// =============================================================================
 // Derived Stores
 // =============================================================================
 
@@ -103,8 +124,15 @@ export async function createTask(req: CreateTaskRequest): Promise<Task | null> {
 		if (!response.ok) throw new Error(`Failed to create task: ${response.status}`);
 		const created: Task = await response.json();
 
-		// Optimistic: add to local store
-		tasks.update(($t) => [...$t, created]);
+		// Idempotent upsert: avoids duplicates if the WS broadcast arrives first
+		tasks.update(($t) => {
+			const idx = $t.findIndex((t) => t.id === created.id);
+			if (idx >= 0) {
+				$t[idx] = created;
+				return [...$t];
+			}
+			return [...$t, created];
+		});
 		return created;
 	} catch (e) {
 		console.error('Failed to create task:', e);

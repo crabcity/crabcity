@@ -7,7 +7,7 @@
  */
 
 import { get } from 'svelte/store';
-import type { WsMessage, ClaudeState, Instance, PresenceUser } from '$lib/types';
+import type { WsMessage, ClaudeState, Instance, PresenceUser, Task } from '$lib/types';
 import { instances } from './instances';
 import { setConversation, appendTurns } from './conversation';
 import { trackOutput } from './activity';
@@ -20,6 +20,7 @@ import {
 	type ChatMessageData,
 	type ChatTopicSummary
 } from './chat';
+import { handleTaskUpdate, handleTaskDeleted } from './tasks';
 
 // =============================================================================
 // Multiplexed Message Types
@@ -72,7 +73,9 @@ export type MuxServerMessage =
 	| { type: 'TerminalLockUpdate'; instance_id: string; holder?: PresenceUser | null; last_activity?: string | null; expires_in_secs?: number | null }
 	| { type: 'ChatMessage'; id: number; uuid: string; scope: string; user_id: string; display_name: string; content: string; created_at: number; forwarded_from?: string | null; topic?: string | null }
 	| { type: 'ChatHistoryResponse'; scope: string; messages: ChatMessageData[]; has_more: boolean }
-	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] };
+	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] }
+	| { type: 'TaskUpdate'; task: Task }
+	| { type: 'TaskDeleted'; task_id: number };
 
 // =============================================================================
 // Handler Context — mutable state owned by websocket.ts
@@ -278,6 +281,14 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 
 			case 'ChatTopicsResponse':
 				handleChatTopics(msg.scope, msg.topics);
+				break;
+
+			case 'TaskUpdate':
+				handleTaskUpdate(msg.task);
+				break;
+
+			case 'TaskDeleted':
+				handleTaskDeleted(msg.task_id);
 				break;
 		}
 	};
