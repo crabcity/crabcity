@@ -298,22 +298,38 @@ fn build_items<'a>(instances: &[InstanceInfo], rename: &Option<RenameState>) -> 
             // Check if this row is being renamed
             let is_renaming = rename.as_ref().is_some_and(|r| r.instance_id == inst.id);
 
-            let name_span = if is_renaming {
-                let buf = &rename.as_ref().unwrap().buffer;
-                Span::styled(
-                    format!("{:<20}", format!("{}▏", buf)),
-                    Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                )
+            let mut spans = if is_renaming {
+                let r = rename.as_ref().unwrap();
+                let (before, rest) = r.buffer.split_at(r.cursor);
+                let edit_style =
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                let cursor_style = Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+                // Character under cursor shown reversed; space block if at end
+                let (cursor_ch, after) = if rest.is_empty() {
+                    (" ", "")
+                } else {
+                    rest.split_at(rest.ceil_char_boundary(1))
+                };
+                let pad_len = 20usize.saturating_sub(before.len() + cursor_ch.len() + after.len());
+                vec![
+                    Span::styled(before.to_string(), edit_style),
+                    Span::styled(cursor_ch.to_string(), cursor_style),
+                    Span::styled(
+                        format!("{:pad_len$}", after, pad_len = after.len() + pad_len),
+                        edit_style,
+                    ),
+                ]
             } else {
                 let display = inst.display_name();
-                Span::styled(
+                vec![Span::styled(
                     format!("{:<20}", display),
                     Style::default().add_modifier(Modifier::BOLD),
-                )
+                )]
             };
 
-            let mut spans = vec![
-                name_span,
+            spans.extend([
                 Span::raw(format!(" {:<10}", short_id)),
                 Span::styled(
                     format!(" {:<8}", status),
@@ -323,7 +339,7 @@ fn build_items<'a>(instances: &[InstanceInfo], rename: &Option<RenameState>) -> 
                         Style::default().add_modifier(Modifier::DIM)
                     },
                 ),
-            ];
+            ]);
 
             // Show auto-generated name dimmed when a custom name is set (and not renaming)
             if !is_renaming && inst.custom_name.is_some() {
