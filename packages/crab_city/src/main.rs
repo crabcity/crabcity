@@ -225,6 +225,14 @@ async fn main() -> Result<()> {
 
     let config = CrabCityConfig::new(cli.data_dir.clone())?;
 
+    // Install crash diagnostics (terminal restore + crash report file)
+    install_panic_hook(config.logs_dir.clone());
+
+    // Initialize CLI-side file logging (server sets up its own in run_server)
+    if !matches!(cli.command, Some(Commands::Server(_))) {
+        init_cli_tracing(&config.logs_dir);
+    }
+
     match cli.command {
         None => {
             // Bare `crab`: create new instance in cwd and attach
@@ -241,6 +249,76 @@ async fn main() -> Result<()> {
         },
         Some(Commands::Server(args)) => run_server(args, config).await,
     }
+}
+
+/// Install a panic hook that restores the terminal and saves a crash report.
+fn install_panic_hook(logs_dir: std::path::PathBuf) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // 1. Restore terminal — critical so the user's shell isn't left in raw mode.
+        //    Use raw ANSI sequences to avoid depending on ratatui/crossterm state.
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        // Leave alternate screen + show cursor
+        let _ = std::io::Write::write_all(&mut stdout, b"\x1b[?1049l\x1b[?25h");
+        let _ = std::io::Write::flush(&mut stdout);
+
+        // 2. Capture backtrace (always, regardless of RUST_BACKTRACE)
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        // 3. Write crash report
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let crash_path = logs_dir.join(format!("crash-{timestamp}.log"));
+        if let Ok(mut f) = std::fs::File::create(&crash_path) {
+            use std::io::Write;
+            let _ = writeln!(f, "=== Crab City Crash Report ===");
+            let _ = writeln!(f, "Time: {}", chrono::Local::now());
+            let _ = writeln!(f, "Version: {VERSION}");
+            let _ = writeln!(f, "");
+            let _ = writeln!(f, "Panic: {info}");
+            if let Some(loc) = info.location() {
+                let _ = writeln!(
+                    f,
+                    "Location: {}:{}:{}",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
+                );
+            }
+            let _ = writeln!(f, "");
+            let _ = writeln!(f, "Backtrace:\n{backtrace}");
+
+            eprintln!("\n[crab] crash report saved to {}", crash_path.display());
+        }
+
+        // 4. Chain to default hook for the standard panic output
+        default_hook(info);
+    }));
+}
+
+/// Initialize file-based tracing for CLI commands (server has its own in run_server).
+fn init_cli_tracing(logs_dir: &std::path::Path) {
+    let log_path = logs_dir.join("cli.log");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    else {
+        return; // best-effort — don't block CLI startup
+    };
+
+    let writer = std::sync::Mutex::new(file);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("crab=debug,warn"));
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false),
+        )
+        .with(env_filter)
+        .init();
 }
 
 async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {

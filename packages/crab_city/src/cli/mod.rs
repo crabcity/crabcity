@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite;
+use tracing::{debug, error, info, warn};
 
 use crate::config::CrabCityConfig;
 use attach::AttachOutcome;
@@ -124,9 +125,14 @@ async fn session_loop_inner(
     let mut last_attached: Option<String> = None;
 
     loop {
+        debug!("session_loop: fetching instances");
         let instances = match fetch_instances(&daemon).await {
-            Ok(inst) => inst,
+            Ok(inst) => {
+                debug!(count = inst.len(), "session_loop: got instances");
+                inst
+            }
             Err(DaemonError::Unavailable) => {
+                warn!("session_loop: daemon unavailable, attempting rediscovery");
                 if try_rediscover(config, &mut daemon).await {
                     continue;
                 }
@@ -139,6 +145,7 @@ async fn session_loop_inner(
         let (instance_id, outcome) =
             match run_live_picker(terminal, &daemon, instances, last_attached.as_deref()).await? {
                 PickerResult::Attach(id) => {
+                    info!(instance_id = %id, "attaching to instance");
                     // Restore terminal before attaching (attach uses raw terminal I/O directly)
                     if terminal.is_some() {
                         ratatui::restore();
@@ -220,10 +227,12 @@ async fn session_loop_inner(
                     (instance.id, outcome)
                 }
                 PickerResult::Rename { id, custom_name } => {
+                    info!(instance_id = %id, name = ?custom_name, "renaming instance");
                     rename_instance(&daemon, &id, custom_name.as_deref()).await;
                     continue;
                 }
                 PickerResult::Kill(id) => {
+                    info!(instance_id = %id, "killing instance");
                     delete_instance(&daemon, &id).await;
                     continue;
                 }
@@ -242,9 +251,11 @@ async fn session_loop_inner(
 
         match outcome {
             AttachOutcome::Detached => {
+                info!(instance_id = %instance_id, "detached from instance");
                 last_attached = Some(instance_id);
             }
             AttachOutcome::Exited => {
+                info!(instance_id = %instance_id, "instance exited, cleaning up");
                 delete_instance(&daemon, &instance_id).await;
                 last_attached = None;
             }
@@ -263,6 +274,7 @@ async fn run_live_picker(
 
     // Best-effort WS connection for live updates; picker works fine without it
     if let Ok((ws, _)) = tokio_tungstenite::connect_async(daemon.mux_ws_url()).await {
+        debug!("picker: mux WebSocket connected");
         let (_, mut ws_read) = ws.split();
         tokio::spawn(async move {
             while let Some(Ok(tungstenite::Message::Text(text))) = ws_read.next().await {
@@ -422,20 +434,25 @@ struct CreateInstanceResponse {
     name: String,
 }
 
-/// Delete a stopped instance from the daemon. Best-effort (ignores errors).
+/// Delete a stopped instance from the daemon. Best-effort (logs errors).
 async fn delete_instance(daemon: &DaemonInfo, instance_id: &str) {
     let url = format!("{}/api/instances/{}", daemon.base_url(), instance_id);
-    let _ = reqwest::Client::new().delete(&url).send().await;
+    if let Err(e) = reqwest::Client::new().delete(&url).send().await {
+        error!(instance_id, error = %e, "failed to delete instance");
+    }
 }
 
-/// Set or clear the custom name for an instance. Best-effort (ignores errors).
+/// Set or clear the custom name for an instance. Best-effort (logs errors).
 async fn rename_instance(daemon: &DaemonInfo, instance_id: &str, custom_name: Option<&str>) {
     let url = format!("{}/api/instances/{}/name", daemon.base_url(), instance_id);
-    let _ = reqwest::Client::new()
+    if let Err(e) = reqwest::Client::new()
         .patch(&url)
         .json(&serde_json::json!({ "custom_name": custom_name }))
         .send()
-        .await;
+        .await
+    {
+        error!(instance_id, name = ?custom_name, error = %e, "failed to rename instance");
+    }
 }
 
 /// Check if the daemon has no remaining running instances.

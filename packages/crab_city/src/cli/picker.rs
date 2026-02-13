@@ -207,21 +207,31 @@ fn picker_loop(
                     }
                     KeyCode::Backspace => {
                         if r.cursor > 0 {
-                            r.buffer.remove(r.cursor - 1);
-                            r.cursor -= 1;
+                            // Find start of previous character
+                            let prev = r.buffer[..r.cursor]
+                                .char_indices()
+                                .next_back()
+                                .map_or(0, |(i, _)| i);
+                            r.buffer.remove(prev);
+                            r.cursor = prev;
                         }
                     }
                     KeyCode::Left => {
-                        r.cursor = r.cursor.saturating_sub(1);
+                        if r.cursor > 0 {
+                            r.cursor = r.buffer[..r.cursor]
+                                .char_indices()
+                                .next_back()
+                                .map_or(0, |(i, _)| i);
+                        }
                     }
                     KeyCode::Right => {
                         if r.cursor < r.buffer.len() {
-                            r.cursor += 1;
+                            r.cursor = r.buffer.ceil_char_boundary(r.cursor + 1);
                         }
                     }
                     KeyCode::Char(c) => {
                         r.buffer.insert(r.cursor, c);
-                        r.cursor += 1;
+                        r.cursor += c.len_utf8();
                     }
                     _ => {}
                 }
@@ -300,7 +310,9 @@ fn build_items<'a>(instances: &[InstanceInfo], rename: &Option<RenameState>) -> 
 
             let mut spans = if is_renaming {
                 let r = rename.as_ref().unwrap();
-                let (before, rest) = r.buffer.split_at(r.cursor);
+                // Defensive: clamp cursor to a valid char boundary
+                let cursor = r.buffer.floor_char_boundary(r.cursor.min(r.buffer.len()));
+                let (before, rest) = r.buffer.split_at(cursor);
                 let edit_style =
                     Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 let cursor_style = Style::default()
