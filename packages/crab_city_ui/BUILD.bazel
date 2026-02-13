@@ -142,6 +142,8 @@ vite_bin.vite_binary(
 ts_project(
     name = "test_lib",
     srcs = [
+        "src/lib/utils/authGuard.test.ts",
+        "src/lib/utils/authGuard.ts",
         "src/lib/utils/fileLinkMatch.test.ts",
         "src/lib/utils/fileLinkMatch.ts",
         "src/lib/utils/fuzzy.test.ts",

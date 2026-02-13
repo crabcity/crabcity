@@ -8,9 +8,14 @@
 	import { initMultiplexedConnection, disconnectAll } from '$lib/stores/websocket';
 	import { viewportWidth } from '$lib/stores/ui';
 	import { toggleDebugPanel } from '$lib/stores/metrics';
-	import { checkAuth, authChecked, authEnabled, isAuthenticated } from '$lib/stores/auth';
+	import {
+		checkAuth, authChecked, authEnabled, isAuthenticated, needsSetup
+	} from '$lib/stores/auth';
 	import { theme } from '$lib/stores/settings';
+	import { resolveAuthGuard } from '$lib/utils/authGuard';
 	import DebugPanel from '$lib/components/DebugPanel.svelte';
+
+	let appInitialized = $state(false);
 
 	// Handle browser back/forward navigation
 	function handlePopState() {
@@ -87,75 +92,67 @@
 		setTimeout(() => container.remove(), 1100);
 	}
 
-	// Initialize multiplexed WebSocket on mount
+	// -----------------------------------------------------------------------
+	// Reactive auth guard + app initialization.
+	//
+	// Pure decision in resolveAuthGuard(), side effects here.
+	// Re-evaluates whenever $authChecked, $authEnabled, $isAuthenticated,
+	// $needsSetup, or $page change — covers every path into every state.
+	// -----------------------------------------------------------------------
+	$effect(() => {
+		const action = resolveAuthGuard({
+			authChecked: $authChecked,
+			authEnabled: $authEnabled,
+			isAuthenticated: $isAuthenticated,
+			needsSetup: $needsSetup,
+			pathname: $page.url.pathname,
+			basePath: base,
+			appInitialized,
+		});
+
+		switch (action.kind) {
+			case 'wait':
+				break;
+			case 'redirect':
+				goto(action.to);
+				break;
+			case 'init_app':
+				appInitialized = true;
+				initMultiplexedConnection();
+				fetchInstances().then(() => {
+					const instanceId = initFromUrl();
+					if (instanceId) selectInstance(instanceId, false);
+				});
+				fetchTasks().then(() => migrateFromLocalStorage());
+				break;
+			case 'noop':
+				break;
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// One-time browser setup (event listeners, theme binding, jank detector).
+	// Also kicks off the auth check that feeds the $effect above.
+	// -----------------------------------------------------------------------
 	onMount(() => {
 		const stopJankDetector = startJankDetector();
 
-		// Bind theme to document.body for global CSS — lives in layout so all routes get it
 		let prevTheme: string | null = null;
 		const unsubTheme = theme.subscribe((t) => {
 			const isSwitch = prevTheme !== null && prevTheme !== t;
 			document.body.setAttribute('data-theme', t);
-
 			if (isSwitch && t === 'analog') {
 				playInkTransition();
 			}
 			prevTheme = t;
 		});
 
-		// Check auth status first
-		checkAuth().then(({ authenticated, needsSetup, authEnabled: enabled }) => {
-			// Strip base path prefix for route matching
-			const currentPath = window.location.pathname.replace(base, '') || '/';
-			const isAuthPage = currentPath === '/login' || currentPath === '/register';
-			const isStandalonePage =
-				isAuthPage || currentPath.startsWith('/invite') || currentPath === '/account';
+		// Kick off auth — the result flows into stores, the $effect reacts.
+		checkAuth();
 
-			if (enabled) {
-				if (needsSetup && currentPath !== '/register') {
-					goto(`${base}/register`);
-					return;
-				}
-				if (!authenticated && !isStandalonePage) {
-					goto(`${base}/login`);
-					return;
-				}
-				if (authenticated && isAuthPage) {
-					goto(`${base}/`);
-					return;
-				}
-			}
-
-			// Only init WS and fetch instances on the main app pages
-			if (!isStandalonePage || !enabled) {
-				initApp();
-			}
-		});
-
-		function initApp() {
-			// Initialize the single multiplexed WebSocket connection
-			initMultiplexedConnection();
-
-			// Also fetch instances via REST as a fallback
-			fetchInstances().then(() => {
-				const instanceId = initFromUrl();
-				if (instanceId) {
-					selectInstance(instanceId, false);
-				}
-			});
-
-			// Fetch server-backed tasks, then migrate any localStorage leftovers
-			fetchTasks().then(() => migrateFromLocalStorage());
-		}
-
-		// Listen for browser navigation
 		window.addEventListener('popstate', handlePopState);
-
-		// Update viewport width on resize
 		const handleResize = () => viewportWidth.set(window.innerWidth);
 		window.addEventListener('resize', handleResize);
-
-		// Listen for keyboard shortcuts
 		window.addEventListener('keydown', handleKeydown);
 
 		return () => {
