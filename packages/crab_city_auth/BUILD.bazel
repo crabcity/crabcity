@@ -1,0 +1,27 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "crab_city_auth",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crate_index//:data-encoding",
+        "@crate_index//:ed25519-dalek",
+        "@crate_index//:rand",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:sha2",
+        "@crate_index//:thiserror",
+        "@crate_index//:uuid",
+    ],
+)
+
+rust_test(
+    name = "crab_city_auth_test",
+    crate = ":crab_city_auth",
+    deps = [
+        "@crate_index//:proptest",
+    ],
+)

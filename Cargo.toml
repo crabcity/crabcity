@@ -4,6 +4,7 @@ members = [
     "packages/claude_convo",
     "packages/compositor",
     "packages/crab_city",
+    "packages/crab_city_auth",
     "packages/crab_city_ui/crate",
     "packages/pty_manager",
     "packages/tty_wrapper",
@@ -16,6 +17,7 @@ default-members = [
     "packages/claude_convo",
     "packages/compositor",
     "packages/crab_city",
+    "packages/crab_city_auth",
     "packages/pty_manager",
     "packages/tty_wrapper",
     "packages/virtual_terminal",
@@ -46,4 +48,4 @@ tokio-test = "0.4.4"
 tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.13.2", features = ["v4"] }
+uuid = { version = "1.13.2", features = ["v4", "v7"] }

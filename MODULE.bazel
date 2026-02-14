@@ -107,6 +107,7 @@ crate_index.spec(
 crate_index.spec(
     features = [
         "v4",
+        "v7",
         "serde",
     ],
     package = "uuid",
@@ -351,6 +352,25 @@ crate_index.spec(
 crate_index.spec(
     package = "mime_guess",
     version = "2",
+)
+
+# Crab City Auth
+crate_index.spec(
+    features = ["rand_core"],
+    package = "ed25519-dalek",
+    version = "2",
+)
+crate_index.spec(
+    package = "data-encoding",
+    version = "2",
+)
+crate_index.spec(
+    package = "sha2",
+    version = "0.10",
+)
+crate_index.spec(
+    package = "proptest",
+    version = "1",
 )
 
 # Toolpath - git integration

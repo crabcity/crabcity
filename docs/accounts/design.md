@@ -1556,10 +1556,13 @@ Errors on the iroh stream use the same JSON envelope:
 | Code | Meaning | Recovery |
 |------|---------|----------|
 | `invalid_invite` | Invite expired, exhausted, or malformed | `{ "action": "none" }` |
+| `invalid_identity_proof` | Identity proof malformed or signature invalid | `{ "action": "none" }` |
+| `invalid_signature` | Ed25519 signature verification failed | `{ "action": "none" }` |
 | `not_a_member` | No grant exists for this NodeId | `{ "action": "redeem_invite" }` |
 | `grant_not_active` | Grant exists but state != active | `{ "action": "contact_admin", "admin_fingerprints": [...], "reason": "..." }` |
 | `insufficient_access` | Missing required access right | `{ "action": "none", "required": { "type": "...", "action": "..." } }` |
 | `blocklisted` | NodeId is on a blocklist | `{ "action": "contact_admin", "reason": "..." }` |
+| `handle_taken` | Requested handle is already in use | `{ "action": "none" }` |
 | `already_a_member` | NodeId already has an active grant | `{ "action": "reconnect" }` |
 | `rate_limited` | Too many requests | `{ "action": "retry", "retry_after_secs": N }` |
 

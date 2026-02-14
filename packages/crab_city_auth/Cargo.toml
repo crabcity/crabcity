@@ -1,0 +1,25 @@
+[package]
+name = "crab_city_auth"
+version = "0.1.0"
+edition = "2024"
+description = "Cryptographic identity, authorization, and invite primitives for Crab City"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lib]
+name = "crab_city_auth"
+path = "src/lib.rs"
+
+[dependencies]
+data-encoding = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
