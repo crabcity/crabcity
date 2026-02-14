@@ -9,39 +9,43 @@ Every instance operates with full sovereignty. The registry adds value (handles,
 ## Principles
 
 1. **Identity is a keypair.** An ed25519 key pair IS the account. No usernames, no passwords, no email required at the base layer.
-2. **Invites are signed capabilities.** Access control is a signed document, not a row in a central database.
-3. **Instances are sovereign.** An instance can operate standalone forever. The registry is opt-in.
-4. **The registry is a phonebook, not a platform.** It stores metadata and coordinates discovery. It does not mediate runtime traffic between users and instances.
-5. **Enterprise features layer on, not replace.** OIDC/SSO binds to the same keypair identity. Org management is sugar over the same membership model.
+2. **Identity and authorization are separate concerns.** WHO you are (keypair, display name, handle) is stored independently from WHAT you can do (capability, permissions, membership state). Different update cadences, different broadcast events, different trust sources.
+3. **Invites are signed capabilities.** Access control is a signed document, not a row in a central database.
+4. **Instances are sovereign.** An instance can operate standalone forever. The registry is opt-in.
+5. **The registry is a phonebook, not a platform.** It stores metadata and coordinates discovery. It does not mediate runtime traffic between users and instances.
+6. **Enterprise features layer on, not replace.** OIDC/SSO binds to the same keypair identity. Org management is sugar over the same membership model.
+7. **Every state transition is auditable.** Membership changes, capability grants, invite redemptions, and suspensions all produce structured events in an append-only log.
 
 ## System Topology
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     crabcity.dev                         │
-│                   (central registry)                     │
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │
-│  │  Accounts &  │  │   Instance   │  │   OIDC Provider│  │
-│  │  Profiles    │  │   Directory  │  │   + RP         │  │
-│  └──────────────┘  └──────────────┘  └────────────────┘  │
-│  ┌─────────────┐  ┌──────────────┐                       │
-│  │ Blocklists  │  │  Org / Team  │                       │
-│  │             │  │  Management  │                       │
-│  └─────────────┘  └──────────────┘                       │
-└──────────┬───────────────┬───────────────┬───────────────┘
-           │ heartbeat     │ OIDC          │ attestation
-           │ (pull)        │ (auth flow)   │ (push)
-           ▼               ▼               ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│  Instance A  │  │  Instance B  │  │  Instance C  │
-│ (standalone) │  │ (registered) │  │ (org-managed)│
-│              │  │              │  │              │
-│  ┌────────┐  │  │  ┌────────┐  │  │  ┌────────┐  │
-│  │ SQLite │  │  │  │ SQLite │  │  │  │ SQLite │  │
-│  │members │  │  │  │members │  │  │  │members │  │
-│  └────────┘  │  │  └────────┘  │  │  └────────┘  │
-└──────────────┘  └──────────────┘  └──────────────┘
++----------------------------------------------------------+
+|                     crabcity.dev                         |
+|                   (central registry)                     |
+|                                                          |
+|  +--------------+  +--------------+  +----------------+  |
+|  |  Accounts &  |  |   Instance   |  |   OIDC Provider|  |
+|  |  Profiles    |  |   Directory  |  |   + RP         |  |
+|  +--------------+  +--------------+  +----------------+  |
+|  +-------------+  +--------------+                       |
+|  | Blocklists  |  |  Org / Team  |                       |
+|  |             |  |  Management  |                       |
+|  +-------------+  +--------------+                       |
++----------+---------------+---------------+---------------+
+           | heartbeat     | OIDC          | attestation
+           | (pull)        | (auth flow)   | (push)
+           v               v               v
++--------------+  +--------------+  +--------------+
+|  Instance A  |  |  Instance B  |  |  Instance C  |
+| (standalone) |  | (registered) |  | (org-managed)|
+|              |  |              |  |              |
+|  +--------+  |  |  +--------+  |  |  +--------+  |
+|  | SQLite |  |  |  | SQLite |  |  |  | SQLite |  |
+|  |identity|  |  |  |identity|  |  |  |identity|  |
+|  | grants |  |  |  | grants |  |  |  | grants |  |
+|  | events |  |  |  | events |  |  |  | events |  |
+|  +--------+  |  |  +--------+  |  |  +--------+  |
++--------------+  +--------------+  +--------------+
 ```
 
 **Instance A** uses only raw invites and local keypairs. No registry dependency.
@@ -64,14 +68,36 @@ UserIdentity {
 
 Keypairs are generated client-side. They never leave the device unless the user explicitly exports them. The registry can optionally custody a keypair for browser-only users (stored encrypted, derived from a passphrase), but this is a convenience, not a requirement.
 
+### Key Fingerprints
+
+Public keys are 32 bytes — too long to recognize visually. Every public key has a **fingerprint**: a human-readable short identifier for use in the TUI, logs, and admin UIs.
+
+Format: `crab_` prefix + first 8 characters of the base32 (Crockford) encoding of the public key.
+
+Example: `crab_2K7XM9QP`
+
+Fingerprints are **not unique** (8 chars = 40 bits of entropy, sufficient to distinguish members within any realistic instance). They are a display convenience, never used for lookups or authentication.
+
+### Loopback Identity
+
+Local CLI/TUI connections via the loopback interface bypass authentication (existing behavior). These requests are attributed to a **synthetic loopback identity**: a well-known sentinel public key (all zeros, `0x00 * 32`) that cannot be used remotely.
+
+The loopback identity:
+- Always exists as an `owner`-level grant on every instance
+- Cannot be invited, suspended, or removed
+- Cannot be used for remote authentication (instances reject all-zeros pubkey on non-loopback connections)
+- Preserves backward compatibility: local access still "just works"
+
+This avoids the ambiguity of auto-provisioning a real keypair for loopback users. The loopback identity is synthetic and non-portable by design.
+
 ### Registry Account (Optional Layer)
 
-When a user registers at `crabcity.dev`, they bind their keypair to a handle:
+When a user registers at `crabcity.dev`, they bind their keypair(s) to a handle:
 
 ```
 Account {
     id: Uuid,
-    public_key: ed25519::PublicKey,
+    keys: Vec<AccountKey>,            // multiple devices, one identity
     handle: String,                   // @alex — unique on the registry
     display_name: String,
     avatar_url: Option<String>,
@@ -80,9 +106,18 @@ Account {
     created_at: DateTime,
     blocked: bool,
 }
+
+AccountKey {
+    public_key: ed25519::PublicKey,
+    label: String,                    // "MacBook", "Phone", "YubiKey"
+    created_at: DateTime,
+    revoked_at: Option<DateTime>,
+}
 ```
 
-Instances resolve handles via the registry API (`GET /api/v1/accounts/by-handle/:handle`), but they cache the pubkey→handle mapping locally. The registry is not in the hot path for any request after initial resolution.
+Multi-device is a day-one registry feature, not a late addition. Users who set up their identity on a laptop and then want to check from their phone should not be blocked. Adding a second key requires authentication with an existing key.
+
+Instances resolve handles via the registry API (`GET /api/v1/accounts/by-handle/:handle`), but they cache the pubkey->handle mapping locally. The registry is not in the hot path for any request after initial resolution.
 
 ### OIDC Binding (Enterprise Layer)
 
@@ -102,31 +137,31 @@ The double-hop OIDC flow:
 
 ```
 Enterprise IdP (Okta)
-       │
-       │  OIDC auth code flow
-       ▼
+       |
+       |  OIDC auth code flow
+       v
 crabcity.dev (Relying Party)
-       │
-       │  maps to keypair, issues crabcity.dev OIDC token
-       ▼
+       |
+       |  maps to keypair, issues crabcity.dev OIDC token
+       v
 crabcity.dev (Provider)
-       │
-       │  OIDC auth code flow (instance is the RP now)
-       ▼
+       |
+       |  OIDC auth code flow (instance is the RP now)
+       v
 Crab City Instance
-       │
-       │  extracts pubkey + org claims, creates local membership
-       ▼
-Local SQLite membership table
+       |
+       |  extracts pubkey + org claims, creates local identity + grant
+       v
+Local SQLite (member_identities + member_grants)
 ```
 
 Instances only need to trust one OIDC issuer: `https://crabcity.dev`. They never configure per-enterprise IdPs.
 
 ## Authorization Model
 
-### Capabilities
+### Capabilities and Permissions
 
-A capability is what a user can do on an instance. Capabilities are granted via invites or OIDC claims:
+Capabilities are named presets that expand to a set of fine-grained permissions. The API surface uses capabilities (`"capability": "collaborate"`). The database stores the expanded permission set. This allows future fine-grained overrides without breaking the simple capability model.
 
 | Capability    | Description                                    |
 |---------------|------------------------------------------------|
@@ -135,7 +170,62 @@ A capability is what a user can do on an instance. Capabilities are granted via 
 | `admin`       | Manage instance settings, invite others, moderate |
 | `owner`       | Full control, transfer ownership               |
 
-Capabilities are hierarchical: `owner` ⊃ `admin` ⊃ `collaborate` ⊃ `view`.
+Capabilities expand to permission bitfields:
+
+```
+Permissions (u32 bitfield):
+    VIEW_CONTENT     = 0x01    // read instances, conversations, tasks
+    VIEW_TERMINALS   = 0x02    // observe terminal output
+    SEND_CHAT        = 0x04    // send chat messages
+    EDIT_TASKS       = 0x08    // create/edit/close tasks
+    TERMINAL_INPUT   = 0x10    // send terminal input
+    CREATE_INSTANCE  = 0x20    // create new instances
+    MANAGE_MEMBERS   = 0x40    // invite, suspend, remove, change capabilities
+    MANAGE_INSTANCE  = 0x80    // instance settings, restart, shutdown
+
+Capability presets:
+    view        = VIEW_CONTENT | VIEW_TERMINALS
+    collaborate = view | SEND_CHAT | EDIT_TASKS | TERMINAL_INPUT | CREATE_INSTANCE
+    admin       = collaborate | MANAGE_MEMBERS
+    owner       = all bits set
+```
+
+Invite tokens carry a `Capability` enum (1 byte, compact). The expansion to permissions happens at redemption time. Admins can optionally tweak individual permission bits on a grant after redemption (e.g., "collaborate but no terminal input").
+
+### Membership State Machine
+
+Every membership (grant) has an explicit lifecycle state:
+
+```
+                +---> Active ---+---> Suspended ---+---> Active (reinstate)
+                |               |                  |
+    Invited ----+               +---> Removed      +---> Removed
+                |
+                +---> Removed (invite expired before first auth)
+```
+
+| State       | Meaning                                              | Access |
+|-------------|------------------------------------------------------|--------|
+| `invited`   | Invite redeemed, grant created, user hasn't completed first auth yet | Denied |
+| `active`    | Normal operating state                               | Granted |
+| `suspended` | Admin action, blocklist hit, or temporary hold        | Denied |
+| `removed`   | Terminal state; row kept for audit trail              | Denied |
+
+The auth middleware checks `state == active`, period. No multi-table joins against blocklists in the hot path — blocklist hits transition grants to `suspended` (with `reason` recorded in the event log), and the middleware only needs to read one column.
+
+### Identity and Authorization: Separate Tables
+
+Instance-local data is split into two concerns:
+
+**`member_identities`** — WHO you are. Cached from registry or self-reported. Updated by registry resolution, user profile changes. Broadcast as `IdentityUpdate`.
+
+**`member_grants`** — WHAT you can do. Instance-local authorization. Updated by admin actions, invite redemption, blocklist enforcement. Broadcast as `GrantUpdate`.
+
+This separation means:
+- Updating a display name doesn't touch the authorization table
+- Changing a capability doesn't re-resolve identity
+- The broadcast for "Alex changed their avatar" is a different message type than "Alex was promoted to admin"
+- Identity resolution (slow, async, registry-dependent) is decoupled from authorization checks (fast, local, synchronous)
 
 ### Invites (Standalone Path)
 
@@ -155,23 +245,41 @@ Invite {
 
 Invites are serialized, base32-encoded, and distributed out-of-band (URL, chat, email). They require no registry involvement.
 
-### Memberships (Instance-Local)
+**Invite revocation semantics:** Revoking an invite revokes *unredeemed uses only*. Existing memberships created from that invite are not affected. To suspend members who joined via a specific invite, use the separate "revoke invite and suspend derived members" admin action. This requires tracing invite->member relationships via the `invited_via` field on grants.
 
-Regardless of how a user authenticated (raw invite, registry invite, OIDC), the instance stores a uniform membership record:
+### Event Log (Audit Trail)
+
+Every state transition on an instance produces an event:
 
 ```
-Membership {
-    public_key: PublicKey,         // user identity
-    capability: Capability,
-    display_name: String,
-    handle: Option<String>,        // from registry, if available
-    org_id: Option<Uuid>,          // from OIDC claims, if available
-    invited_by: Option<PublicKey>,
+Event {
+    id: u64,                       // monotonic
+    event_type: String,            // "member.joined", "grant.capability_changed", etc.
+    actor: PublicKey,               // who did it
+    target: Option<PublicKey>,      // who it happened to
+    payload: Json,                 // event-specific details
     created_at: DateTime,
 }
 ```
 
-The membership table is the single source of truth for authorization on each instance. The auth middleware checks this table, not the registry.
+Event types:
+- `member.joined` — new identity + grant created (invite redemption, OIDC, loopback)
+- `member.suspended` — grant state -> suspended (admin action or blocklist)
+- `member.reinstated` — grant state -> active (admin action)
+- `member.removed` — grant state -> removed
+- `member.replaced` — new grant linked to old one (key loss recovery)
+- `grant.capability_changed` — capability or permissions updated
+- `grant.permissions_tweaked` — individual permission bits changed
+- `invite.created` — new invite issued
+- `invite.redeemed` — invite used (links to member.joined)
+- `invite.revoked` — invite revoked
+- `identity.updated` — display name, handle, or avatar changed
+
+The event log is append-only, never mutated. It serves as:
+1. **Audit trail** — "who invited who, when was someone promoted"
+2. **Debug tool** — trace the provenance of any membership
+3. **Undo mechanism** — admins can review and reverse actions
+4. **Future: activity feed** — surface meaningful events in the UI
 
 ## Instance Registry
 
@@ -202,16 +310,28 @@ Registered instances send a periodic heartbeat (every 5 minutes):
 
 ```
 POST /api/v1/instances/heartbeat
-→ { node_id, version, user_count, public_metadata }
-← { blocklist_version, blocklist_delta, motd }
+-> { node_id, version, user_count, public_metadata }
+<- {
+     blocklist_version: 42,
+     blocklist_deltas: {
+       "global": [...],
+       "org:acme-corp": [...],
+       "org:widgets-inc": [...]
+     },
+     motd: null
+   }
 ```
+
+Blocklist deltas are **scoped** — the response includes separate delta arrays for the global blocklist and each org the instance is bound to. This prevents ambiguity when an instance belongs to multiple orgs.
 
 The heartbeat serves three purposes:
 1. **Liveness** — the registry marks instances as offline after missed heartbeats
-2. **Blocklist sync** — delta-encoded blocklist updates piggybacked on the heartbeat response
+2. **Blocklist sync** — scoped delta-encoded blocklist updates piggybacked on the heartbeat response
 3. **Announcements** — registry-to-instance communication channel (MOTD, deprecation notices)
 
 This is the ONLY protocol between instance and registry during steady-state operation.
+
+**Known property:** Blocklist enforcement has a propagation window of up to 5 minutes (one heartbeat interval). If a user is blocked globally, instances that haven't heartbeated yet will still allow access until their next heartbeat. This is acceptable at the expected traffic level and is documented as an explicit design property, not a bug.
 
 ## Blocklists
 
@@ -226,6 +346,20 @@ Three scopes:
 Blocklist entries target either a `PublicKey` (user) or `NodeId` (instance) or `IpRange`.
 
 Instances opt into global blocklist enforcement. This is a social contract, not a technical lock: a rogue instance can ignore the blocklist, but it can be delisted from the directory.
+
+When a blocklist entry hits an active member, the instance transitions that member's grant to `suspended` and logs a `member.suspended` event with the blocklist scope and reason. This is a state transition, not a runtime check — the auth middleware only needs `state == active`.
+
+## Wire Format Versioning
+
+All WebSocket messages use envelope versioning:
+
+```json
+{ "v": 1, "type": "GrantUpdate", "data": { ... } }
+```
+
+Clients ignore messages with versions they don't understand. This allows individual message types to evolve independently without breaking connected clients. The envelope version (`v`) is the protocol version, not a per-message-type version — all messages in protocol v1 share the same contract.
+
+HTTP API versioning uses URL path prefixes (`/api/v1/...` for registry, no prefix for instance-local APIs in M1). Breaking changes increment the path version. Non-breaking additions (new optional fields) don't require a version bump.
 
 ## Org / Team Management
 
@@ -251,10 +385,25 @@ Orgs group accounts and instances. When an org has OIDC configured, new members 
 
 | Boundary | Trust model |
 |----------|-------------|
-| User ↔ Instance | Challenge-response (user proves keypair ownership) or session token |
-| Instance ↔ Registry | Instance authenticates via its NodeId keypair; registry authenticates via TLS + OIDC signing key |
-| User ↔ Registry | OIDC tokens (for SSO) or challenge-response (for keypair-native users) |
-| Instance ↔ Instance | No direct trust required; iroh handles transport encryption |
+| User <-> Instance | Challenge-response (user proves keypair ownership) or session token |
+| Instance <-> Registry | Instance authenticates via its NodeId keypair; registry authenticates via TLS + OIDC signing key |
+| User <-> Registry | OIDC tokens (for SSO) or challenge-response (for keypair-native users) |
+| Instance <-> Instance | No direct trust required; iroh handles transport encryption |
+
+### Challenge-Response Protocol
+
+The challenge-response signs a structured, self-documenting payload:
+
+```
+sign("crabcity:auth:v1:" ++ nonce ++ instance_node_id ++ client_timestamp)
+```
+
+- `crabcity:auth:v1:` prefix prevents cross-protocol confusion if keypairs are used for other signatures
+- `nonce` prevents replay of the same challenge
+- `instance_node_id` prevents cross-instance replay
+- `client_timestamp` (wall clock, checked +-30s of server time) narrows the replay window
+
+Pending challenges are stored **in-memory** (e.g., `DashMap<Nonce, PendingChallenge>`), not in SQLite. They are single-use and expire after 60 seconds. Note: if the instance is ever deployed behind a load balancer with multiple processes, pending challenges require sticky sessions or a shared store.
 
 ### Key Rotation
 
@@ -262,21 +411,94 @@ Orgs group accounts and instances. When an org has OIDC configured, new members 
 - **Registry OIDC signing keys**: Published via JWKS endpoint (`/.well-known/jwks.json`). Support multiple active keys. Rotate on a fixed schedule (90 days). Instances cache JWKS with a TTL.
 - **Instance NodeId keys**: Tied to iroh identity. Rotation requires re-registration at the registry.
 
+## Join Experience
+
+The zero-to-collaborating flow is a first-class design artifact, not an implementation afterthought:
+
+```
+1. Alex creates an instance, starts it locally
+2. Alex clicks "Invite" in the UI -> gets a link
+3. Alex sends the link to Blake in Slack
+4. Blake clicks the link -> sees the join page
+5. Blake enters a display name -> "Join"
+6. Behind the scenes: keypair generated, invite redeemed, session created
+7. Blake sees the instance. Terminals, chat, tasks.
+8. Blake's presence appears in Alex's UI immediately (broadcast)
+```
+
+### The Join Page
+
+What Blake sees at `https://instance/join#<token>`:
+
+- Instance name + inviter's display name (extracted from the signed invite)
+- Capability being granted ("You're being invited to **collaborate**")
+- Single input: "Your name" (pre-filled if they have a registry account)
+- Single button: "Join"
+- Below the fold: "This will create a cryptographic identity on your device. [Learn more]"
+
+If Blake already has a keypair in IndexedDB for this instance: skip the name prompt, show "Welcome back, Blake. [Rejoin]"
+
+### Key Backup (Blocking Modal)
+
+After first keypair generation, the user sees a **blocking modal** (not a dismissable toast):
+
+- "Save your identity key" — explanation that this is the only copy
+- Copy-to-clipboard button (base64-encoded private key)
+- Download `.key` file button
+- "I saved my key" checkbox required to proceed
+
+This is modeled after TOTP recovery code flows. The modal cannot be dismissed without confirming. The UX is deliberately inconvenient because the consequence of key loss (identity loss) is severe.
+
+### Key Loss Recovery
+
+When a known user loses their key and can't access the instance:
+
+1. User contacts admin out-of-band ("I lost my key")
+2. Admin goes to member list -> finds the user -> clicks "Re-invite"
+3. Admin sends new invite link
+4. User clicks link -> new keypair generated -> new grant created
+5. Admin optionally **links** the new grant to the old one ("This is the same person")
+6. The old grant transitions to `removed(replaced_by=new_pubkey)`
+7. The UI merges attribution: chat messages, task assignments, and terminal history from the old key are displayed under the new identity
+
+The `replaces` field on `member_grants` enables this linking. The event log records a `member.replaced` event for auditability.
+
+### CLI/TUI First-Run
+
+```
+$ crabcity connect instance.example.com
+No identity found. Generating keypair...
+Your identity: crab_2K7XM9QP (saved to ~/.config/crabcity/identity.key)
+
+This instance requires an invitation. Enter invite code:
+> [paste base32 token]
+
+Joined as "collaborate" member. Welcome!
+```
+
+Subsequent connections:
+
+```
+$ crabcity connect instance.example.com
+Authenticated as crab_2K7XM9QP
+Connected to Alex's Workshop (3 users online)
+```
+
 ## Data Flow Summary
 
 | Flow | Path | Frequency |
 |------|------|-----------|
-| Raw invite redemption | User → Instance | Once per invite |
-| Registry invite redemption | User → Registry → Instance | Once per invite |
-| OIDC SSO login | User → Enterprise IdP → Registry → Instance | Once per session |
-| Instance heartbeat | Instance → Registry | Every 5 min |
-| Handle/profile resolution | Instance → Registry | Cached, infrequent |
-| Blocklist sync | Registry → Instance (via heartbeat) | Every 5 min |
+| Raw invite redemption | User -> Instance | Once per invite |
+| Registry invite redemption | User -> Registry -> Instance | Once per invite |
+| OIDC SSO login | User -> Enterprise IdP -> Registry -> Instance | Once per session |
+| Instance heartbeat | Instance -> Registry | Every 5 min |
+| Handle/profile resolution | Instance -> Registry | Cached, infrequent |
+| Blocklist sync | Registry -> Instance (via heartbeat) | Every 5 min |
 
 ## Non-Goals
 
 - **Federated social graph.** The registry is not ActivityPub.
-- **Runtime traffic proxying.** The registry never proxies user↔instance traffic.
+- **Runtime traffic proxying.** The registry never proxies user<->instance traffic.
 - **Central message storage.** Chat, terminal sessions, tasks — all instance-local.
 - **Universal search.** You cannot search across instances from the registry.
 - **Payment processing.** Billing, if it ever exists, is a separate concern.

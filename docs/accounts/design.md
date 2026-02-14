@@ -19,36 +19,62 @@ Client-side key generation (CLI/TUI):
 - Generate via `ed25519_dalek::SigningKey::generate(&mut OsRng)`
 - Store in `~/.config/crabcity/identity.key` (mode 0600)
 
-### 1.2 Challenge-Response Authentication
+### 1.2 Key Fingerprints
+
+Human-readable short identifiers for public keys.
+
+Format: `crab_` + first 8 characters of Crockford base32 encoding of the 32-byte public key.
+
+Example: `crab_2K7XM9QP`
+
+Properties:
+- 40 bits of entropy — sufficient to distinguish members within any realistic instance
+- Case-insensitive (Crockford base32)
+- Used in TUI display, logs, admin UIs, CLI output
+- Never used for lookups or authentication — display only
+- Defined in `crab_city_auth` crate: `PublicKey::fingerprint() -> String`
+
+### 1.3 Challenge-Response Authentication
 
 When a user authenticates to an instance with their keypair:
 
 ```
 Client                              Instance
-  │                                    │
-  │  POST /api/auth/challenge          │
-  │  { public_key }                    │
-  │ ──────────────────────────────────>│
-  │                                    │  generate 32-byte random nonce
-  │                                    │  store (nonce, pubkey, expires=60s)
-  │  { nonce }                         │
-  │ <──────────────────────────────────│
-  │                                    │
-  │  sign(nonce ++ instance_node_id)   │
-  │                                    │
-  │  POST /api/auth/verify             │
-  │  { public_key, nonce, signature }  │
-  │ ──────────────────────────────────>│
-  │                                    │  verify signature
-  │                                    │  check membership
-  │                                    │  create session
-  │  { session_token, expires_at }     │
-  │ <──────────────────────────────────│
+  |                                    |
+  |  POST /api/auth/challenge          |
+  |  { public_key, timestamp }         |
+  | ---------------------------------->|
+  |                                    |  generate 32-byte random nonce
+  |                                    |  store in-memory (nonce, pubkey, expires=60s)
+  |  { nonce }                         |
+  | <----------------------------------|
+  |                                    |
+  |  sign("crabcity:auth:v1:"         |
+  |    ++ nonce                        |
+  |    ++ instance_node_id             |
+  |    ++ client_timestamp)            |
+  |                                    |
+  |  POST /api/auth/verify             |
+  |  { public_key, nonce,              |
+  |    signature, timestamp }          |
+  | ---------------------------------->|
+  |                                    |  verify signature
+  |                                    |  check timestamp +-30s
+  |                                    |  check grant state == active
+  |                                    |  create session
+  |  { session_token, expires_at }     |
+  | <----------------------------------|
 ```
 
-The signed payload includes the instance's `NodeId` to prevent replay attacks across instances. The nonce is single-use and expires after 60 seconds.
+The signed payload is structured and self-documenting:
+- `crabcity:auth:v1:` prefix prevents cross-protocol confusion if keypairs sign other things
+- `nonce` prevents replay of the same challenge (single-use, 60s expiry)
+- `instance_node_id` prevents cross-instance replay
+- `client_timestamp` narrows the replay window (server checks +-30s)
 
-### 1.3 Invite Token Format
+**Pending challenge storage:** In-memory only (`DashMap<Nonce, PendingChallenge>`), not SQLite. Challenges are ephemeral — single-use, 60-second TTL, swept lazily on access. Note: multi-process deployments require sticky sessions or a shared store for pending challenges.
+
+### 1.4 Invite Token Format
 
 ```
 Invite = {
@@ -81,21 +107,46 @@ https://crabcity.dev/join/<short-code>
 
 Where `short-code` is an 8-character random alphanumeric ID that maps to a stored invite in the registry database.
 
+### 1.5 Loopback Identity
+
+The loopback identity is a well-known sentinel public key: 32 zero bytes (`0x00 * 32`).
+
+Rules:
+- Instances reject this pubkey on any non-loopback connection (challenge-response, invite redemption, OIDC)
+- The loopback identity always has an `owner` grant with state `active`
+- It is seeded during instance bootstrap (not created via invite)
+- It cannot be suspended, removed, or have its capability changed
+
 ## 2. Instance-Side Data Model
 
 ### 2.1 Schema (SQLite)
 
 ```sql
--- User memberships on this instance
-CREATE TABLE memberships (
+-- WHO you are (identity, cached from registry or self-reported)
+CREATE TABLE member_identities (
     public_key BLOB NOT NULL PRIMARY KEY,  -- 32 bytes, ed25519
     display_name TEXT NOT NULL DEFAULT '',
     handle TEXT,                            -- @alex, from registry
-    capability TEXT NOT NULL,               -- 'view', 'collaborate', 'admin', 'owner'
-    org_id TEXT,                            -- UUID, from OIDC claims
-    invited_by BLOB,                        -- 32 bytes, pubkey of inviter
+    avatar_url TEXT,
+    registry_account_id TEXT,              -- UUID, from registry resolution
+    resolved_at TEXT,                       -- when identity was last resolved from registry
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- WHAT you can do (authorization, instance-local)
+CREATE TABLE member_grants (
+    public_key BLOB NOT NULL PRIMARY KEY,  -- 32 bytes, ed25519
+    capability TEXT NOT NULL,               -- 'view', 'collaborate', 'admin', 'owner'
+    permissions INTEGER NOT NULL,           -- u32 bitfield, expanded from capability
+    state TEXT NOT NULL DEFAULT 'invited',  -- 'invited', 'active', 'suspended', 'removed'
+    org_id TEXT,                            -- UUID, from OIDC claims
+    invited_by BLOB,                        -- 32 bytes, pubkey of inviter
+    invited_via BLOB,                       -- 16 bytes, invite nonce (traces which invite)
+    replaces BLOB,                          -- 32 bytes, pubkey of old grant (key loss recovery)
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
 );
 
 -- Invite tokens created by this instance
@@ -109,16 +160,16 @@ CREATE TABLE invites (
     signature BLOB NOT NULL,               -- 64 bytes
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     revoked_at TEXT,                        -- NULL if active
-    FOREIGN KEY (issuer) REFERENCES memberships(public_key)
+    FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
 );
 
 -- Active sessions
 CREATE TABLE sessions (
-    token BLOB NOT NULL PRIMARY KEY,       -- 32 bytes, random
+    token_hash BLOB NOT NULL PRIMARY KEY,  -- SHA-256 of 32-byte random token
     public_key BLOB NOT NULL,              -- 32 bytes
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (public_key) REFERENCES memberships(public_key)
+    FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
 );
 
 -- Instance-local blocklist
@@ -140,19 +191,60 @@ CREATE TABLE blocklist_cache (
     PRIMARY KEY (scope, target_type, target_value)
 );
 
+-- Append-only audit trail
+CREATE TABLE event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,              -- 'member.joined', 'grant.capability_changed', etc.
+    actor BLOB,                            -- pubkey of who did it (NULL for system events)
+    target BLOB,                           -- pubkey of who it happened to
+    payload TEXT NOT NULL DEFAULT '{}',     -- JSON details
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX idx_sessions_pubkey ON sessions(public_key);
 CREATE INDEX idx_invites_expires ON invites(expires_at);
+CREATE INDEX idx_grants_state ON member_grants(state);
+CREATE INDEX idx_grants_invited_via ON member_grants(invited_via);
+CREATE INDEX idx_event_log_type ON event_log(event_type);
+CREATE INDEX idx_event_log_target ON event_log(target);
+CREATE INDEX idx_event_log_created ON event_log(created_at);
 ```
 
-### 2.2 Instance-Side API
+### 2.2 Permissions Bitfield
+
+The `permissions` column on `member_grants` stores the expanded permission set:
+
+```
+VIEW_CONTENT     = 0x01
+VIEW_TERMINALS   = 0x02
+SEND_CHAT        = 0x04
+EDIT_TASKS       = 0x08
+TERMINAL_INPUT   = 0x10
+CREATE_INSTANCE  = 0x20
+MANAGE_MEMBERS   = 0x40
+MANAGE_INSTANCE  = 0x80
+```
+
+Default expansion from capability:
+
+| Capability    | Permissions value |
+|---------------|-------------------|
+| `view`        | `0x03` (VIEW_CONTENT \| VIEW_TERMINALS) |
+| `collaborate` | `0x3F` (view + SEND_CHAT + EDIT_TASKS + TERMINAL_INPUT + CREATE_INSTANCE) |
+| `admin`       | `0x7F` (collaborate + MANAGE_MEMBERS) |
+| `owner`       | `0xFF` (all bits) |
+
+Admins can tweak individual bits via `PATCH /api/members/:public_key/permissions`. The `capability` field always reflects the original preset; `permissions` reflects the actual enforced set (which may differ from the preset after tweaking).
+
+### 2.3 Instance-Side API
 
 #### `POST /api/auth/challenge`
 
 Request identity challenge.
 
 ```
-Request:  { "public_key": "<base64>" }
+Request:  { "public_key": "<base64>", "timestamp": "<iso8601>" }
 Response: { "nonce": "<base64>", "expires_at": "<iso8601>" }
 ```
 
@@ -161,9 +253,9 @@ Response: { "nonce": "<base64>", "expires_at": "<iso8601>" }
 Complete challenge-response, get session.
 
 ```
-Request:  { "public_key": "<base64>", "nonce": "<base64>", "signature": "<base64>" }
-Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate" }
-Error:    401 if signature invalid, 403 if no membership
+Request:  { "public_key": "<base64>", "nonce": "<base64>", "signature": "<base64>", "timestamp": "<iso8601>" }
+Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "permissions": 63 }
+Error:    401 if signature invalid, 403 if no grant or state != active
 ```
 
 #### `POST /api/auth/oidc/callback`
@@ -177,7 +269,7 @@ Response: 302 redirect to instance UI with session cookie set
 
 #### `POST /api/invites`
 
-Create an invite. Requires `admin` or `owner` capability.
+Create an invite. Requires `MANAGE_MEMBERS` permission.
 
 ```
 Request:  { "capability": "collaborate", "max_uses": 5, "expires_in_hours": 72 }
@@ -190,38 +282,123 @@ Redeem an invite token.
 
 ```
 Request:  { "token": "<base32>", "public_key": "<base64>", "display_name": "Alex" }
-Response: { "membership": { ... }, "session_token": "<base64>" }
+Response: { "identity": { ... }, "grant": { ... }, "session_token": "<base64>" }
 Error:    400 if expired/exhausted, 403 if issuer revoked or blocklisted
 ```
 
-#### `GET /api/members`
+On redemption:
+1. Verify invite signature and validity (not expired, not exhausted, not revoked)
+2. Create `member_identities` row (or update if pubkey already known)
+3. Create `member_grants` row with `state = active`, `invited_via = invite.nonce`
+4. Increment invite `use_count`
+5. Log `invite.redeemed` and `member.joined` events
+6. Create session
+7. Broadcast `GrantUpdate`
 
-List instance members. Requires `view` or higher.
+#### `POST /api/invites/revoke`
+
+Revoke an invite. Requires `MANAGE_MEMBERS` permission.
 
 ```
-Response: { "members": [{ "public_key": "...", "display_name": "...", "handle": "@alex", "capability": "collaborate" }] }
+Request:  { "nonce": "<base64>", "suspend_derived_members": false }
+Response: { "revoked": true, "members_suspended": 0 }
+```
+
+If `suspend_derived_members` is true, all grants with `invited_via = nonce` and `state = active` are transitioned to `suspended`. Each transition produces a `member.suspended` event.
+
+#### `GET /api/members`
+
+List instance members. Requires `VIEW_CONTENT` permission.
+
+```
+Response: { "members": [{
+    "public_key": "...",
+    "fingerprint": "crab_2K7XM9QP",
+    "display_name": "...",
+    "handle": "@alex",
+    "capability": "collaborate",
+    "permissions": 63,
+    "state": "active"
+}] }
 ```
 
 #### `DELETE /api/members/:public_key`
 
-Remove a member. Requires `admin` or `owner`. Cannot remove `owner`.
+Remove a member. Requires `MANAGE_MEMBERS` permission. Cannot remove `owner`. Transitions grant to `removed`.
 
 #### `PATCH /api/members/:public_key`
 
-Update a member's capability. Requires `admin` or `owner`. Cannot escalate beyond own capability.
+Update a member's capability. Requires `MANAGE_MEMBERS` permission. Cannot escalate beyond own capability.
 
-### 2.3 Auth Middleware Changes
+```
+Request:  { "capability": "admin" }
+Response: { "grant": { ... } }
+```
+
+#### `PATCH /api/members/:public_key/permissions`
+
+Tweak individual permission bits. Requires `MANAGE_MEMBERS` permission.
+
+```
+Request:  { "add": ["TERMINAL_INPUT"], "remove": ["SEND_CHAT"] }
+Response: { "permissions": 19 }
+```
+
+#### `POST /api/members/:public_key/suspend`
+
+Suspend a member. Requires `MANAGE_MEMBERS` permission.
+
+```
+Request:  { "reason": "..." }
+Response: { "grant": { ... } }
+```
+
+#### `POST /api/members/:public_key/reinstate`
+
+Reinstate a suspended member. Requires `MANAGE_MEMBERS` permission.
+
+#### `POST /api/members/:public_key/replace`
+
+Link a new grant to an old one (key loss recovery). Requires `MANAGE_MEMBERS` permission.
+
+```
+Request:  { "old_public_key": "<base64>" }
+Response: { "grant": { ... } }
+```
+
+Sets `replaces = old_public_key` on the new grant, transitions old grant to `removed`. Logs `member.replaced` event.
+
+#### `GET /api/events`
+
+Query event log. Requires `MANAGE_MEMBERS` permission.
+
+```
+Query:    ?target=<base64>&event_type=member.*&limit=50&before=<id>
+Response: { "events": [...], "has_more": true }
+```
+
+### 2.4 Auth Middleware Changes
 
 The existing auth middleware gains a new check in the chain:
 
 ```
-1. Loopback bypass (existing) → allow
-2. Session token in Authorization header → lookup sessions table → allow/deny
-3. Cookie-based session (for browser clients) → lookup sessions table → allow/deny
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey)
+2. Session token in Authorization header → hash, lookup sessions table → check grant state == active
+3. Cookie-based session (for browser clients) → same lookup
 4. No credentials → 401
 ```
 
 Session tokens are 32 random bytes, base64-encoded, stored hashed (SHA-256) in the sessions table. Default TTL: 24 hours, configurable.
+
+The middleware extracts both the identity and the grant into the request context. Endpoint handlers check specific permission bits:
+
+```rust
+// In a handler:
+fn create_task(auth: AuthUser) -> Result<...> {
+    auth.require_permission(Permissions::EDIT_TASKS)?;
+    // ...
+}
+```
 
 ## 3. Registry Data Model (crabcity.dev)
 
@@ -230,8 +407,7 @@ Session tokens are 32 random bytes, base64-encoded, stored hashed (SHA-256) in t
 ```sql
 -- Registry accounts
 CREATE TABLE accounts (
-    id TEXT NOT NULL PRIMARY KEY,           -- UUID
-    public_key BLOB NOT NULL UNIQUE,        -- 32 bytes, ed25519
+    id TEXT NOT NULL PRIMARY KEY,           -- UUID v7
     handle TEXT NOT NULL UNIQUE,            -- lowercase, alphanumeric + hyphens
     display_name TEXT NOT NULL DEFAULT '',
     avatar_url TEXT,
@@ -241,6 +417,19 @@ CREATE TABLE accounts (
     blocked INTEGER NOT NULL DEFAULT 0,
     blocked_reason TEXT
 );
+
+-- Account keys (multi-device, day-one feature)
+CREATE TABLE account_keys (
+    account_id TEXT NOT NULL,
+    public_key BLOB NOT NULL,              -- 32 bytes, ed25519
+    label TEXT NOT NULL DEFAULT '',         -- "MacBook", "Phone", "YubiKey"
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TEXT,                        -- NULL if active
+    PRIMARY KEY (account_id, public_key),
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+
+CREATE UNIQUE INDEX idx_account_keys_pubkey ON account_keys(public_key) WHERE revoked_at IS NULL;
 
 -- OIDC bindings (enterprise SSO)
 CREATE TABLE oidc_bindings (
@@ -318,7 +507,20 @@ CREATE TABLE global_blocklist (
     version INTEGER NOT NULL               -- monotonically increasing
 );
 
--- Registry-mediated invites (short-code → invite token)
+-- Org-scoped blocklists
+CREATE TABLE org_blocklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_value BLOB NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    added_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    version INTEGER NOT NULL,
+    FOREIGN KEY (org_id) REFERENCES orgs(id)
+);
+
+-- Registry-mediated invites (short-code -> invite token)
 CREATE TABLE registry_invites (
     short_code TEXT NOT NULL PRIMARY KEY,   -- 8-char alphanumeric
     instance_id TEXT NOT NULL,
@@ -343,6 +545,7 @@ CREATE INDEX idx_accounts_handle ON accounts(handle);
 CREATE INDEX idx_instances_slug ON instances(slug);
 CREATE INDEX idx_instances_visibility ON instances(visibility);
 CREATE INDEX idx_global_blocklist_version ON global_blocklist(version);
+CREATE INDEX idx_org_blocklist_version ON org_blocklist(org_id, version);
 ```
 
 ### 3.2 OIDC Signing Key Management
@@ -384,35 +587,58 @@ The `capability` claim is set by the org admin when they bind an instance to the
 Create a registry account. Links a public key to a handle.
 
 ```
-Request:  { "public_key": "<base64>", "handle": "alex", "display_name": "Alex", "proof": "<base64-signature>" }
+Request:  { "public_key": "<base64>", "handle": "alex", "display_name": "Alex", "proof": "<base64-signature>", "key_label": "MacBook" }
 Response: { "id": "<uuid>", "handle": "alex", ... }
 Error:    409 if handle taken, 400 if proof invalid
 ```
 
 `proof` is the signature of `"crabcity.dev:register:<handle>"` — proves the caller controls the private key.
 
+Creates both an `accounts` row and an `account_keys` row (the initial key).
+
 #### `GET /api/v1/accounts/by-handle/:handle`
 
 Public profile lookup.
 
 ```
-Response: { "id": "...", "public_key": "...", "handle": "alex", "display_name": "Alex", "avatar_url": "...", "instances": [...] }
+Response: { "id": "...", "public_keys": [{ "public_key": "...", "fingerprint": "crab_...", "label": "MacBook" }], "handle": "alex", "display_name": "Alex", "avatar_url": "...", "instances": [...] }
 ```
 
-Only includes instances with `visibility = 'public'`.
+Only includes instances with `visibility = 'public'`. Includes all active (non-revoked) public keys.
 
 #### `GET /api/v1/accounts/by-key/:public_key`
 
-Reverse lookup: public key → handle.
+Reverse lookup: public key -> account.
 
 ```
-Response: { "handle": "alex", "display_name": "Alex" }
+Response: { "account_id": "...", "handle": "alex", "display_name": "Alex", "public_keys": ["<key1>", "<key2>"] }
 Error:    404 if not registered
 ```
 
-Instances use this to resolve display names.
+Instances use this to resolve display names and discover that multiple keys belong to the same account.
 
-### 4.2 Instance Endpoints
+### 4.2 Account Key Endpoints
+
+#### `POST /api/v1/accounts/:id/keys`
+
+Add a new key to an account. Authenticated with an existing key.
+
+```
+Request:  { "public_key": "<base64>", "label": "Phone", "proof": "<base64-signature>" }
+Response: { "public_key": "...", "label": "Phone", "created_at": "..." }
+```
+
+`proof` is the new key signing `"crabcity.dev:add-key:<account-id>"`.
+
+#### `DELETE /api/v1/accounts/:id/keys/:public_key`
+
+Revoke a key. Cannot revoke the last active key.
+
+#### `GET /api/v1/accounts/:id/keys`
+
+List active keys for an account.
+
+### 4.3 Instance Endpoints
 
 #### `POST /api/v1/instances`
 
@@ -433,15 +659,20 @@ Periodic health check. Authenticated by the API token from registration.
 Request:  { "version": "0.4.2", "user_count": 7 }
 Response: {
     "blocklist_version": 42,
-    "blocklist_delta": [
-        { "action": "add", "target_type": "pubkey", "target_value": "<base64>" },
-        { "action": "remove", "target_type": "pubkey", "target_value": "<base64>" }
-    ],
+    "blocklist_deltas": {
+        "global": [
+            { "action": "add", "target_type": "pubkey", "target_value": "<base64>" },
+            { "action": "remove", "target_type": "pubkey", "target_value": "<base64>" }
+        ],
+        "org:acme-corp": [
+            { "action": "add", "target_type": "pubkey", "target_value": "<base64>" }
+        ]
+    },
     "motd": null
 }
 ```
 
-The instance sends its current `blocklist_version` as an `If-None-Match` header. The registry responds with entries added since that version.
+The instance sends its current `blocklist_version` as an `If-None-Match` header. The registry responds with entries added since that version. Blocklist deltas are **scoped** — separate arrays for global and each org the instance is bound to.
 
 #### `GET /api/v1/instances`
 
@@ -456,19 +687,19 @@ Response: { "instances": [...], "total": 142 }
 
 Single instance lookup.
 
-### 4.3 OIDC Endpoints
+### 4.4 OIDC Endpoints
 
 Standard OIDC provider endpoints:
 
 ```
-GET  /.well-known/openid-configuration    — OIDC discovery document
-GET  /.well-known/jwks.json               — public signing keys
-GET  /oidc/authorize                      — authorization endpoint
-POST /oidc/token                          — token endpoint
-GET  /oidc/userinfo                       — userinfo endpoint
+GET  /.well-known/openid-configuration    -- OIDC discovery document
+GET  /.well-known/jwks.json               -- public signing keys
+GET  /oidc/authorize                      -- authorization endpoint
+POST /oidc/token                          -- token endpoint
+GET  /oidc/userinfo                       -- userinfo endpoint
 ```
 
-### 4.4 Org Endpoints
+### 4.5 Org Endpoints
 
 #### `POST /api/v1/orgs`
 
@@ -486,7 +717,7 @@ Add a member to the org.
 
 Bind an instance to the org (sets default capability for org members).
 
-### 4.5 Invite Endpoints
+### 4.6 Invite Endpoints
 
 #### `POST /api/v1/invites`
 
@@ -501,7 +732,7 @@ Response: { "short_code": "abc12345", "url": "https://crabcity.dev/join/abc12345
 
 Resolve short-code to invite metadata (does NOT return the raw token until the user authenticates/creates an account).
 
-### 4.6 Blocklist Endpoints
+### 4.7 Blocklist Endpoints
 
 #### `GET /api/v1/blocklist`
 
@@ -511,6 +742,18 @@ Full global blocklist (for initial sync).
 
 Delta since version N.
 
+#### `POST /api/v1/orgs/:slug/blocklist`
+
+Add org-scoped blocklist entry. Org admin only.
+
+#### `GET /api/v1/orgs/:slug/blocklist`
+
+Full org blocklist.
+
+#### `GET /api/v1/orgs/:slug/blocklist/delta?since_version=N`
+
+Org blocklist delta.
+
 ## 5. Client Authentication Flows
 
 ### 5.1 Flow A: Raw Invite (No Registry)
@@ -518,10 +761,13 @@ Delta since version N.
 ```
 1. User receives invite URL: https://instance.example/join#<base32>
 2. SvelteKit frontend extracts token from fragment
-3. If user has no keypair: generate one, store in IndexedDB
-4. POST /api/invites/redeem { token, public_key, display_name }
-5. Instance verifies invite, creates membership, returns session token
-6. Client stores session token, redirects to instance UI
+3. Join page renders: instance name, inviter name, capability, "Your name" input
+4. If user has no keypair: generate one, store in IndexedDB
+5. KEY BACKUP MODAL: blocking modal, copy/download key, "I saved my key" checkbox
+6. POST /api/invites/redeem { token, public_key, display_name }
+7. Instance verifies invite, creates identity + grant, returns session token
+8. Client stores session token as cookie, redirects to instance UI
+9. User's presence appears to all connected clients (GrantUpdate broadcast)
 ```
 
 ### 5.2 Flow B: Registry Invite
@@ -530,10 +776,11 @@ Delta since version N.
 1. User receives URL: https://crabcity.dev/join/abc12345
 2. If user has no crabcity.dev account:
    a. Generate keypair (or import existing)
-   b. POST /api/v1/accounts { public_key, handle, proof }
-3. Registry resolves short_code → invite token + instance URL
+   b. KEY BACKUP MODAL
+   c. POST /api/v1/accounts { public_key, handle, proof, key_label }
+3. Registry resolves short_code -> invite token + instance URL
 4. Registry redirects to instance with the invite token
-5. Instance redeems invite (same as Flow A, step 4-6)
+5. Instance redeems invite (same as Flow A, step 6-9)
 6. Instance also resolves handle via registry API for display
 ```
 
@@ -548,22 +795,37 @@ Delta since version N.
    b. User authenticates with corporate credentials
    c. Enterprise IdP redirects back to crabcity.dev with auth code
    d. crabcity.dev exchanges code for IdP tokens
-   e. crabcity.dev maps IdP subject → account (auto-provisioning if first login)
+   e. crabcity.dev maps IdP subject -> account (auto-provisioning if first login)
 5. crabcity.dev issues its own OIDC id_token with crab city claims
 6. Redirect back to instance with auth code
 7. Instance exchanges code for id_token
 8. Instance extracts public_key, handle, org, capability from claims
-9. Instance creates/updates membership, creates session
+9. Instance creates/updates identity + grant, creates session
 ```
 
 ### 5.4 Flow D: CLI/TUI Authentication
 
 ```
-1. CLI reads keypair from ~/.config/crabcity/identity.key
-2. POST /api/auth/challenge { public_key }
-3. Sign nonce with private key
-4. POST /api/auth/verify { public_key, nonce, signature }
-5. Store session token in ~/.config/crabcity/sessions/<instance-id>
+First run (no identity):
+1. $ crabcity connect instance.example.com
+2. No keypair at ~/.config/crabcity/identity.key
+3. Generate keypair, save to identity.key (mode 0600)
+4. Print: "Your identity: crab_2K7XM9QP (saved to ~/.config/crabcity/identity.key)"
+5. Prompt: "This instance requires an invitation. Enter invite code:"
+6. User pastes base32 token
+7. POST /api/invites/redeem { token, public_key, display_name }
+8. Store session token in ~/.config/crabcity/sessions/<instance-id>
+9. Connected.
+
+Subsequent connections:
+1. Read keypair from ~/.config/crabcity/identity.key
+2. Check for cached session in ~/.config/crabcity/sessions/<instance-id>
+3. If session expired: POST /api/auth/challenge { public_key, timestamp }
+4. Sign nonce with private key
+5. POST /api/auth/verify { public_key, nonce, signature, timestamp }
+6. Cache new session token
+7. Print: "Authenticated as crab_2K7XM9QP"
+8. Print: "Connected to Alex's Workshop (3 users online)"
 ```
 
 Loopback bypass (existing) still works for local instances.
@@ -585,25 +847,28 @@ Session cleanup: a background task sweeps expired sessions every hour (or lazily
 
 ### 7.1 Multiple Keys Per Account
 
-A registry account can have multiple public keys:
+A registry account has multiple public keys from day one (see `account_keys` table in section 3.1).
 
-```sql
-CREATE TABLE account_keys (
-    account_id TEXT NOT NULL,
-    public_key BLOB NOT NULL,
-    label TEXT NOT NULL DEFAULT '',         -- "MacBook", "Phone", "YubiKey"
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    revoked_at TEXT,
-    PRIMARY KEY (account_id, public_key),
-    FOREIGN KEY (account_id) REFERENCES accounts(id)
-);
+When a user adds a new device, they authenticate with an existing key and register the new one. Instances learn about the key->account mapping via handle resolution.
+
+When resolving a public key via the registry, the response includes the canonical account ID and all active keys. The instance can recognize that two different keys belong to the same logical user:
+
+```json
+{
+  "account_id": "...",
+  "handle": "alex",
+  "public_keys": [
+    { "public_key": "<key1>", "label": "MacBook" },
+    { "public_key": "<key2>", "label": "Phone" }
+  ]
+}
 ```
 
-When a user adds a new device, they authenticate with an existing key and register the new one. Instances learn about the key→account mapping via handle resolution.
+The instance stores the `registry_account_id` on `member_identities`. Different keys for the same account share identity metadata (display name, handle) but have separate grants (allowing different capabilities per device if desired).
 
 ### 7.2 Account Recovery
 
-For keypair-only users (no registry): the instance admin re-invites them. Old contributions stay attributed to the old key.
+For keypair-only users (no registry): the instance admin uses the re-invite + replace flow (see architecture doc, "Key Loss Recovery"). Old contributions are attributed to the new key via the `replaces` link.
 
 For registry users: if they've set an email, they can verify ownership and register a new key. This is a high-security operation (email verification + rate limiting + cooldown period).
 
@@ -618,11 +883,14 @@ Despite "almost no traffic," certain endpoints need basic protection:
 | `POST /api/auth/challenge` | 10 | per minute per IP |
 | `POST /api/invites/redeem` | 5 | per minute per IP |
 | `POST /api/v1/accounts` | 3 | per hour per IP |
+| `POST /api/v1/accounts/:id/keys` | 5 | per hour per account |
 | `POST /api/v1/instances/heartbeat` | 15 | per minute per instance |
 
 Implemented as in-memory token buckets. No Redis needed.
 
 ## 9. Wire Formats
+
+### 9.1 HTTP API
 
 All API communication uses JSON over HTTPS. Content-Type: `application/json`.
 
@@ -633,3 +901,71 @@ Invite tokens are encoded as Crockford base32 (no padding, case-insensitive) for
 Signatures are encoded as unpadded base64 (URL-safe variant) in JSON payloads.
 
 UUIDs are v7 (time-ordered) for database locality.
+
+### 9.2 WebSocket Protocol
+
+All WebSocket messages use envelope versioning:
+
+```json
+{ "v": 1, "type": "GrantUpdate", "data": { ... } }
+```
+
+Server -> Client message types (auth-related):
+
+```
+GrantUpdate       { grant }           -- member capability/state changed
+IdentityUpdate    { identity }        -- member display name/handle/avatar changed
+MemberJoined      { identity, grant } -- new member added
+MemberRemoved     { public_key }      -- member removed
+```
+
+These are in addition to the existing `StateChange`, `TaskUpdate`, `InstanceList`, `Focus`, etc.
+
+Clients MUST ignore unknown message types and unknown versions. This allows the protocol to evolve without breaking existing clients.
+
+## 10. Protocol Reference
+
+### 10.1 Membership State Transitions
+
+```
+invited   -> active      via: first successful auth (challenge-response or session)
+invited   -> removed     via: invite expired before first auth, or admin action
+active    -> suspended   via: admin POST /api/members/:pk/suspend, or blocklist hit
+active    -> removed     via: admin DELETE /api/members/:pk
+suspended -> active      via: admin POST /api/members/:pk/reinstate
+suspended -> removed     via: admin DELETE /api/members/:pk
+removed   -> (terminal)  no transitions out of removed
+```
+
+### 10.2 Event Types
+
+| Event Type | Actor | Target | Payload |
+|------------|-------|--------|---------|
+| `member.joined` | redeemer pubkey | redeemer pubkey | `{ invite_nonce, capability }` |
+| `member.suspended` | admin pubkey | target pubkey | `{ reason, source: "admin"\|"blocklist" }` |
+| `member.reinstated` | admin pubkey | target pubkey | `{}` |
+| `member.removed` | admin pubkey | target pubkey | `{}` |
+| `member.replaced` | admin pubkey | new pubkey | `{ old_public_key }` |
+| `grant.capability_changed` | admin pubkey | target pubkey | `{ old, new }` |
+| `grant.permissions_tweaked` | admin pubkey | target pubkey | `{ added: [], removed: [] }` |
+| `invite.created` | issuer pubkey | null | `{ nonce, capability, max_uses }` |
+| `invite.redeemed` | redeemer pubkey | null | `{ nonce }` |
+| `invite.revoked` | admin pubkey | null | `{ nonce, suspend_derived: bool }` |
+| `identity.updated` | user pubkey | user pubkey | `{ fields_changed: [] }` |
+
+### 10.3 Error Codes
+
+| HTTP Status | Code | Meaning |
+|-------------|------|---------|
+| 400 | `invalid_invite` | Invite expired, exhausted, or malformed |
+| 400 | `invalid_signature` | Signature verification failed |
+| 400 | `invalid_timestamp` | Client timestamp too far from server time |
+| 401 | `no_credentials` | No session token or cookie provided |
+| 401 | `session_expired` | Session token expired |
+| 403 | `not_a_member` | No grant exists for this public key |
+| 403 | `grant_not_active` | Grant exists but state != active |
+| 403 | `insufficient_permissions` | Missing required permission bit |
+| 403 | `blocklisted` | Public key is on a blocklist |
+| 409 | `handle_taken` | Registry handle already in use |
+| 409 | `already_a_member` | Public key already has an active grant |
+| 429 | `rate_limited` | Too many requests |
