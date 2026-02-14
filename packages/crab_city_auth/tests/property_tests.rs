@@ -51,6 +51,13 @@ proptest! {
         prop_assert!(ar.is_superset_of(&intersection));
         prop_assert!(br.is_superset_of(&intersection));
     }
+
+    #[test]
+    fn superset_follows_ord(a in arb_capability(), b in arb_capability()) {
+        if a >= b {
+            prop_assert!(a.access_rights().is_superset_of(&b.access_rights()));
+        }
+    }
 }
 
 // --- Invite + Capability interaction ---
