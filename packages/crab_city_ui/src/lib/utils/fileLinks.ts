@@ -9,7 +9,7 @@
  * - Read tool outputs with file content
  */
 
-import { openFileFromTool, openFilePath } from '$lib/stores/files';
+import { openFileFromTool, openFilePath, navigateExplorerToFile } from '$lib/stores/files';
 
 // Re-export pure functions from fileLinkMatch (the testable core)
 export { extractFilePaths } from './fileLinkMatch.js';
@@ -17,11 +17,18 @@ import { extractFilePaths } from './fileLinkMatch.js';
 
 /**
  * Handle clicking on a file path.
- * Tries to extract content from the current context if available.
+ *
+ * If content is already available (from tool output), opens the viewer directly
+ * and syncs the explorer to the file's parent directory.
+ *
+ * If no content, delegates to openFilePath which fetches from the API —
+ * on success it opens the viewer + syncs explorer, on 404 it falls back
+ * to opening the file explorer with a fuzzy search pre-seeded.
  */
 export function handleFilePathClick(filePath: string, lineNumber?: number, content?: string): void {
 	if (content) {
 		openFileFromTool(filePath, content, lineNumber);
+		navigateExplorerToFile(filePath);
 	} else {
 		openFilePath(filePath, lineNumber);
 	}

@@ -221,11 +221,13 @@ packages/
 ├── crab_city_ui/        SvelteKit web frontend (Svelte 5, xterm.js)
 │   └── crate/           Rust crate for embedding built UI assets
 ├── claude_convo/        Library for reading Claude conversation logs
-├── pty_manager/         PTY lifecycle management
-├── virtual_terminal/    VT100 screen buffer and viewport negotiation
+├── pty_manager/         Pure async PTY lifecycle management
+├── virtual_terminal/    VT100 screen buffer, keyframe/delta replay, viewport negotiation
 ├── compositor/          Cell-level terminal compositor with overlay layers
-└── tty_wrapper/         HTTP-controlled TTY wrapper
+└── tty_wrapper/         Standalone HTTP-controlled TTY wrapper
 ```
+
+Each package has its own README with usage examples and API documentation.
 
 ## Development
 

@@ -296,7 +296,7 @@ pub async fn search_instance_files(
         let matched = if let Some(ref matcher) = glob_matcher {
             matcher.matched(path, is_directory).is_whitelist()
         } else {
-            fuzzy_match(search_query, &file_name).is_some()
+            fuzzy_match(search_query, &relative_path).is_some()
         };
 
         if matched {
@@ -305,7 +305,7 @@ pub async fn search_instance_files(
             let score = if is_glob {
                 (relative_path.matches('/').count() as i32) * 10
             } else {
-                fuzzy_match(search_query, &file_name)
+                fuzzy_match(search_query, &relative_path)
                     .map(|(_, s)| s)
                     .unwrap_or(0)
             };

@@ -81,6 +81,9 @@ const explorerInitialState: FileExplorerState = {
 
 export const fileExplorerState = writable<FileExplorerState>(explorerInitialState);
 
+/** Pending search query to pre-seed the file browser's search input */
+export const pendingSearchQuery = writable<string>('');
+
 // =============================================================================
 // Explorer Derived Stores
 // =============================================================================
@@ -251,6 +254,51 @@ export function navigateUp(): void {
 	const parentPath = '/' + parts.join('/');
 
 	navigateToDirectory(parentPath || root);
+}
+
+/** Open the file explorer with a search query pre-seeded (for fuzzy find fallback). */
+export function openExplorerWithSearch(query: string): void {
+	const instance = get(currentInstance);
+	if (!instance) return;
+
+	// Ensure we're on the Files tab, not Git
+	isGitOpen.set(false);
+
+	fileExplorerState.update((state) => ({
+		...state,
+		isOpen: true,
+		currentPath: instance.working_dir
+	}));
+
+	// Load the root directory so the browser is ready
+	loadDirectory(instance.working_dir);
+
+	// Set the pending search query — FileBrowser will pick this up
+	pendingSearchQuery.set(query);
+	updateUrl({ explorer: 'files' });
+}
+
+/** Navigate the explorer to the directory containing a file path. */
+export function navigateExplorerToFile(filePath: string): void {
+	const instance = get(currentInstance);
+	if (!instance) return;
+
+	// Extract the parent directory from the file path
+	const parts = filePath.split('/');
+	parts.pop(); // remove filename
+	const parentDir = parts.join('/') || instance.working_dir;
+
+	// Resolve relative to working_dir if not absolute
+	const targetDir = parentDir.startsWith('/')
+		? parentDir
+		: instance.working_dir + '/' + parentDir;
+
+	fileExplorerState.update((state) => ({
+		...state,
+		currentPath: targetDir
+	}));
+
+	loadDirectory(targetDir);
 }
 
 /** Reset explorer state (e.g., when switching instances) */
@@ -504,9 +552,12 @@ export function openFileFromTool(filePath: string, content: string, lineNumber?:
 }
 
 /**
- * Open the file viewer for a path (will need to fetch content).
+ * Open the file viewer for a path — fetches content from the API.
+ * On success, opens the viewer and syncs the explorer to the parent directory.
+ * On 404, falls back to opening the file explorer with the path as a search query.
  */
 export function openFilePath(filePath: string, lineNumber?: number): void {
+	// Show the viewer immediately with a loading state
 	fileViewerState.set({
 		isOpen: true,
 		filePath,
@@ -520,6 +571,29 @@ export function openFilePath(filePath: string, lineNumber?: number): void {
 		diffError: null
 	});
 	updateUrl({ file: filePath, line: lineNumber ? String(lineNumber) : null, view: null, commit: null });
+
+	// Actually fetch the content
+	fetchFileContent(filePath)
+		.then((content) => {
+			// Verify we're still looking at the same file
+			const current = get(fileViewerState);
+			if (current.filePath !== filePath) return;
+
+			setFileContent(content);
+			// Sync the explorer to this file's directory
+			navigateExplorerToFile(filePath);
+		})
+		.catch(() => {
+			// File not found — close the empty viewer and open explorer with search
+			const current = get(fileViewerState);
+			if (current.filePath !== filePath) return;
+
+			closeFileViewer();
+			// Convert partial path to a glob so the search is exact, not fuzzy.
+			// "utils.ts" → "**/utils.ts", "lib/utils.ts" → "**/lib/utils.ts"
+			const globQuery = filePath.startsWith('/') ? filePath : '**/' + filePath;
+			openExplorerWithSearch(globQuery);
+		});
 }
 
 /** Update the content for the current file (e.g., after fetching from API). */

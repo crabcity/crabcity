@@ -9,6 +9,7 @@
 		fetchFileContent,
 		getFileIcon,
 		formatFileSize,
+		pendingSearchQuery,
 		type FileEntry,
 		openFileFromTool
 	} from '$lib/stores/files';
@@ -162,6 +163,17 @@
 				clearTimeout(debounceTimer);
 			}
 		};
+	});
+
+	// Pick up pending search queries from the store (e.g. from file link fallback)
+	$effect(() => {
+		const pending = $pendingSearchQuery;
+		if (pending) {
+			searchQuery = pending;
+			pendingSearchQuery.set('');
+			// Focus the search input after the DOM updates
+			requestAnimationFrame(() => searchInputEl?.focus());
+		}
 	});
 
 	// Breadcrumb helpers
