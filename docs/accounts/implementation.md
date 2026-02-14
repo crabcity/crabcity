@@ -16,27 +16,57 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - [ ] `Capability` enum: `View`, `Collaborate`, `Admin`, `Owner` with `Ord` impl
 - [ ] `AccessRight` struct: `{ type_: String, actions: Vec<String> }` with `serde` derive
 - [ ] `Capability::access_rights() -> Vec<AccessRight>` — expand preset to GNAP-style access rights array
-- [ ] `MembershipState` enum: `Invited`, `Active`, `Suspended`, `Removed`
+- [ ] **Capability algebra** — the only way to manipulate access rights:
+  - `AccessRights::intersect(&self, other) -> AccessRights` (scoped sessions)
+  - `AccessRights::contains(&self, type_, action) -> bool` (authorization checks)
+  - `AccessRights::is_superset_of(&self, other) -> bool` (capability narrowing)
+  - `AccessRights::diff(&self, other) -> (AccessRights, AccessRights)` (audit, access tweaking)
+- [ ] `MembershipState` enum: `Invited`, `Active`, `Suspended`, `Removed` with transition validation
 - [ ] `InviteLink` struct: issuer, capability, max_depth, max_uses, expires_at, nonce, signature
 - [ ] `Invite` struct: instance NodeId + `Vec<InviteLink>` chain (flat invite = chain of length 1)
 - [ ] `Invite::sign()`, `Invite::verify()`, `Invite::delegate()` methods
 - [ ] Delegation chain verification: capability narrowing, depth checking, signature walking
 - [ ] Base32 encoding/decoding (Crockford) for invite tokens
-- [ ] Challenge-response protocol types: `Challenge`, `ChallengeResponse`, with optional `scope: Vec<AccessRight>`
+- [ ] **Stateless challenge-response types**: `SignedChallengeToken`, `ChallengeResponse`, with optional `scope: Vec<AccessRight>`
+  - `SignedChallengeToken::issue(signing_key, nonce, client_pubkey, scope_hash, ttl) -> Self`
+  - `SignedChallengeToken::verify(verifying_key) -> Result<ChallengePayload>`
+- [ ] **Signed session token types**: `SessionToken` with embedded scope, capability, grant_version, expiry
+  - `SessionToken::issue(signing_key, pubkey, scope, capability, grant_version, ttl) -> Self`
+  - `SessionToken::verify(verifying_key) -> Result<SessionClaims>`
 - [ ] Structured challenge payload: `"crabcity:auth:v1:" ++ nonce ++ node_id ++ timestamp`
+- [ ] **Cross-instance identity proofs**: `IdentityProof` struct with sign/verify methods
+  - `IdentityProof::sign(signing_key, instance, related_keys, handle) -> Self`
+  - `IdentityProof::verify() -> Result<IdentityProofClaims>`
+- [ ] `IdentityNoun` enum: `Handle(String)`, `GitHub(String)`, `Google(String)`, `Email(String)` with `Display`, `FromStr`, parse/validate
+- [ ] `NounResolution` struct: `{ account_id, handle, pubkeys, attestation }` — the result of resolving a noun through the registry
 - [ ] `EventType` enum and `Event` struct with hash chain fields (`prev_hash`, `hash`)
 - [ ] `Event::compute_hash()` and `Event::verify_chain()` helpers
 - [ ] `EventCheckpoint` struct with instance signature
+- [ ] **Structured error types**: `AuthError` enum with `recovery() -> Recovery` method, `Recovery` struct with typed actions
 - [ ] Property-based tests (using `proptest`):
   - Round-trip: `Invite::from_bytes(invite.to_bytes()) == invite` for all valid invites
   - Signature: `invite.sign(k).verify(k.public()) == Ok` for all keypairs and invites
   - Forgery: `invite.sign(k1).verify(k2.public()) == Err` for all k1 != k2
   - Capability ordering: `c1 < c2` implies `c1.access_rights()` is a strict subset of `c2.access_rights()`
+  - **Capability algebra**: `intersect` is commutative and idempotent; `intersect(a,b).is_superset_of(c)` implies both `a` and `b` are supersets of `c`
   - Delegation narrowing: verify chain with out-of-order capabilities is rejected
   - State machine: all reachable states under all transitions produce valid states
   - Access rights round-trip: `Capability::from_access(cap.access_rights()) == Some(cap)` for all presets
   - Hash chain: inserting/deleting/modifying any event in a chain is detectable
-- [ ] Fuzz target for `Invite::from_bytes()` (untrusted input from network — must not panic on any input)
+  - **Signed token round-trip**: `SessionToken::verify(SessionToken::issue(...).verify_key()) == Ok` for all valid inputs
+  - **Signed token forgery**: `SessionToken::verify(wrong_key)` always fails
+  - **Noun parsing round-trip**: `IdentityNoun::from_str(noun.to_string()) == Ok(noun)` for all valid nouns
+  - **Noun validation**: malformed nouns (`github:`, `@`, `email:not-an-email`) are rejected
+  - **Identity proof round-trip**: sign then verify succeeds; tamper then verify fails
+- [ ] Fuzz targets:
+  - `Invite::from_bytes()` (untrusted input from network — must not panic on any input)
+  - `SessionToken::verify()` (untrusted input from client — must not panic)
+  - `IdentityProof::from_bytes()` (untrusted input — must not panic)
+- [ ] **Formal state machine model** (TLA+ or Alloy):
+  - Membership state machine: prove no sequence of transitions violates invariants
+  - `removed` is terminal, `suspend`/`reinstate` only from valid source states
+  - `blocklist_lift` only restores blocklist-sourced suspensions
+  - Generate test cases from the model for Rust implementation
 
 **Crate dependencies:**
 - `ed25519-dalek` (with `rand_core` feature)
@@ -55,7 +85,7 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - Wire into `//tools/format`
 - Add `cargo-fuzz` target for invite parser
 
-**Estimated size:** ~1100 lines of Rust + ~400 lines of property-based tests + fuzz target
+**Estimated size:** ~1600 lines of Rust + ~650 lines of property-based tests + fuzz targets + TLA+/Alloy model
 
 ---
 
@@ -74,14 +104,14 @@ migrations/
   NNNN_create_member_identities.sql
   NNNN_create_member_grants.sql
   NNNN_create_invites.sql
-  NNNN_create_sessions.sql
+  NNNN_create_refresh_tokens.sql
   NNNN_create_blocklist.sql
   NNNN_create_event_log.sql
   NNNN_create_event_checkpoints.sql
   NNNN_seed_loopback_identity.sql
 ```
 
-Tables: `member_identities`, `member_grants`, `invites`, `sessions`, `blocklist`, `blocklist_cache`, `event_log`, `event_checkpoints` (see design doc section 2.1).
+Tables: `member_identities`, `member_grants`, `invites`, `refresh_tokens`, `blocklist`, `blocklist_cache`, `event_log`, `event_checkpoints` (see design doc section 2.1). Note: session tokens are stateless (signed by the instance key) — only refresh tokens are stored server-side.
 
 The `seed_loopback_identity` migration inserts the loopback sentinel (all-zeros pubkey) with `owner` grant and `active` state.
 
@@ -112,14 +142,16 @@ Functions:
 - `revoke_invite(db, nonce) -> Result<()>`
 - `list_active_invites(db) -> Result<Vec<StoredInvite>>`
 
-New file: `packages/crab_city/src/repository/sessions.rs`
+New file: `packages/crab_city/src/repository/refresh_tokens.rs`
 
 Functions:
-- `create_session(db, token_hash, public_key, scope, expires_at) -> Result<()>`
-- `get_session(db, token_hash) -> Result<Option<Session>>` (includes `scope` access rights)
-- `delete_session(db, token_hash) -> Result<()>`
-- `extend_session(db, token_hash, new_expires_at) -> Result<()>`
-- `cleanup_expired_sessions(db) -> Result<u64>`
+- `create_refresh_token(db, token_hash, public_key, scope, expires_at) -> Result<()>`
+- `get_refresh_token(db, token_hash) -> Result<Option<RefreshToken>>` (includes `scope` access rights)
+- `delete_refresh_token(db, token_hash) -> Result<()>`
+- `extend_refresh_token(db, token_hash, new_expires_at) -> Result<()>`
+- `cleanup_expired_refresh_tokens(db) -> Result<u64>`
+
+Note: Session tokens are stateless (signed by the instance key, verified in middleware). Only refresh tokens are stored in SQLite. The in-memory revocation set is managed by the auth middleware (see section 1.4).
 
 New file: `packages/crab_city/src/repository/event_log.rs`
 
@@ -136,15 +168,16 @@ Functions:
 New file: `packages/crab_city/src/handlers/auth.rs`
 
 Endpoints:
-- `POST /api/auth/challenge` — generate nonce, store pending challenge (in-memory), accept optional `scope`
-- `POST /api/auth/verify` — verify structured signature, check grant state, create scoped session
-- `DELETE /api/auth/session` — logout (revoke session)
+- `POST /api/auth/challenge` — generate nonce, create signed challenge token (stateless — no server-side storage), accept optional `scope`
+- `POST /api/auth/verify` — verify instance signature on challenge token, verify client signature on payload, check grant state, create signed session token + refresh token. Idempotent on `(pubkey, nonce)`.
+- `POST /api/auth/refresh` — verify refresh token, check grant state, mint new signed session token. Returns structured error with `recovery: { "action": "reauthenticate" }` if refresh token is expired.
+- `DELETE /api/auth/session` — logout (revoke refresh token, add pubkey to revocation set)
 
 New file: `packages/crab_city/src/handlers/invites.rs`
 
 Endpoints:
-- `POST /api/invites` — create invite (requires `members:invite` access), supports `max_depth` for delegation
-- `POST /api/invites/redeem` — redeem invite token (flat or delegated chain), create identity + grant + scoped session
+- `POST /api/invites` — create invite (requires `members:invite` access), supports `max_depth` for delegation. Accepts `Idempotency-Key` header.
+- `POST /api/invites/redeem` — redeem invite token (flat or delegated chain), create identity + grant + signed session token + refresh token. Idempotent on `(invite_nonce, public_key)` — returns existing grant on retry.
 - `POST /api/invites/delegate` — create a sub-invite from an existing invite (client-side, but instance validates on redeem)
 - `GET /api/invites` — list active invites (requires `members:invite` access)
 - `POST /api/invites/revoke` — revoke invite, optionally suspend derived members
@@ -168,25 +201,42 @@ Endpoints:
 Modify: `packages/crab_city/src/auth.rs`
 
 Updated auth chain:
-1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full access rights)
-2. Check `Authorization: Bearer <token>` header → SHA-256 hash → lookup sessions table (includes `scope`) → lookup grant (state == active)
-3. Check `__crab_session` cookie → same lookup
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full scope)
+2. Check `Authorization: Bearer <token>` header → verify instance's own ed25519 signature on session token → check in-memory revocation set → extract scope, capability, grant_version
+3. Check `__crab_session` cookie → same verification
 4. No credentials → 401
 
-The middleware populates `AuthUser` with identity, grant, and **session scope**. Access checks use the session scope (the intersection of requested access and grant access rights):
+**No database lookup on the hot path.** Session tokens are self-contained signed documents. The middleware verifies the instance's signature (~60μs) and checks a small in-memory revocation set (O(1) hash lookup).
+
+New component: **Revocation set** — an in-memory `HashSet<(PublicKey, u64)>` of `(pubkey, grant_version)` pairs. Populated from the broadcast channel: when a `GrantUpdate` with `state=suspended` or `state=removed` fires, the entry is added. Entries are garbage-collected when the corresponding session tokens would have expired (15 minutes). This enables immediate revocation without database lookups.
+
+The middleware populates `AuthUser` with identity, capability, and **session scope**. Access checks use the capability algebra:
 
 ```rust
-auth.require_access("tasks", "edit")?;  // checks session.scope, not grant.access
+auth.require_access("tasks", "edit")?;  // calls AccessRights::contains() on session.scope
 auth.grant_access();                     // full grant access rights, for display only
 ```
 
-### 1.5 Instance Bootstrap
+Expired session tokens return structured errors with `recovery: { "action": "refresh" }` so clients automatically use their refresh token.
+
+### 1.5 Observability
+
+Add from day one — not as an afterthought:
+
+- `GET /metrics` endpoint (Prometheus format) with all counters/gauges from design doc section 14
+- Structured logging for all auth decisions: `public_key_fingerprint`, `endpoint`, `result`, `reason`, `duration_ms`
+- Structured logging for all state transitions: `event_type`, `actor_fingerprint`, `target_fingerprint`
+- WebSocket connection/reconnection metrics: active connections, reconnections, replay message count, snapshot count
+
+**Crate dependencies:** `metrics`, `metrics-exporter-prometheus`, `tracing` (already a dep), `tracing-opentelemetry` (for future distributed tracing with registry)
+
+### 1.6 Instance Bootstrap
 
 On first startup, if the `member_identities` table has only the loopback sentinel:
 - Generate an instance identity keypair (stored in config dir)
 - Log the owner invite token to stdout
 
-### 1.6 Frontend Changes
+### 1.7 Frontend Changes
 
 Modify: `packages/crab_city_ui/`
 
@@ -210,14 +260,17 @@ Modify: `packages/crab_city_ui/`
 
 **Other frontend changes:**
 - Add keypair generation and IndexedDB storage
-- Add login flow (challenge-response)
-- Store session token as cookie
+- Add login flow (stateless challenge-response)
+- Store session token as cookie, refresh token in IndexedDB
+- Automatic session refresh: intercept 401 `session_expired` → use refresh token → retry request transparently
+- **Structured error handling**: parse `recovery` field from all error responses, route to appropriate UI flow (refresh, reauthenticate, contact_admin, etc.). No generic "something went wrong" screens.
+- **WebSocket reconnection**: track `last_seq`, reconnect with `?last_seq=N`, handle replay and snapshot messages transparently. Connection drops should be invisible to the user.
 - Show current user identity + fingerprint in UI header
 - Add member list panel (for admins, with state badges)
-- Add invite creation UI (for admins)
+- Add invite creation UI (for admins) with **QR code rendering** (client-side SVG generation)
 - Add member management actions (suspend, reinstate, remove, change capability)
 
-### 1.7 Integration Tests
+### 1.8 Integration Tests
 
 New file: `packages/crab_city/tests/auth_integration.rs`
 
@@ -226,21 +279,28 @@ End-to-end tests that spin up an in-memory instance and exercise the security-cr
 - Generate keypair → create invite → redeem invite → verify session works → verify capabilities are enforced
 - **Delegated invite chain**: admin creates invite with `max_depth=2` → member delegates → sub-delegate redeems → verify capability narrowing is enforced, depth limit is enforced
 - **Delegation forgery**: tamper with a link in a delegation chain → verify redemption is rejected
-- Challenge-response flow: generate, sign, verify, get session
+- **Stateless challenge-response**: generate challenge → verify challenge token is signed by instance → sign payload → verify → get session token + refresh token
+- **Signed session tokens**: verify session token signature → extract scope → verify expired tokens are rejected → verify tokens signed by wrong key are rejected
+- **Refresh flow**: session token expires → POST /api/auth/refresh → get new session token → verify old refresh token still works (sliding window)
+- **Immediate revocation**: admin suspends user → verify user's session token is rejected immediately (revocation set) → verify refresh also fails (grant state check)
 - **Scoped sessions**: request `content:read`-only session → verify `tasks:create` endpoints return 403 → verify `content:read` endpoints return 200
 - **Scope intersection**: request `members:invite` scope with `collaborate` grant → verify session scope excludes `members` (cannot escalate via scope)
 - Access enforcement: `collaborate` user cannot access `members` endpoints
 - State machine: active → suspended → reinstate → active; suspended → removed
 - Invite revocation: revoke invite → unredeemed uses fail, existing members unaffected
 - Invite revocation with `suspend_derived_members`: all derived grants suspended
+- **Idempotency**: redeem same invite with same pubkey twice → second call returns same grant, no duplicate. Verify same challenge twice → second call returns same session.
 - Key replacement: new key replaces old, old grant removed
 - Loopback bypass: all-zeros pubkey → owner access on loopback, rejected remotely
 - **Event log hash chain**: verify events have correct hash linkage → tamper with an event → verify `verify_chain` detects the break
 - **Event checkpoints**: create checkpoint → verify signature → tamper with event before checkpoint → verify detection
 - Event log: verify events recorded for all state transitions
 - **Preview WebSocket**: connect to `/api/preview` without auth → verify only non-content signals are received
+- **WebSocket reconnection**: connect → receive messages → disconnect → reconnect with `last_seq` → verify missed messages are replayed. Also: reconnect with very old `last_seq` → verify full snapshot is sent.
+- **Structured errors**: verify all error responses include `recovery` field with valid action enum value
+- **Identity proofs**: sign proof → verify → tamper → verify fails. Exchange proof during WebSocket handshake.
 
-**Estimated size:** ~1800 lines Rust (handlers + repo + middleware + event log + hash chain) + ~1200 lines Svelte/TS (join page + live preview + key backup + member management) + ~600 lines integration tests
+**Estimated size:** ~2200 lines Rust (handlers + repo + middleware + stateless auth + revocation set + reconnection) + ~1400 lines Svelte/TS (join page + live preview + key backup + member management + QR + reconnection + structured error handling) + ~800 lines integration tests
 
 ---
 
@@ -309,6 +369,19 @@ The Merkle tree is a simple append-only binary tree (RFC 6962 style). Each leaf 
 
 Monitors (instances, public auditors) poll the entries endpoint to watch for unauthorized key bindings. An instance can optionally run a background task (alongside the heartbeat) that checks whether any of its members' registry accounts have unexpected key additions.
 
+### 2.3.2 Identity Bindings and Noun Resolution
+
+- `POST /api/v1/accounts/:id/identity-bindings` — link an external identity (GitHub OAuth, Google OAuth, email verification)
+- `GET /api/v1/accounts/:id/identity-bindings` — list bindings
+- `DELETE /api/v1/accounts/:id/identity-bindings/:id` — revoke binding
+- `GET /api/v1/accounts/by-identity?provider=X&subject=Y` — resolve a noun to account + pubkeys + attestation
+
+Identity bindings are the core of the noun model. The registry attests "pubkey A is bound to github:foo" by signing the binding. Instances verify the attestation at invite time.
+
+Supported providers in M2: `github` (OAuth), `email` (verification link). Google and other OIDC providers are added in M5 alongside enterprise SSO.
+
+Post-registration hook: when a new identity binding is created, check `pending_invites` for matching `(provider, subject)`. If found, resolve the pending invite and mark it for delivery via the next heartbeat to the originating instance.
+
 ### 2.4 Instance Registration and Directory
 
 - `POST /api/v1/instances` — register instance (authenticated by NodeId proof)
@@ -322,6 +395,14 @@ Monitors (instances, public auditors) poll the entries endpoint to watch for una
 - `POST /api/v1/invites` — register an invite, get short-code
 - `GET /api/v1/invites/:short_code` — resolve invite metadata
 - `GET /join/:short_code` — user-facing redirect to instance with invite token
+
+### 2.5.1 Noun-Based Invite Endpoints
+
+- `POST /api/v1/invites/by-noun` — resolve noun, create pending invite if unresolved
+- `GET /api/v1/invites/pending?instance_id=X` — list pending noun invites for an instance
+- `DELETE /api/v1/invites/pending/:id` — cancel pending invite
+
+Heartbeat response gains a `resolved_invites` array: when a pending invite resolves (the person signed up and linked the matching identity), the resolved account and pubkeys are included in the next heartbeat to the originating instance.
 
 ### 2.6 Public Profile Pages (HTML)
 
@@ -341,7 +422,7 @@ Minimal HTML. Server-rendered. No JS required for viewing.
 
 In-memory token bucket per IP (and per account for key management). No external dependencies. Reset on restart (acceptable at this traffic level).
 
-**Estimated size:** ~2800 lines Rust + ~200 lines HTML templates (includes Merkle tree implementation ~500 LOC)
+**Estimated size:** ~3200 lines Rust + ~200 lines HTML templates (includes Merkle tree ~500 LOC, identity bindings + noun resolution + pending invites ~400 LOC)
 
 ---
 
@@ -361,6 +442,10 @@ A lightweight HTTP client (using `reqwest`) that talks to `crabcity.dev`:
 - `heartbeat(token, status) -> Result<HeartbeatResponse>`
 - `resolve_handle(handle) -> Result<Option<AccountInfo>>`
 - `resolve_key(public_key) -> Result<Option<AccountInfo>>` — response includes `account_id` and all active keys
+- `resolve_noun(noun) -> Result<NounResolution>` — resolve a noun to account + pubkeys + attestation
+- `create_noun_invite(instance_id, noun, capability, fingerprint) -> Result<NounInviteResult>` — resolve or create pending
+- `list_pending_noun_invites(instance_id) -> Result<Vec<PendingNounInvite>>`
+- `cancel_pending_noun_invite(invite_id) -> Result<()>`
 - `register_invite(token, invite) -> Result<ShortCode>`
 
 ### 3.2 Heartbeat Background Task
@@ -370,6 +455,7 @@ Spawn a tokio task on instance startup (if registry URL is configured):
 - Process scoped blocklist deltas from response (global + per-org)
 - Update `blocklist_cache` table
 - On blocklist add: check if any active members match; if so, transition their grant to `suspended` and log `member.suspended` event
+- Process `resolved_invites` from response: for each resolved noun invite, create a standard signed invite for the resolved pubkey, log `invite.noun_resolved` event, broadcast notification to admins
 - Log warnings for MOTD
 
 ### 3.3 Handle Resolution
@@ -380,6 +466,15 @@ When displaying a member, if `handle` is NULL:
 - Cache result (including negative results, shorter TTL)
 - Update `member_identities` row with resolved handle and `registry_account_id`
 - If registry response shows multiple keys for the same account, update all matching identity rows
+
+### 3.3.1 Noun-Based Invite Endpoints (Instance-Side)
+
+New endpoints on the instance (requires registry integration):
+
+- `POST /api/invites/by-noun` — resolve noun via registry, create invite or register pending. Requires `members:invite` access.
+- `GET /api/invites/pending-nouns` — list pending noun invites for admin visibility. Requires `members:read` access.
+
+TUI command: `/invite github:foo collaborate` or `/invite @blake admin` — parses noun, calls the by-noun endpoint, displays result.
 
 ### 3.4 Configuration
 
@@ -400,7 +495,7 @@ Blocklist enforcement is a state transition, not a runtime check:
 - Local blocklist adds also transition grants to `suspended`
 - Auth middleware only checks `state == active` — no blocklist table joins
 
-**Estimated size:** ~600 lines Rust
+**Estimated size:** ~800 lines Rust (includes noun invite endpoints + resolved invite processing in heartbeat)
 
 ---
 
@@ -487,6 +582,12 @@ When a user logs in via `crabcity.dev` and their account (or email domain) is as
 4. `crabcity.dev` maps `(issuer, subject)` → account (auto-provision if new)
 5. Add to org membership if not already a member
 6. Continue with the normal crabcity.dev OIDC provider flow (issue token to instance)
+
+### 5.2.1 Enterprise Identity Bindings
+
+Enterprise SSO creates identity bindings automatically: when a user authenticates via their corporate IdP, the registry creates a `google` (or `okta`, `entra`) identity binding for the account. This means enterprise users are immediately noun-resolvable by their corporate email: `google:alice@acme.com`.
+
+Org admins can invite by corporate email before the employee has ever logged in: `/invite google:alice@acme.com`. The invite becomes pending and resolves when Alice first authenticates via SSO (which auto-provisions her account and creates the identity binding).
 
 ### 5.3 Auto-Provisioning
 
@@ -615,15 +716,15 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 
 | Milestone | Rust LOC | Frontend LOC | Test LOC | Notes |
 |-----------|----------|-------------|----------|-------|
-| M0: Foundations | ~1100 | -- | ~400 | Shared crate, delegation chains, hash chain, property tests, fuzz |
-| M1: Instance Auth | ~1800 | ~1200 | ~600 | Scoped sessions, live preview, hash-chained event log |
-| M2: Registry Core | ~2800 | ~200 | ~300 | Multi-device keys, key transparency Merkle tree |
-| M3: Integration | ~600 | -- | ~100 | HTTP client + background task + transparency monitoring |
+| M0: Foundations | ~1600 | -- | ~650 | Shared crate, capability algebra, identity proofs, noun types, stateless auth types, signed session types, formal model, property tests, fuzz |
+| M1: Instance Auth | ~2200 | ~1400 | ~800 | Stateless auth, signed sessions, revocation set, reconnection, idempotency, structured errors, QR codes, observability |
+| M2: Registry Core | ~3200 | ~200 | ~400 | Multi-device keys, key transparency Merkle tree, identity bindings, noun resolution, pending invites |
+| M3: Integration | ~800 | ~50 | ~150 | HTTP client + background task + noun invites + resolved invite delivery + TUI /invite noun command |
 | M4: OIDC Provider | ~1500 | ~50 | ~200 | Fiddly but well-defined |
-| M5: Enterprise SSO | ~1200 | ~400 | ~100 | Mostly registry-side |
+| M5: Enterprise SSO | ~1300 | ~400 | ~100 | Mostly registry-side, enterprise identity bindings |
 | M6: Blocklists | ~400 | -- | ~100 | Scoped CRUD + delta sync |
 | M7: Iroh Invites | ~600 | -- | ~100 | Iroh advertisement + discovery + TUI command |
-| **Total** | **~10000** | **~1850** | **~1900** | |
+| **Total** | **~11600** | **~2100** | **~2500** | |
 
 ## Risk Register
 
@@ -637,7 +738,7 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 | Invite token size too large for some channels | Low | Low | 254 chars base32 fits in any medium. Registry short-codes are 8 chars. |
 | OIDC key rotation disrupts active sessions | Low | Medium | Overlap window (2 active keys). Instance JWKS cache TTL = 1 hour. |
 | Double-hop OIDC flow (enterprise) bugs | High | Medium | Both hops use `openidconnect` crate. Test against real IdPs early. |
-| Pending challenges lost on restart | Low | Low | In-memory only, 60s TTL. Users retry. Documented as design choice. |
+| ~~Pending challenges lost on restart~~ | ~~Low~~ | ~~Low~~ | Eliminated — challenge-response is fully stateless. Signed challenge tokens survive restarts. |
 | Blocklist propagation delay (5 min) | Low | Low | Documented as known property. Acceptable at scale. |
 | Delegation chain token size | Low | Low | 3-hop chain is ~660 chars base32. Fits in URLs. Use registry short-codes for longer chains. |
 | Delegation chain forgery | Low | High | Each link signed independently. Chain verification walks root-to-leaf. Property-tested and fuzzed. |
@@ -646,6 +747,14 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 | iroh mDNS discovery reliability | Medium | Low | Fallback to URL-based invites. iroh-native exchange is a convenience, not the primary path. |
 | Key transparency log growth | Low | Low | One entry per key mutation. At projected scale, this grows by single-digit entries per day. |
 | Preview WebSocket information leakage | Low | Medium | Strict allowlist: terminal count, cursor position (not content), user count, uptime. Code review the preview stream. |
+| Signed session token key rotation | Medium | Medium | Instance key rotation invalidates all outstanding session tokens. Mitigation: support 2 active signing keys during rotation (same as registry OIDC keys). |
+| Revocation set memory growth | Low | Low | Set is bounded: entries expire after 15 min (session token TTL). At 1M users, worst case (all suspended simultaneously) is ~40MB. Garbage collection runs on a timer. |
+| WebSocket reconnection ring buffer memory | Medium | Medium | 1000 messages per connection. At 10K concurrent connections with average message size 500 bytes, that's ~5GB. Cap ring buffer size and fall back to snapshot. Monitor `crabcity_ws_snapshots_total`. |
+| Clock skew on mobile (challenge-response) | Medium | Low | Widened timestamp check to +-5 minutes. The nonce provides replay protection; the timestamp is defense-in-depth. |
+| Identity proof trust model confusion | Medium | Medium | Proofs are assertions, not guarantees. Document clearly. UI should display proof status as "claims" not "verified." Full verification requires contacting the remote instance. |
+| Noun resolution depends on registry availability | Medium | Low | Noun-based invites require the registry. Raw keypair invites always work as fallback. Instance caches resolved nouns for display. |
+| Stale identity bindings | Medium | Medium | A person may unlink their GitHub account but the registry still holds the binding. Mitigate: bindings have `revoked_at`, periodic re-verification (future), and the attestation includes a timestamp so instances can assess freshness. |
+| Pending invite spam | Low | Low | Rate-limit `POST /api/v1/invites/by-noun` per instance. Pending invites have a default 30-day TTL. Instances can cancel pending invites. |
 
 ## Resolved Questions
 
@@ -665,18 +774,52 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 
 8. **Invite delegation.** **Decision: design the chain format in M0, implement in M1.** The `InviteLink` struct and chain verification are part of `crab_city_auth`. Flat invites are a chain of length 1 — no special-casing needed. `max_depth=0` disables delegation for simple use cases.
 
-9. **Scoped sessions.** **Decision: implement in M1.** The `scope` column on `sessions` and the optional `scope` parameter on challenge are minimal additions. Backward-compatible: omit scope for full grant.
+9. **Scoped sessions.** **Decision: implement in M1.** The `scope` is embedded in the signed session token. Backward-compatible: omit scope for full grant.
 
 10. **Hash-chained event log.** **Decision: implement in M0 (types) + M1 (storage).** The `prev_hash` and `hash` fields are part of the `Event` struct in `crab_city_auth`. Computing the hash on every event insert is negligible overhead. Signed checkpoints are optional (configurable interval, default every 100 events).
 
+11. **Stateless challenge-response vs. in-memory store.** **Decision: stateless.** The server signs a challenge token encoding (nonce, pubkey, scope_hash, expiry). No server-side state, survives restarts, horizontally scalable. Eliminates the `DashMap<Nonce, PendingChallenge>` and its TTL management.
+
+12. **Session tokens: database rows vs. signed capabilities.** **Decision: signed capabilities.** Session tokens are self-contained documents signed by the instance key. No database lookup on the hot path (~60μs ed25519 verify). Refresh tokens (stored hashed in SQLite) handle revocation. Immediate revocation via in-memory revocation set populated from broadcast channel.
+
+13. **Capability algebra.** **Decision: four operations in `crab_city_auth`, property-tested.** `intersect`, `contains`, `is_superset_of`, `diff`. No code outside the crate performs ad-hoc access rights manipulation. Eliminates authorization logic inconsistencies.
+
+14. **WebSocket reconnection.** **Decision: sequence numbers + bounded ring buffer.** Server assigns monotonic `seq` to each message. Client sends `last_seq` on reconnect. Server replays from ring buffer or sends full snapshot. Connection drops are invisible to users.
+
+15. **Error recovery.** **Decision: structured `recovery` field on all error responses.** Closed enum of recovery actions: `refresh`, `reauthenticate`, `retry`, `contact_admin`, `redeem_invite`, `none`. Client SDK parses into typed actions. No generic error screens.
+
+16. **QR code invites.** **Decision: implement in M1.** Flat invites (256 chars) and delegated invites (660 chars) both fit in QR codes. TUI renders with Unicode half-blocks. Web UI renders as SVG. Invite response includes `qr_data` field.
+
+17. **Cross-instance identity proofs.** **Decision: implement in M0 (types) + M1 (exchange).** Self-issued signed statements linking keys across instances. Assertions, not guarantees. The missing interconnect primitive.
+
+18. **Formal state machine verification.** **Decision: TLA+ or Alloy model in M0.** The membership state machine is small enough to verify exhaustively. Generate test cases from the model.
+
+19. **Observability.** **Decision: day-one in M1.** Prometheus metrics endpoint, structured logging for all auth decisions and state transitions, OpenTelemetry trace context propagation for registry communication.
+
+20. **Noun-based invites: where does resolution happen?** **Decision: registry resolves, instance consumes.** The registry is the phonebook that maps nouns (GitHub usernames, emails, handles) to accounts and pubkeys. Instances call the registry at invite time to resolve nouns. Grants remain purely pubkey-based — nouns are an invite-time convenience, not a runtime concept. Pending invites (for people not yet on crabcity) live at the registry and are delivered via heartbeat when the person signs up.
+
+21. **Identity bindings: trust model.** **Decision: registry-attested.** The registry signs identity bindings (e.g., "pubkey A is bound to github:foo"). Instances verify the attestation signature at invite time. The binding is established via OAuth/OIDC flows, not self-asserted. This is "pseudo-trustable" — as trustworthy as the OAuth provider and the registry's signing key.
+
 ## Open Questions
 
-1. **Envelope versioning for existing WebSocket messages.** The current WebSocket protocol doesn't use envelope versioning. Wrapping existing messages (`StateChange`, `TaskUpdate`, etc.) in `{ "v": 1, "type": ..., "data": ... }` is a breaking change for connected clients. Options: (a) cut over all at once in M1, (b) support both formats during a transition period, (c) version the WebSocket handshake protocol. Recommend (a) — M1 is already a breaking change (auth required), so bundle the wire format change.
+1. **Envelope versioning for existing WebSocket messages.** The current WebSocket protocol doesn't use envelope versioning. Wrapping existing messages (`StateChange`, `TaskUpdate`, etc.) in `{ "v": 1, "seq": N, "type": ..., "data": ... }` is a breaking change for connected clients. Options: (a) cut over all at once in M1, (b) support both formats during a transition period, (c) version the WebSocket handshake protocol. Recommend (a) — M1 is already a breaking change (auth required), so bundle the wire format change and sequence number addition.
 
 2. **Merkle tree crate vs hand-roll.** The transparency log needs a basic append-only Merkle tree (RFC 6962). Options: (a) use an existing crate like `merkle-log`, (b) hand-roll ~500 LOC. The algorithm is simple and well-specified, but correctness is critical. Recommend: hand-roll with extensive property tests, since the dependency surface should be minimal for a security-critical component.
 
-3. **Preview WebSocket scope creep.** The preview stream is intentionally minimal (cursor positions, user count, no content). Need to resist pressure to add "just one more signal" — every addition is a potential information leak. The allowlist should be reviewed by at least two people before shipping.
+3. **Preview WebSocket scope creep.** The preview stream is intentionally minimal (cursor positions, user count, no content). Need to resist pressure to add "just one more signal" — every addition is a potential information leak. The allowlist should be defined in a single struct and adding a field should be a compile-time decision that forces review.
 
 4. **Delegation chain depth limits.** The design allows `max_depth` up to 255 (u8). In practice, chains deeper than 3-4 are hard to reason about. Should there be a global cap (e.g., max 5 hops)? Or leave it to the invite creator? Recommend: configurable per-instance cap, default 3.
 
 5. **Iroh-native invite discovery UX.** The discovery flow requires user confirmation on both sides (inviter accepts peer, invitee accepts invite). Should there be a "promiscuous" mode where the instance auto-accepts all discovered peers? Useful for workshops/demos, dangerous for production. Recommend: require explicit confirmation, but allow a `--auto-accept` flag for ephemeral instances.
+
+6. **Instance signing key rotation.** The stateless challenge-response and signed session tokens both depend on the instance's signing key. If the key rotates, all outstanding challenge tokens and session tokens become invalid. Options: (a) support 2 active signing keys during rotation (same as OIDC JWKS), (b) invalidate all tokens on rotation (force re-auth), (c) use a separate signing key for tokens (not the NodeId key). Recommend (a) for operational smoothness.
+
+7. **Ring buffer sizing for WebSocket reconnection.** 1000 messages per connection at 10K concurrent connections is significant memory. Options: (a) global ring buffer shared across connections (each client tracks its own position), (b) per-connection buffers with aggressive caps, (c) event log as the replay source (already ordered, but includes all events not just per-connection). Recommend (a) — a single global broadcast log with per-client cursors.
+
+8. **Identity proof exchange protocol.** When should proofs be exchanged? Options: (a) during WebSocket handshake only, (b) on-demand when viewing a user's profile, (c) push-based via a new WebSocket message type. Recommend (a) + (c) — send cached proofs on connect, push new ones as they arrive.
+
+9. **Formal verification tooling.** TLA+ has the largest community and tooling (TLC model checker). Alloy is more concise for relational models. Recommend TLA+ for the state machine (it's the standard for distributed systems verification), but this is a judgment call based on team familiarity.
+
+10. **Noun provider extensibility.** The initial noun vocabulary is `@handle`, `github:`, `google:`, `email:`. Should there be a generic `oidc:<issuer>:<subject>` noun for arbitrary OIDC providers? Or limit to explicitly supported providers? Recommend: start with the four known providers, add `oidc:` as a generic fallback in M5 when enterprise SSO is implemented.
+
+11. **Pending invite expiry and cleanup.** Pending noun invites could sit at the registry indefinitely if the person never signs up. Options: (a) mandatory expiry (configurable, default 30 days), (b) no expiry but periodic admin notification, (c) instance can cancel via API. Recommend (a) + (c) — default 30-day TTL, admin can cancel anytime, expired invites cleaned up by background sweep.
