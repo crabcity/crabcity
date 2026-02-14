@@ -78,6 +78,118 @@ profiles, SSO, blocklists) without adding lock-in.
 resolution. **Instance C** is managed by an org; members authenticate via
 enterprise SSO through `crabcity.dev`.
 
+## Transport Model
+
+### iroh as Primary Transport
+
+Ed25519 keypairs are iroh `NodeId`s — same curve, same key format. This means
+**authentication IS the connection**. When a native client (CLI/TUI) opens an
+iroh QUIC connection to an instance, the iroh handshake proves keypair ownership
+and establishes end-to-end encryption. No separate challenge-response protocol,
+no session tokens, no token refresh. The transport layer does it all.
+
+```
+Native Client (CLI/TUI)               Instance
+  |                                      |
+  |  iroh QUIC connect (NodeId)          |
+  |  (ed25519 handshake = auth)          |
+  | ------------------------------------>|
+  |                                      |  verify NodeId is a known member
+  |                                      |  check grant state == active
+  |  E2E encrypted QUIC stream           |
+  | <----------------------------------->|
+  |                                      |
+  |  Same message protocol as WebSocket  |
+  |  { v, seq, type, data }              |
+  | <----------------------------------->|
+```
+
+Properties:
+- **Authentication by construction.** The iroh handshake proves the client
+  controls the private key corresponding to their NodeId (= public key). No
+  challenge token, no nonce, no signed payload.
+- **E2E encryption by construction.** QUIC provides authenticated encryption.
+  No separate TLS layer, no certificate management.
+- **Connection migration.** QUIC handles WiFi-to-cellular transitions, IP
+  changes, and brief network outages transparently. No application-level
+  reconnection protocol needed.
+- **Multiplexed streams.** A single QUIC connection carries multiple streams
+  (real-time messages, file transfers, terminal data) without head-of-line
+  blocking.
+
+### WebSocket as Browser Fallback
+
+Browsers cannot open raw QUIC connections to arbitrary endpoints. The existing
+WebSocket transport serves browser clients, using the challenge-response
+protocol for authentication and signed session tokens for ongoing requests.
+
+```
+Browser Client                         Instance
+  |                                      |
+  |  POST /api/auth/challenge            |
+  |  (stateless challenge-response)      |
+  | ------------------------------------>|
+  |  { nonce, challenge_token }          |
+  | <------------------------------------|
+  |                                      |
+  |  POST /api/auth/verify               |
+  |  (client signs payload)              |
+  | ------------------------------------>|
+  |  { session_token, refresh_token }    |
+  | <------------------------------------|
+  |                                      |
+  |  WebSocket /api/ws                   |
+  |  Authorization: Bearer <token>       |
+  | ------------------------------------>|
+  |                                      |
+  |  Same message protocol               |
+  |  { v, seq, type, data }              |
+  | <----------------------------------->|
+```
+
+The browser path carries the full cost of token management (challenge-response,
+15-minute session tokens, refresh tokens, revocation set) because it cannot
+leverage the transport layer for authentication. This is acceptable — browsers
+are a secondary client.
+
+### Transport-Agnostic Message Protocol
+
+Both transports carry the same message protocol. The envelope format is
+identical:
+
+```json
+{ "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } }
+```
+
+Handlers, broadcast logic, and client-side stores are transport-agnostic. The
+transport adapter (iroh or WebSocket) frames messages into the appropriate
+wire format, but the application layer sees the same types.
+
+### Multi-Instance Connections
+
+A native client can hold **N simultaneous iroh connections** to different Crab
+City instances. One connection is "active" (receives input, shown in the UI).
+Background connections continue to receive presence updates, chat messages,
+and notifications.
+
+```
+CLI/TUI Client
+  |
+  +-- iroh conn -> Instance A (active: terminal, chat, tasks)
+  |
+  +-- iroh conn -> Instance B (background: presence, notifications)
+  |
+  +-- iroh conn -> Instance C (background: presence, notifications)
+```
+
+The **instance switcher** lets the user change which instance is active. This
+is the only new UI feature required for multi-instance support — the underlying
+iroh connections are always live, so switching is instant (no reconnection
+delay).
+
+Browser clients achieve the same via multiple WebSocket connections, though
+they pay the per-connection auth cost for each instance.
+
 ## Identity Model
 
 ### Ed25519 Keypair (Base Layer)
@@ -708,12 +820,21 @@ the auth middleware only needs `state == active`.
 
 ## Wire Format Versioning
 
-All WebSocket messages use envelope versioning with monotonic sequence numbers:
+All messages (over both iroh streams and WebSocket) use envelope versioning with
+monotonic sequence numbers:
 
-```json { "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } } ```
+```json
+{ "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } }
+```
 
 The `seq` field is a per-connection monotonic counter assigned by the server.
-Clients track their last-seen `seq` for reconnection (see below).
+Clients track their last-seen `seq` for reconnection (WebSocket) or stream
+resumption (iroh).
+
+The envelope format is **transport-agnostic**. Over iroh QUIC streams, messages
+are length-prefixed and serialized as JSON (or future: msgpack). Over WebSocket,
+messages are JSON text frames. The application layer sees the same types
+regardless of transport.
 
 Clients ignore messages with versions they don't understand. This allows
 individual message types to evolve independently without breaking connected
@@ -727,27 +848,37 @@ bump.
 
 ### Reconnection Protocol
 
-WebSocket connections drop constantly: WiFi-to-cellular transitions, laptop lid
+Connections drop constantly: WiFi-to-cellular transitions, laptop lid
 close/open, network hiccups. Reconnection must be invisible to users.
 
-On reconnect, the client sends its last-seen `seq` in the WebSocket handshake
-(query parameter: `?last_seq=4817`). The server replays missed messages from a
-bounded per-connection ring buffer (last 1000 messages or last 5 minutes,
-whichever is smaller). If the gap is too large, the server sends a full state
-snapshot instead (same payload as initial connection).
+**iroh (native clients):** QUIC handles connection migration at the transport
+level. WiFi-to-cellular, IP changes, and brief outages are transparent — the
+QUIC connection survives without application-level intervention. If the
+connection is truly lost (device sleeps for minutes), the client re-establishes
+the iroh connection (instant re-auth via handshake) and sends its last-seen
+`seq` to request replay.
 
-The server sends WebSocket ping frames every 30 seconds. If the client doesn't
-respond within 10 seconds, the server closes the connection and cleans up
-presence state. Without this, ghost users appear online for minutes after
-they've actually disconnected.
+**WebSocket (browser clients):** On reconnect, the client sends its last-seen
+`seq` in the WebSocket handshake (query parameter: `?last_seq=4817`). The server
+replays missed messages from a bounded ring buffer (last 1000 messages or last 5
+minutes, whichever is smaller). If the gap is too large, the server sends a full
+state snapshot instead (same payload as initial connection).
+
+Both transports use the same replay logic on the server: the ring buffer is
+per-logical-connection, and the `seq`-based replay is transport-agnostic.
+
+The server sends ping frames every 30 seconds (WebSocket ping or iroh
+keepalive). If the client doesn't respond within 10 seconds, the server closes
+the connection and cleans up presence state. Without this, ghost users appear
+online for minutes after they've actually disconnected.
 
 ### Heartbeat and Presence Cleanup
 
 | Timer | Interval | Action on miss |
 |-------|----------|----------------|
-| WS ping | 30s | Close connection, remove presence |
-| Session token expiry | 15 min | Client must refresh |
-| Refresh token expiry | 24 hours | Client must re-authenticate |
+| Connection ping | 30s | Close connection, remove presence (both transports) |
+| Session token expiry (browser only) | 15 min | Client must refresh |
+| Refresh token expiry (browser only) | 24 hours | Client must re-authenticate |
 | Registry heartbeat | 5 min | Instance marked offline after 3 misses |
 
 ## Org / Team Management
@@ -777,12 +908,17 @@ level.
 
 | Boundary | Trust model |
 |----------|-------------|
-| User <-> Instance | Challenge-response (user proves keypair ownership) or session token |
+| User <-> Instance (native) | iroh QUIC handshake (ed25519 keypair = NodeId; authentication and encryption by construction) |
+| User <-> Instance (browser) | Challenge-response over WebSocket (user proves keypair ownership) + signed session tokens |
 | Instance <-> Registry | Instance authenticates via its NodeId keypair; registry authenticates via TLS + OIDC signing key |
 | User <-> Registry | OIDC tokens (for SSO) or challenge-response (for keypair-native users) |
 | Instance <-> Instance | No direct trust required; iroh handles transport encryption |
 
-### Challenge-Response Protocol (Stateless)
+### Challenge-Response Protocol (Browser/WebSocket Path, Stateless)
+
+Native clients (CLI/TUI) authenticate via the iroh handshake and never use
+challenge-response. This protocol serves **browser clients only**, which cannot
+open raw QUIC connections.
 
 The challenge-response is **fully stateless** on the server side. No pending
 challenges are stored in memory or in a database.
@@ -850,7 +986,12 @@ This makes the "registry is a phonebook, not a platform" principle
 registry operator — their instances can independently verify that key bindings
 haven't been tampered with.
 
-### Sessions as Signed Capabilities
+### Sessions as Signed Capabilities (Browser/WebSocket Path)
+
+Native clients (CLI/TUI) connected via iroh do not use session tokens. The iroh
+connection IS the authenticated session — the transport proves identity
+continuously. Session management applies only to **browser clients** using the
+WebSocket/HTTP path.
 
 Session tokens are **self-contained signed documents**, not database row
 references. The instance signs the session with its own key; the middleware
@@ -988,9 +1129,9 @@ records a `member.replaced` event for auditability.
 
 ### Iroh-Native Invite Exchange
 
-Invites are transport-agnostic signed blobs. In addition to URL-based
-distribution, invites can be exchanged **directly via iroh** — no URL, no
-side-channel, no registry.
+Since iroh is the primary transport for native clients, invites can be exchanged
+**directly via iroh** — no URL, no side-channel, no registry. This is the
+natural invite path for CLI/TUI users.
 
 ```
 Alice's TUI:                              Bob's TUI:
@@ -1015,6 +1156,9 @@ invite token format is the same, only the transport differs.
 
 ### CLI/TUI First-Run
 
+The CLI/TUI connects via iroh directly. The ed25519 keypair IS the iroh NodeId,
+so authentication happens at the transport layer — no separate auth step.
+
 ```
 $ crabcity connect instance.example.com
 No identity found. Generating keypair...
@@ -1023,6 +1167,7 @@ Your identity: crab_2K7XM9QP (saved to ~/.config/crabcity/identity.key)
 This instance requires an invitation. Enter invite code:
 > [paste base32 token]
 
+Connecting via iroh...
 Joined as "collaborate" member. Welcome!
 ```
 
@@ -1030,24 +1175,43 @@ Subsequent connections:
 
 ```
 $ crabcity connect instance.example.com
-Authenticated as crab_2K7XM9QP
+Connecting via iroh as crab_2K7XM9QP...
 Connected to Alex's Workshop (3 users online)
 ```
 
+Multi-instance:
+
+```
+$ crabcity
+Connected instances:
+  [1] Alex's Workshop (3 online) — active
+  [2] Team Standup (7 online)
+  [3] Hack Night (12 online)
+
+Press Ctrl+1/2/3 to switch instances.
+```
+
+All connections are iroh QUIC — authenticated, encrypted, multiplexed. No token
+management, no refresh cycles, no session expiry. The connection IS the session.
+
 ## Data Flow Summary
 
-| Flow | Path | Frequency |
-|------|------|-----------|
-| Raw invite redemption | User -> Instance | Once per invite |
-| Registry invite redemption | User -> Registry -> Instance | Once per invite |
-| Noun-based invite (resolved) | Admin -> Instance -> Registry -> Instance | Once per invite |
-| Noun-based invite (pending) | Admin -> Instance -> Registry ... Registry -> Instance (heartbeat) | Once per invite, deferred |
-| OIDC SSO login | User -> Enterprise IdP -> Registry -> Instance | Once per session |
-| Instance heartbeat | Instance -> Registry | Every 5 min |
-| Handle/profile resolution | Instance -> Registry | Cached, infrequent |
-| Noun resolution | Instance -> Registry | At invite time only |
-| Blocklist sync | Registry -> Instance (via heartbeat) | Every 5 min |
-| Resolved invite delivery | Registry -> Instance (via heartbeat) | When pending invites resolve |
+| Flow | Path | Transport | Frequency |
+|------|------|-----------|-----------|
+| Native client connection | User -> Instance | iroh QUIC (auth by handshake) | Per session |
+| Browser client auth | User -> Instance | WebSocket (challenge-response + session token) | Per session |
+| Real-time messages | User <-> Instance | iroh stream or WebSocket (same protocol) | Continuous |
+| Raw invite redemption | User -> Instance | iroh or HTTP | Once per invite |
+| Registry invite redemption | User -> Registry -> Instance | HTTP | Once per invite |
+| Noun-based invite (resolved) | Admin -> Instance -> Registry -> Instance | HTTP | Once per invite |
+| Noun-based invite (pending) | Admin -> Instance -> Registry ... Registry -> Instance (heartbeat) | HTTP | Once per invite, deferred |
+| OIDC SSO login | User -> Enterprise IdP -> Registry -> Instance | HTTP | Once per session |
+| Instance heartbeat | Instance -> Registry | HTTP | Every 5 min |
+| Handle/profile resolution | Instance -> Registry | HTTP | Cached, infrequent |
+| Noun resolution | Instance -> Registry | HTTP | At invite time only |
+| Blocklist sync | Registry -> Instance (via heartbeat) | HTTP | Every 5 min |
+| Resolved invite delivery | Registry -> Instance (via heartbeat) | HTTP | When pending invites resolve |
+| Iroh-native invite exchange | User <-> User (peer-to-peer) | iroh (mDNS/DHT) | Once per invite |
 
 ## Idempotency
 
