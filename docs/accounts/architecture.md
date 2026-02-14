@@ -9,7 +9,7 @@ Every instance operates with full sovereignty. The registry adds value (handles,
 ## Principles
 
 1. **Identity is a keypair.** An ed25519 key pair IS the account. No usernames, no passwords, no email required at the base layer.
-2. **Identity and authorization are separate concerns.** WHO you are (keypair, display name, handle) is stored independently from WHAT you can do (capability, permissions, membership state). Different update cadences, different broadcast events, different trust sources.
+2. **Identity and authorization are separate concerns.** WHO you are (keypair, display name, handle) is stored independently from WHAT you can do (capability, access rights, membership state). Different update cadences, different broadcast events, different trust sources.
 3. **Invites are signed capabilities.** Access control is a signed document, not a row in a central database.
 4. **Instances are sovereign.** An instance can operate standalone forever. The registry is opt-in.
 5. **The registry is a phonebook, not a platform.** It stores metadata and coordinates discovery. It does not mediate runtime traffic between users and instances.
@@ -159,38 +159,30 @@ Instances only need to trust one OIDC issuer: `https://crabcity.dev`. They never
 
 ## Authorization Model
 
-### Capabilities and Permissions
+### Capabilities and Access Rights
 
-Capabilities are named presets that expand to a set of fine-grained permissions. The API surface uses capabilities (`"capability": "collaborate"`). The database stores the expanded permission set. This allows future fine-grained overrides without breaking the simple capability model.
+Authorization is modeled as **access rights** inspired by [GNAP (RFC 9635)](https://www.rfc-editor.org/rfc/rfc9635.html) Section 8. An access right describes what a member can do:
 
-| Capability    | Description                                    |
-|---------------|------------------------------------------------|
-| `view`        | Read-only access to instance content           |
-| `collaborate` | Create/edit content, join terminals            |
-| `admin`       | Manage instance settings, invite others, moderate |
-| `owner`       | Full control, transfer ownership               |
-
-Capabilities expand to permission bitfields:
-
-```
-Permissions (u32 bitfield):
-    VIEW_CONTENT     = 0x01    // read instances, conversations, tasks
-    VIEW_TERMINALS   = 0x02    // observe terminal output
-    SEND_CHAT        = 0x04    // send chat messages
-    EDIT_TASKS       = 0x08    // create/edit/close tasks
-    TERMINAL_INPUT   = 0x10    // send terminal input
-    CREATE_INSTANCE  = 0x20    // create new instances
-    MANAGE_MEMBERS   = 0x40    // invite, suspend, remove, change capabilities
-    MANAGE_INSTANCE  = 0x80    // instance settings, restart, shutdown
-
-Capability presets:
-    view        = VIEW_CONTENT | VIEW_TERMINALS
-    collaborate = view | SEND_CHAT | EDIT_TASKS | TERMINAL_INPUT | CREATE_INSTANCE
-    admin       = collaborate | MANAGE_MEMBERS
-    owner       = all bits set
+```json
+{ "type": "terminals", "actions": ["read", "input"] }
 ```
 
-Invite tokens carry a `Capability` enum (1 byte, compact). The expansion to permissions happens at redemption time. Admins can optionally tweak individual permission bits on a grant after redemption (e.g., "collaborate but no terminal input").
+`type` identifies the resource kind. `actions` lists permitted operations on that resource. A grant is a JSON array of access rights — this is the sole authorization primitive and the source of truth.
+
+Capabilities are named presets that expand to well-known access right arrays:
+
+| Capability    | Access Rights |
+|---------------|---------------|
+| `view`        | `content:read`, `terminals:read` |
+| `collaborate` | view + `terminals:input`, `chat:send`, `tasks:read,create,edit`, `instances:create` |
+| `admin`       | collaborate + `members:read,invite,suspend,reinstate,remove,update` |
+| `owner`       | admin + `instance:manage,transfer` |
+
+The API surface uses capabilities (`"capability": "collaborate"`) for simplicity. The database stores the expanded access rights array. Admins can tweak individual access rights on a grant after redemption (e.g., "collaborate but no terminal input" → remove the `terminals:input` action).
+
+This model is extensible: adding a new resource type or action means adding a new object to the array, not defining a new bit position. If the initial set of access rights turns out to be wrong, they can be revised without a schema migration — the JSON array is the source of truth, and capabilities are just presets that happen to expand to it.
+
+Invite tokens carry a `Capability` enum (1 byte, compact). The expansion to access rights happens at redemption time.
 
 ### Membership State Machine
 
@@ -267,7 +259,7 @@ InviteLink {
 ```
 
 Verification walks the chain from root to leaf:
-1. Root issuer must be a member with `MANAGE_MEMBERS` on the instance
+1. Root issuer must be a member with `members:invite` access on the instance
 2. Each link's capability must be <= previous link's capability (capabilities can only narrow)
 3. Each link's depth must be < previous link's remaining depth
 4. Each signature is valid over (previous link hash + current fields)
@@ -305,8 +297,8 @@ Event types:
 - `member.reinstated` — grant state -> active (admin action)
 - `member.removed` — grant state -> removed
 - `member.replaced` — new grant linked to old one (key loss recovery)
-- `grant.capability_changed` — capability or permissions updated
-- `grant.permissions_tweaked` — individual permission bits changed
+- `grant.capability_changed` — capability or access rights updated
+- `grant.access_changed` — individual access rights modified
 - `invite.created` — new invite issued
 - `invite.redeemed` — invite used (links to member.joined)
 - `invite.revoked` — invite revoked
@@ -462,20 +454,20 @@ This makes the "registry is a phonebook, not a platform" principle *cryptographi
 
 ### Scoped Sessions
 
-Session tokens carry an explicit **permission scope** that is the intersection of what the client requested and what the underlying grant allows:
+Session tokens carry an explicit **access scope** that is the intersection of what the client requested and what the underlying grant allows:
 
 ```
 Session {
     token_hash: [u8; 32],
     public_key: PublicKey,
-    scope: Permissions,            // <= grant.permissions
+    scope: Vec<AccessRight>,       // subset of grant.access
     expires_at: DateTime,
 }
 ```
 
-A CLI tool that only needs to read tasks can request a `VIEW_CONTENT`-only session. If the token leaks, the blast radius is limited to the requested scope, not the full grant. This is the principle of least privilege applied to session tokens.
+A CLI tool that only needs to read tasks can request a `[{ "type": "content", "actions": ["read"] }]`-only session. If the token leaks, the blast radius is limited to the requested scope, not the full grant. This is the principle of least privilege applied to session tokens.
 
-Scoped sessions are backward-compatible: omit the `scope` parameter in the challenge request and you get the full grant permissions, same as an unscoped session.
+Scoped sessions are backward-compatible: omit the `scope` parameter in the challenge request and you get the full grant access rights, same as an unscoped session.
 
 ## Join Experience
 

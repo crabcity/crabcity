@@ -6,7 +6,7 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 
 ## Milestone 0: Foundations
 
-**Goal:** Shared crate with cryptographic types, invite token format (with delegation chains), permissions model, key fingerprints, hash-chained event types, and comprehensive property-based tests.
+**Goal:** Shared crate with cryptographic types, invite token format (with delegation chains), GNAP-style access rights model, key fingerprints, hash-chained event types, and comprehensive property-based tests.
 
 **Deliverables:**
 - [ ] New crate: `packages/crab_city_auth/`
@@ -14,15 +14,15 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - [ ] `PublicKey::fingerprint() -> String` — `crab_` + first 8 chars of Crockford base32
 - [ ] `PublicKey::LOOPBACK` — the all-zeros sentinel constant
 - [ ] `Capability` enum: `View`, `Collaborate`, `Admin`, `Owner` with `Ord` impl
-- [ ] `Permissions` bitflags: `VIEW_CONTENT`, `VIEW_TERMINALS`, `SEND_CHAT`, `EDIT_TASKS`, `TERMINAL_INPUT`, `CREATE_INSTANCE`, `MANAGE_MEMBERS`, `MANAGE_INSTANCE`
-- [ ] `Capability::permissions() -> Permissions` — expand preset to bitfield
+- [ ] `AccessRight` struct: `{ type_: String, actions: Vec<String> }` with `serde` derive
+- [ ] `Capability::access_rights() -> Vec<AccessRight>` — expand preset to GNAP-style access rights array
 - [ ] `MembershipState` enum: `Invited`, `Active`, `Suspended`, `Removed`
 - [ ] `InviteLink` struct: issuer, capability, max_depth, max_uses, expires_at, nonce, signature
 - [ ] `Invite` struct: instance NodeId + `Vec<InviteLink>` chain (flat invite = chain of length 1)
 - [ ] `Invite::sign()`, `Invite::verify()`, `Invite::delegate()` methods
 - [ ] Delegation chain verification: capability narrowing, depth checking, signature walking
 - [ ] Base32 encoding/decoding (Crockford) for invite tokens
-- [ ] Challenge-response protocol types: `Challenge`, `ChallengeResponse`, with optional `scope: Permissions`
+- [ ] Challenge-response protocol types: `Challenge`, `ChallengeResponse`, with optional `scope: Vec<AccessRight>`
 - [ ] Structured challenge payload: `"crabcity:auth:v1:" ++ nonce ++ node_id ++ timestamp`
 - [ ] `EventType` enum and `Event` struct with hash chain fields (`prev_hash`, `hash`)
 - [ ] `Event::compute_hash()` and `Event::verify_chain()` helpers
@@ -31,17 +31,17 @@ This plan breaks the account system into deliverable milestones. Each milestone 
   - Round-trip: `Invite::from_bytes(invite.to_bytes()) == invite` for all valid invites
   - Signature: `invite.sign(k).verify(k.public()) == Ok` for all keypairs and invites
   - Forgery: `invite.sign(k1).verify(k2.public()) == Err` for all k1 != k2
-  - Capability ordering: `c1 < c2` implies `c1.permissions()` is a strict subset of `c2.permissions()`
+  - Capability ordering: `c1 < c2` implies `c1.access_rights()` is a strict subset of `c2.access_rights()`
   - Delegation narrowing: verify chain with out-of-order capabilities is rejected
   - State machine: all reachable states under all transitions produce valid states
-  - Permission expansion idempotency: `Capability::from_permissions(cap.permissions()) == cap` for presets
+  - Access rights round-trip: `Capability::from_access(cap.access_rights()) == Some(cap)` for all presets
   - Hash chain: inserting/deleting/modifying any event in a chain is detectable
 - [ ] Fuzz target for `Invite::from_bytes()` (untrusted input from network — must not panic on any input)
 
 **Crate dependencies:**
 - `ed25519-dalek` (with `rand_core` feature)
 - `data-encoding` (for Crockford base32)
-- `bitflags` (for permissions)
+- `serde_json` (for access rights serialization)
 - `sha2` (for hash chain and token hashing)
 - `serde` (for JSON API types)
 - `uuid` (v7)
@@ -97,8 +97,8 @@ Functions:
 - `get_grant(db, public_key) -> Result<Option<MemberGrant>>`
 - `get_active_grant(db, public_key) -> Result<Option<MemberGrant>>` (state == active only)
 - `list_members(db) -> Result<Vec<(MemberIdentity, MemberGrant)>>`
-- `update_grant_capability(db, public_key, capability, permissions) -> Result<()>`
-- `update_grant_permissions(db, public_key, permissions) -> Result<()>`
+- `update_grant_capability(db, public_key, capability, access) -> Result<()>`
+- `update_grant_access(db, public_key, access) -> Result<()>`
 - `update_grant_state(db, public_key, new_state) -> Result<()>`
 - `replace_grant(db, new_pubkey, old_pubkey) -> Result<()>`
 - `list_grants_by_invite(db, invite_nonce) -> Result<Vec<MemberGrant>>`
@@ -116,7 +116,7 @@ New file: `packages/crab_city/src/repository/sessions.rs`
 
 Functions:
 - `create_session(db, token_hash, public_key, scope, expires_at) -> Result<()>`
-- `get_session(db, token_hash) -> Result<Option<Session>>` (includes `scope` field)
+- `get_session(db, token_hash) -> Result<Option<Session>>` (includes `scope` access rights)
 - `delete_session(db, token_hash) -> Result<()>`
 - `extend_session(db, token_hash, new_expires_at) -> Result<()>`
 - `cleanup_expired_sessions(db) -> Result<u64>`
@@ -143,41 +143,41 @@ Endpoints:
 New file: `packages/crab_city/src/handlers/invites.rs`
 
 Endpoints:
-- `POST /api/invites` — create invite (requires `MANAGE_MEMBERS`), supports `max_depth` for delegation
+- `POST /api/invites` — create invite (requires `members:invite` access), supports `max_depth` for delegation
 - `POST /api/invites/redeem` — redeem invite token (flat or delegated chain), create identity + grant + scoped session
 - `POST /api/invites/delegate` — create a sub-invite from an existing invite (client-side, but instance validates on redeem)
-- `GET /api/invites` — list active invites (requires `MANAGE_MEMBERS`)
+- `GET /api/invites` — list active invites (requires `members:invite` access)
 - `POST /api/invites/revoke` — revoke invite, optionally suspend derived members
 
 New file: `packages/crab_city/src/handlers/members.rs`
 
 Endpoints:
-- `GET /api/members` — list members (requires `VIEW_CONTENT`)
-- `PATCH /api/members/:public_key` — update capability (requires `MANAGE_MEMBERS`)
-- `PATCH /api/members/:public_key/permissions` — tweak permission bits
-- `DELETE /api/members/:public_key` — remove member (requires `MANAGE_MEMBERS`)
+- `GET /api/members` — list members (requires `content:read` access)
+- `PATCH /api/members/:public_key` — update capability (requires `members:update` access)
+- `PATCH /api/members/:public_key/access` — tweak individual access rights
+- `DELETE /api/members/:public_key` — remove member (requires `members:remove` access)
 - `POST /api/members/:public_key/suspend` — suspend member
 - `POST /api/members/:public_key/reinstate` — reinstate member
 - `POST /api/members/:public_key/replace` — link new grant to old (key loss recovery)
-- `GET /api/events` — query event log (requires `MANAGE_MEMBERS`)
-- `GET /api/events/verify` — verify hash chain integrity (requires `MANAGE_MEMBERS`)
-- `GET /api/events/proof/:event_id` — inclusion proof for a specific event (requires `VIEW_CONTENT`)
+- `GET /api/events` — query event log (requires `members:read` access)
+- `GET /api/events/verify` — verify hash chain integrity (requires `members:read` access)
+- `GET /api/events/proof/:event_id` — inclusion proof for a specific event (requires `content:read` access)
 
 ### 1.4 Auth Middleware Update
 
 Modify: `packages/crab_city/src/auth.rs`
 
 Updated auth chain:
-1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full-scope session)
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full access rights)
 2. Check `Authorization: Bearer <token>` header → SHA-256 hash → lookup sessions table (includes `scope`) → lookup grant (state == active)
 3. Check `__crab_session` cookie → same lookup
 4. No credentials → 401
 
-The middleware populates `AuthUser` with identity, grant, and **session scope**. Permission checks use the session scope (the intersection of requested scope and grant permissions):
+The middleware populates `AuthUser` with identity, grant, and **session scope**. Access checks use the session scope (the intersection of requested access and grant access rights):
 
 ```rust
-auth.require_permission(Permissions::EDIT_TASKS)?;  // checks session.scope, not grant.permissions
-auth.grant_permissions();                             // full grant permissions, for display only
+auth.require_access("tasks", "edit")?;  // checks session.scope, not grant.access
+auth.grant_access();                     // full grant access rights, for display only
 ```
 
 ### 1.5 Instance Bootstrap
@@ -227,9 +227,9 @@ End-to-end tests that spin up an in-memory instance and exercise the security-cr
 - **Delegated invite chain**: admin creates invite with `max_depth=2` → member delegates → sub-delegate redeems → verify capability narrowing is enforced, depth limit is enforced
 - **Delegation forgery**: tamper with a link in a delegation chain → verify redemption is rejected
 - Challenge-response flow: generate, sign, verify, get session
-- **Scoped sessions**: request `VIEW_CONTENT`-only session → verify `EDIT_TASKS` endpoints return 403 → verify `VIEW_CONTENT` endpoints return 200
-- **Scope intersection**: request `MANAGE_MEMBERS` scope with `collaborate` grant → verify session scope is `collaborate` permissions (cannot escalate via scope)
-- Permission enforcement: `collaborate` user cannot access `MANAGE_MEMBERS` endpoints
+- **Scoped sessions**: request `content:read`-only session → verify `tasks:create` endpoints return 403 → verify `content:read` endpoints return 200
+- **Scope intersection**: request `members:invite` scope with `collaborate` grant → verify session scope excludes `members` (cannot escalate via scope)
+- Access enforcement: `collaborate` user cannot access `members` endpoints
 - State machine: active → suspended → reinstate → active; suspended → removed
 - Invite revocation: revoke invite → unredeemed uses fail, existing members unaffected
 - Invite revocation with `suspend_derived_members`: all derived grants suspended

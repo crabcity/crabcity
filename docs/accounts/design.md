@@ -104,7 +104,7 @@ Flat invite total: 1 + 32 + 1 + 126 = **160 bytes** (256 chars base32)
 Delegated invite (3-hop chain): 1 + 32 + 1 + (126 * 3) = **412 bytes** (660 chars base32)
 
 Verification (delegation chain):
-1. Root link: verify `signature` over `H(0x00*32) ++ instance ++ fields`; root issuer must have `MANAGE_MEMBERS` on the instance
+1. Root link: verify `signature` over `H(0x00*32) ++ instance ++ fields`; root issuer must have `members:invite` access on the instance
 2. Each subsequent link: verify `signature` over `H(prev_link) ++ instance ++ fields`
 3. Each link's `capability` must be <= previous link's `capability`
 4. Each link's `max_depth` must be < previous link's `max_depth`
@@ -157,7 +157,7 @@ CREATE TABLE member_identities (
 CREATE TABLE member_grants (
     public_key BLOB NOT NULL PRIMARY KEY,  -- 32 bytes, ed25519
     capability TEXT NOT NULL,               -- 'view', 'collaborate', 'admin', 'owner'
-    permissions INTEGER NOT NULL,           -- u32 bitfield, expanded from capability
+    access TEXT NOT NULL DEFAULT '[]',      -- JSON array of GNAP-style access rights
     state TEXT NOT NULL DEFAULT 'invited',  -- 'invited', 'active', 'suspended', 'removed'
     org_id TEXT,                            -- UUID, from OIDC claims
     invited_by BLOB,                        -- 32 bytes, pubkey of inviter
@@ -182,11 +182,11 @@ CREATE TABLE invites (
     FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
 );
 
--- Active sessions (scoped: session permissions <= grant permissions)
+-- Active sessions (scoped: session access <= grant access)
 CREATE TABLE sessions (
     token_hash BLOB NOT NULL PRIMARY KEY,  -- SHA-256 of 32-byte random token
     public_key BLOB NOT NULL,              -- 32 bytes
-    scope INTEGER NOT NULL,                -- u32 bitfield, intersection of requested scope and grant permissions
+    scope TEXT NOT NULL DEFAULT '[]',      -- JSON array, intersection of requested access and grant access rights
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
@@ -243,31 +243,36 @@ CREATE INDEX idx_event_log_created ON event_log(created_at);
 CREATE INDEX idx_event_log_hash ON event_log(hash);
 ```
 
-### 2.2 Permissions Bitfield
+### 2.2 Access Rights (GNAP-Inspired)
 
-The `permissions` column on `member_grants` stores the expanded permission set:
+The `access` column on `member_grants` stores the expanded access rights as a JSON array of objects, inspired by [GNAP (RFC 9635)](https://www.rfc-editor.org/rfc/rfc9635.html) Section 8:
 
+```json
+[
+  { "type": "content", "actions": ["read"] },
+  { "type": "terminals", "actions": ["read", "input"] },
+  { "type": "chat", "actions": ["send"] },
+  { "type": "tasks", "actions": ["read", "create", "edit"] },
+  { "type": "instances", "actions": ["create"] }
+]
 ```
-VIEW_CONTENT     = 0x01
-VIEW_TERMINALS   = 0x02
-SEND_CHAT        = 0x04
-EDIT_TASKS       = 0x08
-TERMINAL_INPUT   = 0x10
-CREATE_INSTANCE  = 0x20
-MANAGE_MEMBERS   = 0x40
-MANAGE_INSTANCE  = 0x80
-```
+
+Each object has a `type` (resource kind) and `actions` (permitted operations). This is the sole authorization primitive.
 
 Default expansion from capability:
 
-| Capability    | Permissions value |
-|---------------|-------------------|
-| `view`        | `0x03` (VIEW_CONTENT \| VIEW_TERMINALS) |
-| `collaborate` | `0x3F` (view + SEND_CHAT + EDIT_TASKS + TERMINAL_INPUT + CREATE_INSTANCE) |
-| `admin`       | `0x7F` (collaborate + MANAGE_MEMBERS) |
-| `owner`       | `0xFF` (all bits) |
+| Capability    | Access Rights |
+|---------------|---------------|
+| `view`        | `content:read`, `terminals:read` |
+| `collaborate` | view + `terminals:input`, `chat:send`, `tasks:read,create,edit`, `instances:create` |
+| `admin`       | collaborate + `members:read,invite,suspend,reinstate,remove,update` |
+| `owner`       | admin + `instance:manage,transfer` |
 
-Admins can tweak individual bits via `PATCH /api/members/:public_key/permissions`. The `capability` field always reflects the original preset; `permissions` reflects the actual enforced set (which may differ from the preset after tweaking).
+Admins can tweak individual access rights via `PATCH /api/members/:public_key/access`. The `capability` field always reflects the original preset; `access` reflects the actual enforced set (which may differ from the preset after tweaking).
+
+Permission checks iterate the access array looking for a matching `type` and `action`. At this scale (4-7 objects per grant, each with 1-5 actions), this is trivially fast — no index, no bitmask, just a linear scan.
+
+The model is extensible: adding a new resource type or action is adding a new object to the array. If the initial set turns out to be wrong, it can be revised without a schema migration.
 
 ### 2.3 Instance-Side API
 
@@ -276,11 +281,11 @@ Admins can tweak individual bits via `PATCH /api/members/:public_key/permissions
 Request identity challenge. Optionally request a scoped session.
 
 ```
-Request:  { "public_key": "<base64>", "timestamp": "<iso8601>", "scope": ["VIEW_CONTENT", "SEND_CHAT"] }
+Request:  { "public_key": "<base64>", "timestamp": "<iso8601>", "scope": [{ "type": "content", "actions": ["read"] }, { "type": "chat", "actions": ["send"] }] }
 Response: { "nonce": "<base64>", "expires_at": "<iso8601>" }
 ```
 
-`scope` is optional. If omitted, the session will have the full permissions of the underlying grant. If provided, the session scope is the intersection of the requested scope and the grant's permissions. This implements the principle of least privilege: a CLI tool that only reads tasks can request a `VIEW_CONTENT`-only session, limiting blast radius if the token leaks.
+`scope` is optional. If omitted, the session will have the full access rights of the underlying grant. If provided, the session scope is the intersection of the requested scope and the grant's access rights. This implements the principle of least privilege: a CLI tool that only reads tasks can request a `content:read`-only session, limiting blast radius if the token leaks.
 
 #### `POST /api/auth/verify`
 
@@ -288,11 +293,11 @@ Complete challenge-response, get scoped session.
 
 ```
 Request:  { "public_key": "<base64>", "nonce": "<base64>", "signature": "<base64>", "timestamp": "<iso8601>" }
-Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "permissions": 63, "scope": 5 }
+Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "access": [...], "scope": [...] }
 Error:    401 if signature invalid, 403 if no grant or state != active
 ```
 
-`scope` in the response is the actual enforced permissions for this session (may be less than `permissions` if a scope was requested during challenge).
+`scope` in the response is the actual enforced access rights for this session (may be a subset of `access` if a scope was requested during challenge).
 
 #### `POST /api/auth/oidc/callback`
 
@@ -305,7 +310,7 @@ Response: 302 redirect to instance UI with session cookie set
 
 #### `POST /api/invites`
 
-Create an invite. Requires `MANAGE_MEMBERS` permission.
+Create an invite. Requires `members` access.
 
 ```
 Request:  { "capability": "collaborate", "max_uses": 5, "expires_in_hours": 72 }
@@ -324,18 +329,18 @@ Error:    400 if expired/exhausted, 403 if issuer revoked or blocklisted
 
 On redemption:
 1. Verify invite: walk the delegation chain root-to-leaf, verify all signatures, check capability narrowing and depth constraints
-2. Verify root issuer has `MANAGE_MEMBERS` on this instance (lookup grant)
+2. Verify root issuer has `members:invite` access on this instance (lookup grant)
 3. Check all links: not expired, not exhausted, not revoked
 4. Create `member_identities` row (or update if pubkey already known)
 5. Create `member_grants` row with `state = active`, `invited_via = leaf_link.nonce`, capability from leaf link
 6. Increment use count on the leaf link's nonce (stored in `invites` table)
 7. Log `invite.redeemed` and `member.joined` events (payload includes full chain for auditability)
-8. Create session (scoped to full grant permissions by default)
+8. Create session (scoped to full grant access rights by default)
 9. Broadcast `MemberJoined`
 
 #### `POST /api/invites/revoke`
 
-Revoke an invite. Requires `MANAGE_MEMBERS` permission.
+Revoke an invite. Requires `members` access.
 
 ```
 Request:  { "nonce": "<base64>", "suspend_derived_members": false }
@@ -346,7 +351,7 @@ If `suspend_derived_members` is true, all grants with `invited_via = nonce` and 
 
 #### `GET /api/members`
 
-List instance members. Requires `VIEW_CONTENT` permission.
+List instance members. Requires `content:read` access.
 
 ```
 Response: { "members": [{
@@ -355,36 +360,36 @@ Response: { "members": [{
     "display_name": "...",
     "handle": "@alex",
     "capability": "collaborate",
-    "permissions": 63,
+    "access": [{ "type": "content", "actions": ["read"] }, ...],
     "state": "active"
 }] }
 ```
 
 #### `DELETE /api/members/:public_key`
 
-Remove a member. Requires `MANAGE_MEMBERS` permission. Cannot remove `owner`. Transitions grant to `removed`.
+Remove a member. Requires `members` access. Cannot remove `owner`. Transitions grant to `removed`.
 
 #### `PATCH /api/members/:public_key`
 
-Update a member's capability. Requires `MANAGE_MEMBERS` permission. Cannot escalate beyond own capability.
+Update a member's capability. Requires `members` access. Cannot escalate beyond own capability.
 
 ```
 Request:  { "capability": "admin" }
 Response: { "grant": { ... } }
 ```
 
-#### `PATCH /api/members/:public_key/permissions`
+#### `PATCH /api/members/:public_key/access`
 
-Tweak individual permission bits. Requires `MANAGE_MEMBERS` permission.
+Tweak individual access rights. Requires `members:update` access.
 
 ```
-Request:  { "add": ["TERMINAL_INPUT"], "remove": ["SEND_CHAT"] }
-Response: { "permissions": 19 }
+Request:  { "add": [{ "type": "terminals", "actions": ["input"] }], "remove": [{ "type": "chat", "actions": ["send"] }] }
+Response: { "access": [...] }
 ```
 
 #### `POST /api/members/:public_key/suspend`
 
-Suspend a member. Requires `MANAGE_MEMBERS` permission.
+Suspend a member. Requires `members` access.
 
 ```
 Request:  { "reason": "..." }
@@ -393,11 +398,11 @@ Response: { "grant": { ... } }
 
 #### `POST /api/members/:public_key/reinstate`
 
-Reinstate a suspended member. Requires `MANAGE_MEMBERS` permission.
+Reinstate a suspended member. Requires `members` access.
 
 #### `POST /api/members/:public_key/replace`
 
-Link a new grant to an old one (key loss recovery). Requires `MANAGE_MEMBERS` permission.
+Link a new grant to an old one (key loss recovery). Requires `members` access.
 
 ```
 Request:  { "old_public_key": "<base64>" }
@@ -408,7 +413,7 @@ Sets `replaces = old_public_key` on the new grant, transitions old grant to `rem
 
 #### `GET /api/events`
 
-Query event log. Requires `MANAGE_MEMBERS` permission.
+Query event log. Requires `members` access.
 
 ```
 Query:    ?target=<base64>&event_type=member.*&limit=50&before=<id>
@@ -417,7 +422,7 @@ Response: { "events": [...], "has_more": true }
 
 #### `GET /api/events/verify`
 
-Verify event log integrity. Requires `MANAGE_MEMBERS` permission.
+Verify event log integrity. Requires `members` access.
 
 ```
 Query:    ?from=<id>&to=<id>
@@ -435,7 +440,7 @@ Error:    409 if chain is broken (includes the break point)
 
 #### `GET /api/events/proof/:event_id`
 
-Get an inclusion proof for a specific event. Requires `VIEW_CONTENT` permission.
+Get an inclusion proof for a specific event. Requires `content:read` access.
 
 ```
 Response: {
@@ -482,17 +487,17 @@ The existing auth middleware gains a new check in the chain:
 
 Session tokens are 32 random bytes, base64-encoded, stored hashed (SHA-256) in the sessions table. Default TTL: 24 hours, configurable.
 
-The middleware extracts the identity, the grant, and the **session scope** into the request context. Permission checks use the session scope (not the grant permissions directly), enforcing least privilege:
+The middleware extracts the identity, the grant, and the **session scope** into the request context. Access checks use the session scope (not the grant access directly), enforcing least privilege:
 
 ```rust
 // In a handler:
 fn create_task(auth: AuthUser) -> Result<...> {
-    auth.require_permission(Permissions::EDIT_TASKS)?;  // checks session.scope, not grant.permissions
+    auth.require_access("tasks", "create")?;  // checks session.scope, not grant.access
     // ...
 }
 ```
 
-This means a session requested with `scope: [VIEW_CONTENT]` will fail the `EDIT_TASKS` check even if the underlying grant has `collaborate` capability. The full grant permissions are available via `auth.grant_permissions()` for display purposes (e.g., showing what the user *could* do with a full-scope session).
+This means a session requested with `scope: [{ "type": "content", "actions": ["read"] }]` will fail the `tasks:create` check even if the underlying grant has `collaborate` capability. The full grant access rights are available via `auth.grant_access()` for display purposes (e.g., showing what the user *could* do with a full-scope session).
 
 ## 3. Registry Data Model (crabcity.dev)
 
@@ -1004,7 +1009,7 @@ Loopback bypass (existing) still works for local instances.
 | Default TTL | 24 hours |
 | Renewal | Sliding window — activity extends expiry |
 | Revocation | DELETE /api/auth/session (logout) |
-| Scope | Intersection of requested scope and grant permissions. Omit for full grant. |
+| Scope | Intersection of requested scope and grant access rights. Omit for full grant. |
 | Transport | `Authorization: Bearer <base64>` header or `__crab_session` cookie (HttpOnly, Secure, SameSite=Strict) |
 
 Session cleanup: a background task sweeps expired sessions every hour (or lazily on access — either is fine at this scale).
@@ -1119,7 +1124,7 @@ removed   -> (terminal)  no transitions out of removed
 | `member.removed` | admin pubkey | target pubkey | `{}` |
 | `member.replaced` | admin pubkey | new pubkey | `{ old_public_key }` |
 | `grant.capability_changed` | admin pubkey | target pubkey | `{ old, new }` |
-| `grant.permissions_tweaked` | admin pubkey | target pubkey | `{ added: [], removed: [] }` |
+| `grant.access_changed` | admin pubkey | target pubkey | `{ added: [...], removed: [...] }` |
 | `invite.created` | issuer pubkey | null | `{ nonce, capability, max_uses }` |
 | `invite.redeemed` | redeemer pubkey | null | `{ nonce }` |
 | `invite.revoked` | admin pubkey | null | `{ nonce, suspend_derived: bool }` |
@@ -1136,7 +1141,7 @@ removed   -> (terminal)  no transitions out of removed
 | 401 | `session_expired` | Session token expired |
 | 403 | `not_a_member` | No grant exists for this public key |
 | 403 | `grant_not_active` | Grant exists but state != active |
-| 403 | `insufficient_permissions` | Missing required permission bit |
+| 403 | `insufficient_access` | Missing required access right |
 | 403 | `blocklisted` | Public key is on a blocklist |
 | 409 | `handle_taken` | Registry handle already in use |
 | 409 | `already_a_member` | Public key already has an active grant |
