@@ -80,100 +80,99 @@ enterprise SSO through `crabcity.dev`.
 
 ## Transport Model
 
-### iroh as Primary Transport
+### iroh Everywhere
 
 Ed25519 keypairs are iroh `NodeId`s — same curve, same key format. This means
-**authentication IS the connection**. When a native client (CLI/TUI) opens an
-iroh QUIC connection to an instance, the iroh handshake proves keypair ownership
-and establishes end-to-end encryption. No separate challenge-response protocol,
-no session tokens, no token refresh. The transport layer does it all.
+**authentication IS the connection**. When any client opens an iroh connection
+to an instance, the iroh handshake proves keypair ownership and establishes
+end-to-end encryption. No challenge-response protocol, no session tokens, no
+token refresh. The transport layer does it all.
+
+**All clients use iroh** — native and browser alike:
+
+- **Native clients (CLI/TUI):** Direct QUIC connection to the instance.
+- **Browser clients (SvelteKit):** iroh compiled to WASM, connecting through
+  the instance's **embedded relay server** via WebSocket. The iroh relay
+  protocol runs over WebSocket, so the browser connects to the instance's relay
+  endpoint. Traffic is still E2E encrypted — the relay cannot decrypt it, even
+  though it runs in the same process as the instance.
 
 ```
 Native Client (CLI/TUI)               Instance
   |                                      |
-  |  iroh QUIC connect (NodeId)          |
-  |  (ed25519 handshake = auth)          |
-  | ------------------------------------>|
-  |                                      |  verify NodeId is a known member
-  |                                      |  check grant state == active
-  |  E2E encrypted QUIC stream           |
-  | <----------------------------------->|
-  |                                      |
-  |  Same message protocol as WebSocket  |
-  |  { v, seq, type, data }              |
-  | <----------------------------------->|
+  |  iroh QUIC connect (NodeId)          |  +------------------+
+  |  (ed25519 handshake = auth)          |  | embedded         |
+  | ------------------------------------>|  | iroh relay       |
+  |                                      |  | (WebSocket       |
+  |  E2E encrypted QUIC stream           |  |  endpoint for    |
+  | <----------------------------------->|  |  browsers)       |
+                                            +------------------+
+Browser Client (iroh WASM)                         |
+  |                                                |
+  |  WebSocket to instance's relay endpoint        |
+  |  (iroh protocol over WS, E2E encrypted)        |
+  | ---------------------------------------------->|
+  |                                                |
+  |  Same handshake, same auth, same encryption    |
+  | <--------------------------------------------->|
 ```
 
 Properties:
+- **One transport, one auth model.** No challenge-response protocol. No session
+  tokens. No refresh tokens. No revocation sets. The iroh handshake is the only
+  authentication mechanism for all clients.
 - **Authentication by construction.** The iroh handshake proves the client
-  controls the private key corresponding to their NodeId (= public key). No
-  challenge token, no nonce, no signed payload.
+  controls the private key corresponding to their NodeId (= public key).
 - **E2E encryption by construction.** QUIC provides authenticated encryption.
-  No separate TLS layer, no certificate management.
+  Browser clients get the same E2E encryption as native clients — the relay
+  cannot read the traffic.
 - **Connection migration.** QUIC handles WiFi-to-cellular transitions, IP
-  changes, and brief network outages transparently. No application-level
-  reconnection protocol needed.
+  changes, and brief network outages transparently.
 - **Multiplexed streams.** A single QUIC connection carries multiple streams
   (real-time messages, file transfers, terminal data) without head-of-line
   blocking.
+- **Immediate revocation.** When an admin suspends a user, the instance closes
+  their iroh connection. No token expiry window, no revocation set.
 
-### WebSocket as Browser Fallback
+### Embedded Relay
 
-Browsers cannot open raw QUIC connections to arbitrary endpoints. The existing
-WebSocket transport serves browser clients, using the challenge-response
-protocol for authentication and signed session tokens for ongoing requests.
+Every Crab City instance embeds an iroh relay server (the `iroh-relay` crate
+is a library). The relay exposes a WebSocket endpoint that browser clients
+connect to. For local development, the browser connects to `ws://localhost`
+— no external relay involved.
+
+For remote instances, the browser connects to the instance's public relay
+endpoint. If the instance is behind NAT and not directly reachable, the browser
+falls back to iroh's public relay infrastructure. In all cases, traffic is E2E
+encrypted.
 
 ```
-Browser Client                         Instance
-  |                                      |
-  |  POST /api/auth/challenge            |
-  |  (stateless challenge-response)      |
-  | ------------------------------------>|
-  |  { nonce, challenge_token }          |
-  | <------------------------------------|
-  |                                      |
-  |  POST /api/auth/verify               |
-  |  (client signs payload)              |
-  | ------------------------------------>|
-  |  { session_token, refresh_token }    |
-  | <------------------------------------|
-  |                                      |
-  |  WebSocket /api/ws                   |
-  |  Authorization: Bearer <token>       |
-  | ------------------------------------>|
-  |                                      |
-  |  Same message protocol               |
-  |  { v, seq, type, data }              |
-  | <----------------------------------->|
+Browser (local):    ws://localhost:<port>/relay  → embedded relay → instance
+Browser (remote):   wss://instance.example/relay → embedded relay → instance
+Browser (NAT'd):    wss://relay.iroh.network     → public relay   → instance
 ```
 
-The browser path carries the full cost of token management (challenge-response,
-15-minute session tokens, refresh tokens, revocation set) because it cannot
-leverage the transport layer for authentication. This is acceptable — browsers
-are a secondary client.
+### Message Protocol
 
-### Transport-Agnostic Message Protocol
-
-Both transports carry the same message protocol. The envelope format is
-identical:
+All messages use envelope versioning with monotonic sequence numbers:
 
 ```json
 { "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } }
 ```
 
-Handlers, broadcast logic, and client-side stores are transport-agnostic. The
-transport adapter (iroh or WebSocket) frames messages into the appropriate
-wire format, but the application layer sees the same types.
+Over iroh QUIC streams, messages are length-prefixed JSON (or future: msgpack).
+The browser's iroh WASM client sends and receives the same message types as
+native clients — the application layer is transport-agnostic.
 
 ### Multi-Instance Connections
 
-A native client can hold **N simultaneous iroh connections** to different Crab
-City instances. One connection is "active" (receives input, shown in the UI).
+A client can hold **N simultaneous iroh connections** to different Crab City
+instances. One connection is "active" (receives input, shown in the UI).
 Background connections continue to receive presence updates, chat messages,
 and notifications.
 
 ```
-CLI/TUI Client
+Client (native or browser)
   |
   +-- iroh conn -> Instance A (active: terminal, chat, tasks)
   |
@@ -185,10 +184,7 @@ CLI/TUI Client
 The **instance switcher** lets the user change which instance is active. This
 is the only new UI feature required for multi-instance support — the underlying
 iroh connections are always live, so switching is instant (no reconnection
-delay).
-
-Browser clients achieve the same via multiple WebSocket connections, though
-they pay the per-connection auth cost for each instance.
+delay). Both native and browser clients use the same multi-connection model.
 
 ## Identity Model
 
@@ -329,8 +325,8 @@ Layer 1: Account Identity (ed25519 keypairs)
 Layer 0: Instance Membership (grants, access rights, state)
 ```
 
-**Layer 1 (keypairs)** is the only layer that touches authorization. Grants,
-sessions, and access rights are always keypair-based. This is inviolable.
+**Layer 1 (keypairs)** is the only layer that touches authorization. Grants
+and access rights are always keypair-based. This is inviolable.
 
 **Layer 2 (external identities)** exists only in the registry, as metadata
 about keypairs. The registry maintains **identity bindings**: signed assertions
@@ -820,65 +816,53 @@ the auth middleware only needs `state == active`.
 
 ## Wire Format Versioning
 
-All messages (over both iroh streams and WebSocket) use envelope versioning with
-monotonic sequence numbers:
+All messages use envelope versioning with monotonic sequence numbers:
 
 ```json
 { "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } }
 ```
 
 The `seq` field is a per-connection monotonic counter assigned by the server.
-Clients track their last-seen `seq` for reconnection (WebSocket) or stream
-resumption (iroh).
+Clients track their last-seen `seq` for reconnection.
 
-The envelope format is **transport-agnostic**. Over iroh QUIC streams, messages
-are length-prefixed and serialized as JSON (or future: msgpack). Over WebSocket,
-messages are JSON text frames. The application layer sees the same types
-regardless of transport.
+Over iroh QUIC streams, messages are length-prefixed JSON (or future: msgpack).
+Browser clients (iroh WASM over relay WebSocket) see the same message types —
+the iroh library handles the transport framing transparently.
 
 Clients ignore messages with versions they don't understand. This allows
 individual message types to evolve independently without breaking connected
 clients. The envelope version (`v`) is the protocol version, not a
 per-message-type version — all messages in protocol v1 share the same contract.
 
-HTTP API versioning uses URL path prefixes (`/api/v1/...` for registry, no
-prefix for instance-local APIs in M1). Breaking changes increment the path
-version. Non-breaking additions (new optional fields) don't require a version
-bump.
+HTTP API versioning uses URL path prefixes (`/api/v1/...` for registry). No
+HTTP API for user-to-instance communication — all authenticated traffic goes
+over iroh.
 
 ### Reconnection Protocol
 
 Connections drop constantly: WiFi-to-cellular transitions, laptop lid
 close/open, network hiccups. Reconnection must be invisible to users.
 
-**iroh (native clients):** QUIC handles connection migration at the transport
-level. WiFi-to-cellular, IP changes, and brief outages are transparent — the
-QUIC connection survives without application-level intervention. If the
-connection is truly lost (device sleeps for minutes), the client re-establishes
-the iroh connection (instant re-auth via handshake) and sends its last-seen
-`seq` to request replay.
+QUIC handles connection migration at the transport level. WiFi-to-cellular, IP
+changes, and brief outages are transparent — the QUIC connection survives
+without application-level intervention. If the connection is truly lost (device
+sleeps for minutes), the client re-establishes the iroh connection (instant
+re-auth via handshake) and sends its last-seen `seq` to request replay.
 
-**WebSocket (browser clients):** On reconnect, the client sends its last-seen
-`seq` in the WebSocket handshake (query parameter: `?last_seq=4817`). The server
-replays missed messages from a bounded ring buffer (last 1000 messages or last 5
-minutes, whichever is smaller). If the gap is too large, the server sends a full
-state snapshot instead (same payload as initial connection).
+The server replays missed messages from a bounded ring buffer (last 1000
+messages or last 5 minutes, whichever is smaller). If the gap is too large, the
+server sends a full state snapshot instead (same payload as initial connection).
 
-Both transports use the same replay logic on the server: the ring buffer is
-per-logical-connection, and the `seq`-based replay is transport-agnostic.
-
-The server sends ping frames every 30 seconds (WebSocket ping or iroh
-keepalive). If the client doesn't respond within 10 seconds, the server closes
-the connection and cleans up presence state. Without this, ghost users appear
-online for minutes after they've actually disconnected.
+The server sends keepalive pings every 30 seconds. If the client doesn't
+respond within 10 seconds, the server closes the connection and cleans up
+presence state. Without this, ghost users appear online for minutes after
+they've actually disconnected.
 
 ### Heartbeat and Presence Cleanup
 
 | Timer | Interval | Action on miss |
 |-------|----------|----------------|
-| Connection ping | 30s | Close connection, remove presence (both transports) |
-| Session token expiry (browser only) | 15 min | Client must refresh |
-| Refresh token expiry (browser only) | 24 hours | Client must re-authenticate |
+| iroh keepalive | 30s | Close connection, remove presence |
 | Registry heartbeat | 5 min | Instance marked offline after 3 misses |
 
 ## Org / Team Management
@@ -908,52 +892,10 @@ level.
 
 | Boundary | Trust model |
 |----------|-------------|
-| User <-> Instance (native) | iroh QUIC handshake (ed25519 keypair = NodeId; authentication and encryption by construction) |
-| User <-> Instance (browser) | Challenge-response over WebSocket (user proves keypair ownership) + signed session tokens |
+| User <-> Instance | iroh handshake (ed25519 keypair = NodeId; authentication and E2E encryption by construction). Native clients connect via QUIC; browsers connect via iroh WASM through the embedded relay. Same crypto, same auth. |
 | Instance <-> Registry | Instance authenticates via its NodeId keypair; registry authenticates via TLS + OIDC signing key |
 | User <-> Registry | OIDC tokens (for SSO) or challenge-response (for keypair-native users) |
 | Instance <-> Instance | No direct trust required; iroh handles transport encryption |
-
-### Challenge-Response Protocol (Browser/WebSocket Path, Stateless)
-
-Native clients (CLI/TUI) authenticate via the iroh handshake and never use
-challenge-response. This protocol serves **browser clients only**, which cannot
-open raw QUIC connections.
-
-The challenge-response is **fully stateless** on the server side. No pending
-challenges are stored in memory or in a database.
-
-The server generates a **signed challenge token** that encodes all challenge
-state:
-
-```
-challenge_token = instance_sign("crabcity:challenge:v1:" ++ nonce ++ client_pubkey ++ scope_hash ++ issued_at ++ expires_at)
-```
-
-The client receives `{ nonce, challenge_token, expires_at }`, signs the
-structured payload, and sends back `{ public_key, nonce, challenge_token,
-signature }`. The server verifies:
-
-1. Its own signature on `challenge_token` (proves it issued this challenge)
-2. The client's signature on `"crabcity:auth:v1:" ++ nonce ++ instance_node_id
-   ++ client_timestamp` (proves key ownership)
-3. `expires_at` hasn't passed
-4. `public_key` matches the one encoded in the challenge token
-
-Properties:
-- **Zero server-side state.** No `DashMap`, no cleanup sweeps, no TTL
-  management.
-- **Survives restarts.** Outstanding challenges remain valid across instance
-  restarts (as long as the instance signing key is the same).
-- **Horizontally scalable.** No sticky sessions or shared stores needed for
-  multi-process deployments.
-- **Replay-safe.** The nonce is embedded in both the challenge token and the
-  client signature. Session creation is idempotent on `(pubkey, nonce)`, so
-  replaying the same verify request is harmless (returns the same session).
-
-The `crabcity:auth:v1:` prefix in the client's signed payload prevents
-cross-protocol confusion. The `instance_node_id` prevents cross-instance replay.
-The challenge token TTL (60 seconds) bounds the window.
 
 ### Key Rotation
 
@@ -986,52 +928,6 @@ This makes the "registry is a phonebook, not a platform" principle
 registry operator — their instances can independently verify that key bindings
 haven't been tampered with.
 
-### Sessions as Signed Capabilities (Browser/WebSocket Path)
-
-Native clients (CLI/TUI) connected via iroh do not use session tokens. The iroh
-connection IS the authenticated session — the transport proves identity
-continuously. Session management applies only to **browser clients** using the
-WebSocket/HTTP path.
-
-Session tokens are **self-contained signed documents**, not database row
-references. The instance signs the session with its own key; the middleware
-verifies the signature on every request. No database lookup on the hot path.
-
-```
-SessionToken = instance_sign({
-    public_key: PublicKey,
-    scope: Vec<AccessRight>,       // intersection of requested and granted
-    capability: Capability,        // for display
-    grant_version: u64,            // monotonic counter on the grant row
-    issued_at: DateTime,
-    expires_at: DateTime,          // short-lived: 15 minutes
-})
-```
-
-A separate **refresh token** (32 random bytes, stored hashed in SQLite) is used
-to mint new session tokens. The refresh endpoint checks grant state, so
-revocation takes effect within one refresh cycle (at most 15 minutes). This is
-the same order of magnitude as blocklist propagation delay — an acceptable and
-documented property.
-
-For **immediate revocation** (admin suspends a user mid-session), the instance
-maintains a small in-memory revocation set of `(pubkey, grant_version)` pairs.
-The middleware checks this set (O(1) hash lookup, no IO). The set is populated
-from the broadcast channel: when a `GrantUpdate` with `state=suspended` fires,
-the entry is added. Entries expire when the corresponding session tokens expire,
-so the set never grows large.
-
-Per-request auth cost: ed25519 signature verification (~60μs) + revocation set
-lookup (O(1)). No SQLite on the hot path.
-
-Sessions carry an explicit **access scope** — the intersection of what the
-client requested and what the underlying grant allows. A CLI tool that only
-needs to read tasks can request a `content:read`-only session, limiting blast
-radius if the token leaks.
-
-Scoped sessions are backward-compatible: omit the `scope` parameter in the
-challenge request and you get the full grant access rights.
-
 ## Join Experience
 
 The zero-to-collaborating flow is a first-class design artifact, not an
@@ -1043,7 +939,8 @@ implementation afterthought:
 3. Alex sends the link to Blake in Slack
 4. Blake clicks the link -> sees the join page
 5. Blake enters a display name -> "Join"
-6. Behind the scenes: keypair generated, invite redeemed, session created
+6. Behind the scenes: keypair generated (= iroh NodeId), invite redeemed,
+   iroh connection established via embedded relay
 7. Blake sees the instance. Terminals, chat, tasks.
 8. Blake's presence appears in Alex's UI immediately (broadcast)
 ```
@@ -1058,7 +955,7 @@ What Blake sees at `https://instance/join#<token>`:
   real-time activity (cursor movement, user count, terminal dimensions — no
   content). This communicates "this is an active, living place" before the user
   commits to joining.
-- Number of users currently online (live-updating via WebSocket)
+- Number of users currently online (live-updating)
 - Single input: "Your name" (pre-filled if they have a registry account)
 - Single button: "Join"
 - Below the fold: "This will create a cryptographic identity on your device.
@@ -1067,10 +964,11 @@ What Blake sees at `https://instance/join#<token>`:
 If Blake already has a keypair in IndexedDB for this instance: skip the name
 prompt, show "Welcome back, Blake. [Rejoin]"
 
-The live preview uses a dedicated `preview` WebSocket stream that requires no
-authentication. It delivers only: terminal dimensions, cursor position (no
-content), user count, and instance uptime. This is the "looking through the
-restaurant window" experience — enough to see activity, not enough to see data.
+The live preview uses a dedicated unauthenticated iroh stream (or HTTP endpoint
+for pre-WASM-init page load). It delivers only: terminal dimensions, cursor
+position (no content), user count, and instance uptime. This is the "looking
+through the restaurant window" experience — enough to see activity, not enough
+to see data.
 
 ### Key Backup (Blocking Modal)
 
@@ -1198,11 +1096,10 @@ management, no refresh cycles, no session expiry. The connection IS the session.
 
 | Flow | Path | Transport | Frequency |
 |------|------|-----------|-----------|
-| Native client connection | User -> Instance | iroh QUIC (auth by handshake) | Per session |
-| Browser client auth | User -> Instance | WebSocket (challenge-response + session token) | Per session |
-| Real-time messages | User <-> Instance | iroh stream or WebSocket (same protocol) | Continuous |
-| Raw invite redemption | User -> Instance | iroh or HTTP | Once per invite |
-| Registry invite redemption | User -> Registry -> Instance | HTTP | Once per invite |
+| Client connection (all) | User -> Instance | iroh (QUIC direct or relay) | Per session |
+| Real-time messages | User <-> Instance | iroh stream | Continuous |
+| Invite redemption | User -> Instance | iroh stream | Once per invite |
+| Registry invite redemption | User -> Registry -> Instance | HTTP + iroh | Once per invite |
 | Noun-based invite (resolved) | Admin -> Instance -> Registry -> Instance | HTTP | Once per invite |
 | Noun-based invite (pending) | Admin -> Instance -> Registry ... Registry -> Instance (heartbeat) | HTTP | Once per invite, deferred |
 | OIDC SSO login | User -> Enterprise IdP -> Registry -> Instance | HTTP | Once per session |
@@ -1215,16 +1112,15 @@ management, no refresh cycles, no session expiry. The connection IS the session.
 
 ## Idempotency
 
-Every mutation endpoint handles "request succeeded, response lost, client
-retries." This is the most common distributed failure mode.
+Every mutation handles "request succeeded, response lost, client retries." This
+is the most common distributed failure mode. Since all user-to-instance
+communication goes over iroh, idempotency applies to iroh RPC messages:
 
-| Endpoint | Idempotency key | Behavior on retry |
-|----------|----------------|-------------------|
-| `POST /api/invites/redeem` | `(invite_nonce, public_key)` | Returns existing grant if already redeemed by this key |
-| `POST /api/auth/challenge` | Stateless | Each call returns a new signed challenge token; no server state |
-| `POST /api/auth/verify` | `(pubkey, nonce)` | Returns existing session if already verified with this nonce |
-| `POST /api/invites` | Client-supplied idempotency key | Returns existing invite if key matches |
-| `POST /api/auth/refresh` | `(refresh_token)` | Returns new session token (idempotent by nature — old session tokens remain valid until expiry) |
+| Operation | Idempotency key | Behavior on retry |
+|-----------|----------------|-------------------|
+| Invite redemption | `(invite_nonce, public_key)` | Returns existing grant if already redeemed by this key |
+| Invite creation | Client-supplied idempotency key | Returns existing invite if key matches |
+| Member state change | State check | No-op if already in target state |
 
 Event logging is serialized via SQLite transactions: `BEGIN → read prev_hash →
 compute new hash → INSERT → COMMIT`. No concurrent writers to the hash chain.
@@ -1235,50 +1131,42 @@ compute new hash → INSERT → COMMIT`. No concurrent writers to the hash chain
 
 Every instance and registry exposes a `/metrics` endpoint:
 
-- `crabcity_auth_challenges_total{result}` — success, invalid_sig, expired,
-  no_grant
-- `crabcity_sessions_active` (gauge)
-- `crabcity_sessions_created_total`, `crabcity_sessions_expired_total`
+- `crabcity_iroh_connections_active` (gauge) — currently connected clients
+- `crabcity_iroh_connections_total{transport}` — QUIC direct vs relay
+- `crabcity_iroh_reconnections_total`
 - `crabcity_invites_redeemed_total{capability}` — view, collaborate, admin
 - `crabcity_grants_by_state{state}` (gauge) — invited, active, suspended,
   removed
 - `crabcity_event_log_size` (gauge)
 - `crabcity_registry_heartbeat_latency_seconds` (histogram)
 - `crabcity_registry_heartbeat_failures_total`
-- `crabcity_ws_connections_active` (gauge)
-- `crabcity_ws_reconnections_total`
+- `crabcity_replay_messages_total` — messages replayed on reconnect
+- `crabcity_snapshots_total` — full state snapshots sent (reconnect gap too
+  large)
 - `crabcity_blocklist_sync_version{scope}` (gauge)
 
 ### Structured Logging
 
-Every auth decision (success or failure) emits a structured log line:
-`public_key_fingerprint`, `endpoint`, `result`, `reason`, `session_scope`,
+Every connection event (accept, reject, close) emits a structured log line:
+`public_key_fingerprint`, `transport` (quic/relay), `result`, `reason`,
 `duration_ms`. This is the forensic trail when something goes wrong.
 
 ### Distributed Tracing
 
-When a request hits the instance, gets forwarded to the registry for handle
-resolution, and comes back — that's a distributed trace. OpenTelemetry trace
-context propagation on the registry HTTP client links the spans.
+When an instance communicates with the registry for handle resolution,
+heartbeat, or noun resolution — that's a distributed trace. OpenTelemetry
+trace context propagation on the registry HTTP client links the spans.
 
 ## Structured Error Recovery
 
-Every error response includes a machine-actionable `recovery` field. Clients
-never have to guess what to do next:
+Every error message (sent over the iroh stream) includes a machine-actionable
+`recovery` field. Clients never have to guess what to do next:
 
 ```json
 {
-    "error": "session_expired",
-    "message": "Session token expired",
-    "recovery": { "action": "refresh", "refresh_url": "/api/auth/refresh" }
-}
-```
-
-```json
-{
-    "error": "rate_limited",
-    "message": "Too many requests",
-    "recovery": { "action": "retry", "retry_after_secs": 42 }
+    "error": "not_a_member",
+    "message": "No grant for this public key",
+    "recovery": { "action": "redeem_invite" }
 }
 ```
 
@@ -1294,10 +1182,14 @@ never have to guess what to do next:
 }
 ```
 
-Recovery actions are a closed enum: `refresh`, `reauthenticate`, `retry`,
-`contact_admin`, `redeem_invite`. The client SDK parses these into typed
-actions. The frontend handles every action with a specific UI flow. No generic
-"something went wrong" screens.
+Recovery actions are a closed enum: `reconnect`, `retry`, `contact_admin`,
+`redeem_invite`. The client handles every action with a specific UI flow. No
+generic "something went wrong" screens.
+
+Since there are no session tokens or refresh tokens, the entire class of
+`session_expired` / `refresh_expired` / `reauthenticate` errors is eliminated.
+Authentication failures manifest as connection rejection — the client simply
+reconnects or presents an invite redemption flow.
 
 ## Non-Goals
 

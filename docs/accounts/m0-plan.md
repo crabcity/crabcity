@@ -55,8 +55,6 @@ packages/crab_city_auth/
     capability.rs       # Capability enum, AccessRight, AccessRights, algebra
     membership.rs       # MembershipState enum, transition validation
     invite.rs           # InviteLink, Invite, sign/verify/delegate, base32
-    challenge.rs        # SignedChallengeToken, ChallengeResponse
-    session.rs          # SessionToken, SessionClaims
     identity_proof.rs   # IdentityProof, sign/verify
     noun.rs             # IdentityNoun enum, NounResolution, parse/validate
     event.rs            # EventType, Event, hash chain, EventCheckpoint
@@ -252,81 +250,7 @@ Depends on: keys, capability.
 
 **Estimated: ~350 LOC + ~150 LOC tests**
 
-### Step 5: Stateless Challenge-Response (`challenge.rs`)
-
-Depends on: keys.
-
-- [ ] `ChallengePayload` struct (internal, what's encoded in the token):
-  - `nonce: [u8; 32]`
-  - `client_pubkey: PublicKey`
-  - `scope_hash: [u8; 32]` (SHA-256 of requested scope JSON, or zeros if no
-    scope)
-  - `issued_at: u64`
-  - `expires_at: u64`
-- [ ] `SignedChallengeToken` struct (opaque blob):
-  - `SignedChallengeToken::issue(signing_key, nonce, client_pubkey,
-    scope_hash, ttl_secs) -> Self`
-    - Serializes `"crabcity:challenge:v1:" ++ fields`, signs with instance
-      key
-  - `SignedChallengeToken::verify(verifying_key) -> Result<ChallengePayload>`
-    - Verifies instance signature, checks prefix, parses fields
-  - `to_bytes`, `from_bytes`, serde as base64
-- [ ] `ChallengeResponse` struct (what the client sends back):
-  - `public_key: PublicKey`
-  - `nonce: [u8; 32]`
-  - `challenge_token: SignedChallengeToken`
-  - `signature: Signature` (client signs structured payload)
-  - `timestamp: u64`
-- [ ] `ChallengeResponse::sign(signing_key, nonce, instance_node_id,
-      timestamp) -> Signature`
-  - Signs `"crabcity:auth:v1:" ++ nonce ++ instance_node_id ++ timestamp`
-- [ ] `ChallengeResponse::verify(&self, instance_key, instance_node_id) ->
-      Result<VerifiedChallenge>`
-  - Verify instance sig on challenge token
-  - Verify client sig on response payload
-  - Check token not expired
-  - Check pubkey matches token
-  - Return `VerifiedChallenge { pubkey, scope_hash, nonce }`
-- [ ] Unit tests:
-  - Full round-trip: issue challenge → client signs → verify → Ok
-  - Expired token → Err
-  - Wrong instance key → Err
-  - Wrong client key → Err
-  - Tampered nonce → Err
-  - Cross-instance replay (different node_id) → Err
-- [ ] Fuzz target: `SignedChallengeToken::from_bytes()` — must not panic
-
-**Estimated: ~200 LOC + ~80 LOC tests**
-
-### Step 6: Session Tokens (`session.rs`)
-
-Depends on: keys, capability.
-
-- [ ] `SessionClaims` struct:
-  - `public_key: PublicKey`
-  - `scope: AccessRights`
-  - `capability: Capability`
-  - `grant_version: u64`
-  - `issued_at: u64`
-  - `expires_at: u64`
-- [ ] `SessionToken` struct (opaque signed blob):
-  - `SessionToken::issue(signing_key, claims) -> Self`
-    - Serializes claims, signs with instance key
-  - `SessionToken::verify(verifying_key) -> Result<SessionClaims>`
-    - Verifies instance signature, parses claims, checks expiry
-  - `to_bytes`, `from_bytes`, serde as base64
-- [ ] `SessionToken::is_expired(&self, now: u64) -> bool` (without full
-      verify, for quick checks)
-- [ ] Property tests:
-  - Round-trip: issue then verify with same key → Ok, claims match
-  - Forgery: verify with wrong key → Err
-  - Expiry: issue with past expiry → verify → Err
-  - Scope preserved: claims.scope matches what was issued
-- [ ] Fuzz target: `SessionToken::from_bytes()` — must not panic
-
-**Estimated: ~150 LOC + ~60 LOC tests**
-
-### Step 7: Identity Proofs (`identity_proof.rs`)
+### Step 5: Identity Proofs (`identity_proof.rs`)
 
 Depends on: keys.
 
@@ -355,7 +279,7 @@ Depends on: keys.
 
 **Estimated: ~120 LOC + ~50 LOC tests**
 
-### Step 8: Nouns (`noun.rs`)
+### Step 6: Nouns (`noun.rs`)
 
 Depends on: keys (for NounResolution).
 
@@ -396,7 +320,7 @@ Depends on: keys (for NounResolution).
 
 **Estimated: ~150 LOC + ~60 LOC tests**
 
-### Step 9: Event Log Types (`event.rs`)
+### Step 7: Event Log Types (`event.rs`)
 
 Depends on: keys, capability.
 
@@ -441,39 +365,31 @@ Depends on: keys, capability.
 
 **Estimated: ~200 LOC + ~80 LOC tests**
 
-### Step 10: Error Types (`error.rs`)
+### Step 8: Error Types (`error.rs`)
 
 Depends on: nothing (can be done anytime, but logically last since it
 references other types).
 
 - [ ] `RecoveryAction` enum:
-  - `Refresh { refresh_url: String }`
-  - `Reauthenticate { challenge_url: String, hint: Option<String> }`
+  - `Reconnect`
   - `Retry { retry_after_secs: u64 }`
   - `ContactAdmin { admin_fingerprints: Vec<String>, reason: String }`
   - `RedeemInvite`
   - `None`
 - [ ] `Recovery` struct: `{ action: RecoveryAction }`
   - `serde` for JSON responses
-- [ ] `AuthError` enum (maps to HTTP error codes):
-  - `InvalidInvite(String)` → 400
-  - `InvalidSignature` → 400
-  - `InvalidTimestamp` → 400
-  - `NoCredentials` → 401
-  - `SessionExpired` → 401
-  - `RefreshExpired` → 401
-  - `NotAMember` → 403
-  - `GrantNotActive { reason: String }` → 403
-  - `InsufficientAccess { required_type: String, required_action: String }` →
-    403
-  - `Blocklisted { reason: String }` → 403
-  - `HandleTaken` → 409
-  - `AlreadyAMember` → 409
-  - `RateLimited { retry_after_secs: u64 }` → 429
+- [ ] `AuthError` enum (used in iroh stream error messages and registry HTTP):
+  - `InvalidInvite(String)`
+  - `NotAMember`
+  - `GrantNotActive { reason: String }`
+  - `InsufficientAccess { required_type: String, required_action: String }`
+  - `Blocklisted { reason: String }`
+  - `HandleTaken`
+  - `AlreadyAMember`
+  - `RateLimited { retry_after_secs: u64 }`
 - [ ] `AuthError::recovery(&self) -> Recovery` — maps each variant to the
       correct recovery action
-- [ ] `AuthError::status_code(&self) -> u16`
-- [ ] `AuthError::error_code(&self) -> &str` (e.g., `"session_expired"`)
+- [ ] `AuthError::error_code(&self) -> &str` (e.g., `"not_a_member"`)
 - [ ] `serde` impl for JSON error response format:
   ```json
   { "error": "...", "message": "...", "recovery": { ... } }
@@ -483,7 +399,7 @@ references other types).
 
 **Estimated: ~150 LOC + ~40 LOC tests**
 
-### Step 11: Property Test Suite (`tests/property_tests.rs`)
+### Step 9: Property Test Suite (`tests/property_tests.rs`)
 
 Consolidates cross-cutting property tests that exercise multiple modules
 together.
@@ -495,18 +411,14 @@ together.
     capability
   - `invite.verify().capability.access_rights().is_superset_of(leaf.capability.access_rights())`
     is false (leaf is narrower or equal)
-- [ ] Session + capability interaction:
-  - Session scope is always subset of grant access rights
-  - `session.scope.is_superset_of(grant.access_rights())` is always false
-    (unless scope == grant)
 - [ ] State machine exhaustive exploration:
   - Generate all reachable (state, transition) pairs
   - Verify every valid transition produces a valid state
   - Verify every invalid transition produces an error
 
-**Estimated: ~100 LOC (additional cross-cutting tests)**
+**Estimated: ~80 LOC (additional cross-cutting tests)**
 
-### Step 12: Formal Model
+### Step 10: Formal Model
 
 Not Rust. Separate artifact that generates test vectors.
 
@@ -534,18 +446,16 @@ Step 1: keys
   ├── Step 2: capability (needs keys for tests only)
   │     └── Step 3: membership (needs capability for state context)
   ├── Step 4: invite (needs keys + capability)
-  ├── Step 5: challenge (needs keys)
-  ├── Step 6: session (needs keys + capability)
-  ├── Step 7: identity_proof (needs keys)
-  └── Step 8: noun (needs keys for NounResolution)
-Step 9: event (needs keys + capability)
-Step 10: error (standalone, references other types)
-Step 11: cross-cutting property tests (needs everything)
-Step 12: formal model (parallel, not Rust)
+  ├── Step 5: identity_proof (needs keys)
+  └── Step 6: noun (needs keys for NounResolution)
+Step 7: event (needs keys + capability)
+Step 8: error (standalone, references other types)
+Step 9: cross-cutting property tests (needs everything)
+Step 10: formal model (parallel, not Rust)
 ```
 
-Steps 4-8 are independent of each other and can be done in any order (or
-parallel). Steps 1-3 are sequential. Steps 9-12 are the tail.
+Steps 4-6 are independent of each other and can be done in any order (or
+parallel). Steps 1-3 are sequential. Steps 7-10 are the tail.
 
 ## Estimated Totals
 
@@ -555,16 +465,14 @@ parallel). Steps 1-3 are sequential. Steps 9-12 are the tail.
 | capability | ~250 | ~150 |
 | membership | ~120 | ~80 |
 | invite | ~350 | ~150 |
-| challenge | ~200 | ~80 |
-| session | ~150 | ~60 |
 | identity_proof | ~120 | ~50 |
 | noun | ~150 | ~60 |
 | event | ~200 | ~80 |
-| error | ~150 | ~40 |
-| cross-cutting tests | -- | ~100 |
-| **Total** | **~1840** | **~900** |
+| error | ~120 | ~40 |
+| cross-cutting tests | -- | ~80 |
+| **Total** | **~1460** | **~740** |
 
-Plus: ~150 lines TLA+, 3 fuzz targets.
+Plus: ~150 lines TLA+, 2 fuzz targets.
 
 ## Done Criteria
 

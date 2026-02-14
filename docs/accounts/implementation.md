@@ -27,13 +27,6 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - [ ] `Invite::sign()`, `Invite::verify()`, `Invite::delegate()` methods
 - [ ] Delegation chain verification: capability narrowing, depth checking, signature walking
 - [ ] Base32 encoding/decoding (Crockford) for invite tokens
-- [ ] **Stateless challenge-response types**: `SignedChallengeToken`, `ChallengeResponse`, with optional `scope: Vec<AccessRight>`
-  - `SignedChallengeToken::issue(signing_key, nonce, client_pubkey, scope_hash, ttl) -> Self`
-  - `SignedChallengeToken::verify(verifying_key) -> Result<ChallengePayload>`
-- [ ] **Signed session token types**: `SessionToken` with embedded scope, capability, grant_version, expiry
-  - `SessionToken::issue(signing_key, pubkey, scope, capability, grant_version, ttl) -> Self`
-  - `SessionToken::verify(verifying_key) -> Result<SessionClaims>`
-- [ ] Structured challenge payload: `"crabcity:auth:v1:" ++ nonce ++ node_id ++ timestamp`
 - [ ] **Cross-instance identity proofs**: `IdentityProof` struct with sign/verify methods
   - `IdentityProof::sign(signing_key, instance, related_keys, handle) -> Self`
   - `IdentityProof::verify() -> Result<IdentityProofClaims>`
@@ -53,14 +46,11 @@ This plan breaks the account system into deliverable milestones. Each milestone 
   - State machine: all reachable states under all transitions produce valid states
   - Access rights round-trip: `Capability::from_access(cap.access_rights()) == Some(cap)` for all presets
   - Hash chain: inserting/deleting/modifying any event in a chain is detectable
-  - **Signed token round-trip**: `SessionToken::verify(SessionToken::issue(...).verify_key()) == Ok` for all valid inputs
-  - **Signed token forgery**: `SessionToken::verify(wrong_key)` always fails
   - **Noun parsing round-trip**: `IdentityNoun::from_str(noun.to_string()) == Ok(noun)` for all valid nouns
   - **Noun validation**: malformed nouns (`github:`, `@`, `email:not-an-email`) are rejected
   - **Identity proof round-trip**: sign then verify succeeds; tamper then verify fails
 - [ ] Fuzz targets:
   - `Invite::from_bytes()` (untrusted input from network — must not panic on any input)
-  - `SessionToken::verify()` (untrusted input from client — must not panic)
   - `IdentityProof::from_bytes()` (untrusted input — must not panic)
 - [ ] **Formal state machine model** (TLA+ or Alloy):
   - Membership state machine: prove no sequence of transitions violates invariants
@@ -85,13 +75,13 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - Wire into `//tools/format`
 - Add `cargo-fuzz` target for invite parser
 
-**Estimated size:** ~1600 lines of Rust + ~650 lines of property-based tests + fuzz targets + TLA+/Alloy model
+**Estimated size:** ~1200 lines of Rust + ~500 lines of property-based tests + fuzz targets + TLA+/Alloy model
 
 ---
 
-## Milestone 1: Instance-Local Auth (iroh-Primary)
+## Milestone 1: Instance-Local Auth (iroh)
 
-**Goal:** Instances authenticate users via iroh QUIC connections (native clients) or challenge-response over WebSocket (browser clients). Invites (including delegated), membership management, and the full auth lifecycle. This milestone replaces the implicit "everyone is authenticated" model with real membership. iroh is the primary transport; WebSocket is the browser fallback. Includes the join page with live preview, key backup modal, hash-chained event log, multi-instance connection management, and integration tests.
+**Goal:** Instances authenticate all clients — native and browser — via iroh connections. Native clients connect via QUIC; browser clients connect via iroh WASM through the instance's embedded relay. One transport, one auth model. Invites (including delegated), membership management, and the full auth lifecycle. This milestone replaces the implicit "everyone is authenticated" model with real membership. Includes the join page with live preview, key backup modal, hash-chained event log, embedded iroh relay, multi-instance connection management, and integration tests.
 
 **Depends on:** Milestone 0
 
@@ -104,14 +94,13 @@ migrations/
   NNNN_create_member_identities.sql
   NNNN_create_member_grants.sql
   NNNN_create_invites.sql
-  NNNN_create_refresh_tokens.sql
   NNNN_create_blocklist.sql
   NNNN_create_event_log.sql
   NNNN_create_event_checkpoints.sql
   NNNN_seed_loopback_identity.sql
 ```
 
-Tables: `member_identities`, `member_grants`, `invites`, `refresh_tokens`, `blocklist`, `blocklist_cache`, `event_log`, `event_checkpoints` (see design doc section 2.1). Note: session tokens are stateless (signed by the instance key) — only refresh tokens are stored server-side.
+Tables: `member_identities`, `member_grants`, `invites`, `blocklist`, `blocklist_cache`, `event_log`, `event_checkpoints` (see design doc section 2.1). No session tokens or refresh tokens — the iroh connection IS the authenticated session.
 
 The `seed_loopback_identity` migration inserts the loopback sentinel (all-zeros pubkey) with `owner` grant and `active` state.
 
@@ -142,17 +131,6 @@ Functions:
 - `revoke_invite(db, nonce) -> Result<()>`
 - `list_active_invites(db) -> Result<Vec<StoredInvite>>`
 
-New file: `packages/crab_city/src/repository/refresh_tokens.rs`
-
-Functions:
-- `create_refresh_token(db, token_hash, public_key, scope, expires_at) -> Result<()>`
-- `get_refresh_token(db, token_hash) -> Result<Option<RefreshToken>>` (includes `scope` access rights)
-- `delete_refresh_token(db, token_hash) -> Result<()>`
-- `extend_refresh_token(db, token_hash, new_expires_at) -> Result<()>`
-- `cleanup_expired_refresh_tokens(db) -> Result<u64>`
-
-Note: Session tokens are stateless (signed by the instance key, verified in middleware). Only refresh tokens are stored in SQLite. The in-memory revocation set is managed by the auth middleware (see section 1.4).
-
 New file: `packages/crab_city/src/repository/event_log.rs`
 
 Functions:
@@ -163,110 +141,109 @@ Functions:
 - `create_checkpoint(db, event_id, signing_key) -> Result<EventCheckpoint>` — sign chain head
 - `get_event_proof(db, event_id) -> Result<EventProof>` — event + surrounding hashes + nearest checkpoint
 
-### 1.3 Handler Layer
+### 1.3 iroh RPC Handlers
 
-New file: `packages/crab_city/src/handlers/auth.rs`
+All authenticated operations are iroh RPC messages (request/response over the
+iroh stream). No HTTP auth endpoints.
 
-Endpoints:
-- `POST /api/auth/challenge` — generate nonce, create signed challenge token (stateless — no server-side storage), accept optional `scope`
-- `POST /api/auth/verify` — verify instance signature on challenge token, verify client signature on payload, check grant state, create signed session token + refresh token. Idempotent on `(pubkey, nonce)`.
-- `POST /api/auth/refresh` — verify refresh token, check grant state, mint new signed session token. Returns structured error with `recovery: { "action": "reauthenticate" }` if refresh token is expired.
-- `DELETE /api/auth/session` — logout (revoke refresh token, add pubkey to revocation set)
+New file: `packages/crab_city/src/handlers/rpc.rs`
+
+The RPC dispatcher matches on the `type` field of incoming messages and routes
+to the appropriate handler. Each handler receives `AuthUser` (populated from the
+iroh connection) and the message payload.
 
 New file: `packages/crab_city/src/handlers/invites.rs`
 
-Endpoints:
-- `POST /api/invites` — create invite (requires `members:invite` access), supports `max_depth` for delegation. Accepts `Idempotency-Key` header.
-- `POST /api/invites/redeem` — redeem invite token (flat or delegated chain), create identity + grant + signed session token + refresh token. Idempotent on `(invite_nonce, public_key)` — returns existing grant on retry.
-- `POST /api/invites/delegate` — create a sub-invite from an existing invite (client-side, but instance validates on redeem)
-- `GET /api/invites` — list active invites (requires `members:invite` access)
-- `POST /api/invites/revoke` — revoke invite, optionally suspend derived members
+RPC messages:
+- `CreateInvite` — create invite (requires `members:invite` access), supports `max_depth` for delegation. Accepts `idempotency_key` field.
+- `RedeemInvite` — redeem invite token (flat or delegated chain), create identity + grant. Idempotent on `(invite_nonce, NodeId)` — returns existing grant on retry.
+- `RevokeInvite` — revoke invite, optionally suspend derived members
+- `InviteByNoun` — resolve noun via registry, create invite or register pending
+- `ListPendingNouns` — list pending noun invites for admin visibility
 
 New file: `packages/crab_city/src/handlers/members.rs`
 
-Endpoints:
-- `GET /api/members` — list members (requires `content:read` access)
-- `PATCH /api/members/:public_key` — update capability (requires `members:update` access)
-- `PATCH /api/members/:public_key/access` — tweak individual access rights
-- `DELETE /api/members/:public_key` — remove member (requires `members:remove` access)
-- `POST /api/members/:public_key/suspend` — suspend member
-- `POST /api/members/:public_key/reinstate` — reinstate member
-- `POST /api/members/:public_key/replace` — link new grant to old (key loss recovery)
-- `GET /api/events` — query event log (requires `members:read` access)
-- `GET /api/events/verify` — verify hash chain integrity (requires `members:read` access)
-- `GET /api/events/proof/:event_id` — inclusion proof for a specific event (requires `content:read` access)
+RPC messages:
+- `ListMembers` — list members (requires `content:read` access)
+- `UpdateMember` — update capability (requires `members:update` access)
+- `TweakAccess` — tweak individual access rights
+- `RemoveMember` — remove member (requires `members:remove` access)
+- `SuspendMember` — suspend member (closes their iroh connection immediately)
+- `ReinstateMember` — reinstate member
+- `ReplaceMember` — link new grant to old (key loss recovery)
+- `QueryEvents` — query event log (requires `members:read` access)
+- `VerifyEvents` — verify hash chain integrity
+- `GetEventProof` — inclusion proof for a specific event (requires `content:read` access)
 
-### 1.4 iroh Transport Adapter
+### 1.4 iroh Transport Layer
 
 New file: `packages/crab_city/src/transport/iroh.rs`
 
-The iroh transport adapter handles native client connections:
+The iroh transport handles ALL client connections (native and browser):
 
-- **Connection acceptance:** Accept incoming iroh QUIC connections. Extract `NodeId` (= ed25519 pubkey) from the QUIC handshake.
-- **Authentication:** Look up grant by pubkey. If grant exists and `state == active`, accept the connection. If not, reject with a structured error message on the stream.
-- **Stream management:** Open a bidirectional QUIC stream for the message protocol. Send initial state snapshot. Receive client messages.
-- **Connection lifecycle:** Maintain a map of `NodeId -> active connection`. On grant suspension/removal, close the connection immediately.
-- **Invite redemption over iroh:** Accept invite redemption messages on a dedicated stream (same protocol as `POST /api/invites/redeem`, but over iroh instead of HTTP).
+- **Embedded relay:** Start an in-process iroh relay server (`iroh-relay` crate
+  with `server` feature). Exposes `ws://localhost:<port>/relay` for local
+  browser clients and `wss://instance.example/relay` for remote browsers. The
+  relay is a WebSocket-to-iroh bridge — same iroh protocol, same E2E
+  encryption, same ed25519 handshake.
+- **Connection acceptance:** Accept incoming iroh QUIC connections (native) and
+  relay-mediated connections (browser). Extract `NodeId` from handshake.
+- **Authentication:** Look up grant by pubkey. If grant exists and `state ==
+  active`, accept and send initial state snapshot. If not, send structured error
+  and close.
+- **Stream management:** Open a bidirectional QUIC stream for the message
+  protocol. Route incoming messages to RPC handlers.
+- **Connection lifecycle:** Maintain a map of `NodeId -> active connection`. On
+  grant suspension/removal, close the connection immediately.
+- **Invite redemption:** Accept `RedeemInvite` messages from new connections
+  (NodeId has no active grant yet, but carries a valid invite token).
 
 New file: `packages/crab_city/src/transport/mod.rs`
 
-Transport-agnostic abstraction:
-
 ```rust
-/// A connected client, regardless of transport.
+/// A connected client. All clients connect via iroh.
 struct ConnectedClient {
-    pubkey: PublicKey,
-    transport: Transport,  // Iroh(QuicStream) | WebSocket(WsStream)
+    node_id: NodeId,
+    stream: QuicBiStream,
     grant: MemberGrant,
 }
 
-/// Send a message to a client (transport-agnostic).
 impl ConnectedClient {
     async fn send(&self, msg: &ServerMessage) -> Result<()>;
 }
 ```
 
-Handlers and broadcast logic use `ConnectedClient` — they never know or care
-whether the client is connected via iroh or WebSocket.
+No transport enum, no dual-path logic. Every client is an iroh connection.
 
-### 1.5 Auth Middleware Update
+### 1.5 Auth Middleware
 
 Modify: `packages/crab_city/src/auth.rs`
 
-Updated auth chain (dual transport):
-1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full scope)
-2. iroh connection → extract NodeId from QUIC handshake → lookup grant → full access rights
-3. Check `Authorization: Bearer <token>` header (browser) → verify instance's own ed25519 signature on session token → check in-memory revocation set → extract scope, capability, grant_version
-4. Check `__crab_session` cookie (browser) → same verification as #3
-5. No credentials → 401
+Auth chain (iroh-only):
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full access)
+2. iroh connection → extract NodeId from handshake → lookup grant → full access rights
+3. No valid connection → reject
 
-**iroh path:** No database lookup, no signature verification on the hot path.
-The grant is cached at connection establishment. Revocation is immediate — the
-connection is closed.
-
-**WebSocket path:** Session tokens are self-contained signed documents. The
-middleware verifies the instance's signature (~60μs) and checks a small
-in-memory revocation set (O(1) hash lookup).
-
-New component: **Revocation set** — an in-memory `HashSet<(PublicKey, u64)>` of `(pubkey, grant_version)` pairs. Used for **browser clients only** (native clients are revoked by closing the iroh connection). Populated from the broadcast channel: when a `GrantUpdate` with `state=suspended` or `state=removed` fires, the entry is added. Entries are garbage-collected when the corresponding session tokens would have expired (15 minutes).
-
-The middleware populates `AuthUser` with identity, capability, and **scope** (full grant for iroh, session scope for browser). Access checks use the capability algebra:
+No session tokens, no revocation set, no signature verification on the hot path.
+The grant is cached at connection establishment. Revocation is immediate — close
+the iroh connection.
 
 ```rust
-auth.require_access("tasks", "edit")?;  // calls AccessRights::contains() on scope
-auth.grant_access();                     // full grant access rights, for display only
+auth.require_access("tasks", "edit")?;  // calls AccessRights::contains() on grant
 ```
 
-Expired session tokens return structured errors with `recovery: { "action": "refresh" }` so browser clients automatically use their refresh token.
+`AuthUser` is populated from the iroh connection state. Handlers are
+transport-unaware — the same code works for native QUIC clients and browser
+WASM clients.
 
 ### 1.6 Observability
 
 Add from day one — not as an afterthought:
 
 - `GET /metrics` endpoint (Prometheus format) with all counters/gauges from design doc section 14
-- Structured logging for all auth decisions: `public_key_fingerprint`, `endpoint`, `result`, `reason`, `duration_ms`
+- Structured logging for all auth decisions: `node_id_fingerprint`, `result`, `reason`, `transport` (`quic` or `relay`)
 - Structured logging for all state transitions: `event_type`, `actor_fingerprint`, `target_fingerprint`
-- Connection metrics by transport: iroh connections active, WebSocket connections active, reconnections, replay message count, snapshot count
+- iroh connection metrics: connections active (by transport label: `quic`/`relay`), reconnections, replay message count, snapshot count, auth rejections
 
 **Crate dependencies:** `metrics`, `metrics-exporter-prometheus`, `tracing` (already a dep), `tracing-opentelemetry` (for future distributed tracing with registry)
 
@@ -299,12 +276,19 @@ Modify: `packages/crab_city_ui/`
 - "I saved my key" checkbox — required to proceed
 
 **Other frontend changes:**
-- Add keypair generation and IndexedDB storage
-- Add login flow (stateless challenge-response)
-- Store session token as cookie, refresh token in IndexedDB
-- Automatic session refresh: intercept 401 `session_expired` → use refresh token → retry request transparently
-- **Structured error handling**: parse `recovery` field from all error responses, route to appropriate UI flow (refresh, reauthenticate, contact_admin, etc.). No generic "something went wrong" screens.
-- **WebSocket reconnection**: track `last_seq`, reconnect with `?last_seq=N`, handle replay and snapshot messages transparently. Connection drops should be invisible to the user.
+- Add ed25519 keypair generation (Web Crypto API) and IndexedDB storage
+- **iroh WASM integration**: bundle `iroh-wasm` in the SvelteKit app. On page
+  load, initialize iroh with the user's keypair (= NodeId). Connect to the
+  instance via the embedded relay (`ws://localhost:<port>/relay` for local,
+  `wss://instance.example/relay` for remote).
+- All authenticated communication goes over the iroh stream. No HTTP auth
+  endpoints, no session tokens, no cookies.
+- **Structured error handling**: parse `recovery` field from iroh error
+  messages, route to appropriate UI flow (reconnect, contact_admin, etc.). No
+  generic "something went wrong" screens.
+- **iroh reconnection**: track `last_seq`, reconnect with `{ last_seq: N }` in
+  the initial message, handle replay and snapshot messages transparently.
+  Connection drops should be invisible to the user.
 - Show current user identity + fingerprint in UI header
 - Add member list panel (for admins, with state badges)
 - Add invite creation UI (for admins) with **QR code rendering** (client-side SVG generation)
@@ -336,44 +320,39 @@ construction.
 
 New file: `packages/crab_city/tests/auth_integration.rs`
 
-End-to-end tests that spin up an in-memory instance and exercise the security-critical paths:
+End-to-end tests that spin up an in-memory instance and exercise the
+security-critical paths. All tests use iroh connections (the only transport):
 
-**iroh transport (native path):**
+**Connection & auth:**
 - Generate keypair → connect via iroh → verify NodeId extracted → verify grant checked → receive state snapshot
-- **iroh auth**: connect with unknown NodeId → verify connection rejected with structured error
-- **iroh invite redemption**: connect via iroh, redeem invite over iroh stream → verify grant created → verify subsequent iroh connections succeed
-- **iroh revocation**: admin suspends user → verify iroh connection closed immediately
-- **iroh reconnection**: disconnect → reconnect with `last_seq` → verify replay. Also: reconnect with very old `last_seq` → verify full snapshot.
-- **Multi-transport**: same pubkey connects via iroh AND WebSocket → verify both receive broadcasts
+- Connect with unknown NodeId → verify connection rejected with structured error
+- Connect via iroh, redeem invite over iroh stream → verify grant created → verify subsequent connections succeed
+- Admin suspends user → verify their iroh connection closed immediately
+- Disconnect → reconnect with `last_seq` → verify replay. Also: reconnect with very old `last_seq` → verify full snapshot.
 
-**WebSocket transport (browser path):**
-- **Stateless challenge-response**: generate challenge → verify challenge token is signed by instance → sign payload → verify → get session token + refresh token
-- **Signed session tokens**: verify session token signature → extract scope → verify expired tokens are rejected → verify tokens signed by wrong key are rejected
-- **Refresh flow**: session token expires → POST /api/auth/refresh → get new session token → verify old refresh token still works (sliding window)
-- **Immediate revocation (browser)**: admin suspends user → verify user's session token is rejected immediately (revocation set) → verify refresh also fails (grant state check)
-- **Scoped sessions**: request `content:read`-only session → verify `tasks:create` endpoints return 403 → verify `content:read` endpoints return 200
-- **Scope intersection**: request `members:invite` scope with `collaborate` grant → verify session scope excludes `members` (cannot escalate via scope)
-
-**Transport-agnostic:**
+**Invites & membership:**
 - Generate keypair → create invite → redeem invite → verify capabilities are enforced
 - **Delegated invite chain**: admin creates invite with `max_depth=2` → member delegates → sub-delegate redeems → verify capability narrowing is enforced, depth limit is enforced
 - **Delegation forgery**: tamper with a link in a delegation chain → verify redemption is rejected
-- Access enforcement: `collaborate` user cannot access `members` endpoints
+- Access enforcement: `collaborate` user cannot access `members` operations
 - State machine: active → suspended → reinstate → active; suspended → removed
 - Invite revocation: revoke invite → unredeemed uses fail, existing members unaffected
 - Invite revocation with `suspend_derived_members`: all derived grants suspended
-- **Idempotency**: redeem same invite with same pubkey twice → second call returns same grant, no duplicate.
+- **Idempotency**: redeem same invite with same NodeId twice → second call returns same grant, no duplicate.
 - Key replacement: new key replaces old, old grant removed
 - Loopback bypass: all-zeros pubkey → owner access on loopback, rejected remotely
+
+**Event log & audit:**
 - **Event log hash chain**: verify events have correct hash linkage → tamper with an event → verify `verify_chain` detects the break
 - **Event checkpoints**: create checkpoint → verify signature → tamper with event before checkpoint → verify detection
 - Event log: verify events recorded for all state transitions
+
+**Preview & misc:**
 - **Preview WebSocket**: connect to `/api/preview` without auth → verify only non-content signals are received
-- **Reconnection (both transports)**: connect → receive messages → disconnect → reconnect with `last_seq` → verify missed messages are replayed. Also: reconnect with very old `last_seq` → verify full snapshot is sent.
-- **Structured errors**: verify all error responses include `recovery` field with valid action enum value
+- **Structured errors**: verify all error messages include `recovery` field with valid action enum value
 - **Identity proofs**: sign proof → verify → tamper → verify fails.
 
-**Estimated size:** ~2600 lines Rust (handlers + repo + middleware + iroh transport adapter + dual-transport auth + revocation set + reconnection + multi-instance connection manager) + ~1400 lines Svelte/TS (join page + live preview + key backup + member management + QR + reconnection + structured error handling) + ~1000 lines integration tests
+**Estimated size:** ~2000 lines Rust (iroh RPC handlers + repo + middleware + iroh transport layer + embedded relay + reconnection + multi-instance connection manager) + ~1400 lines Svelte/TS (join page + live preview + key backup + iroh WASM + member management + QR + reconnection + structured error handling) + ~800 lines integration tests
 
 ---
 
@@ -540,14 +519,14 @@ When displaying a member, if `handle` is NULL:
 - Update `member_identities` row with resolved handle and `registry_account_id`
 - If registry response shows multiple keys for the same account, update all matching identity rows
 
-### 3.3.1 Noun-Based Invite Endpoints (Instance-Side)
+### 3.3.1 Noun-Based Invite Operations (Instance-Side)
 
-New endpoints on the instance (requires registry integration):
+New iroh RPC handlers on the instance (requires registry integration):
 
-- `POST /api/invites/by-noun` — resolve noun via registry, create invite or register pending. Requires `members:invite` access.
-- `GET /api/invites/pending-nouns` — list pending noun invites for admin visibility. Requires `members:read` access.
+- `InviteByNoun` — resolve noun via registry, create invite or register pending. Requires `members:invite` access.
+- `ListPendingNouns` — list pending noun invites for admin visibility. Requires `members:read` access.
 
-TUI command: `/invite github:foo collaborate` or `/invite @blake admin` — parses noun, calls the by-noun endpoint, displays result.
+TUI command: `/invite github:foo collaborate` or `/invite @blake admin` — parses noun, sends RPC message, displays result.
 
 ### 3.4 Configuration
 
@@ -595,7 +574,7 @@ Implement standard endpoints:
 
 `GET /oidc/authorize` — standard OIDC auth code flow:
 - Validate `client_id` (instance NodeId), `redirect_uri`, `scope`, `state`, `nonce`
-- If user not logged in → show login page (challenge-response or redirect to enterprise IdP)
+- If user not logged in → show login page (registry auth or redirect to enterprise IdP)
 - If user logged in → issue auth code, redirect to instance
 
 ### 4.4 Token Endpoint
@@ -609,7 +588,7 @@ Implement standard endpoints:
 
 Add to `crab_city`:
 - `GET /api/auth/oidc/login` — initiate OIDC flow (redirect to `crabcity.dev/oidc/authorize`)
-- `GET /api/auth/oidc/callback` — handle redirect, exchange code, extract claims, create identity + grant + session
+- `POST /api/auth/oidc/callback` — handle redirect, exchange code, extract claims, create identity + grant. Browser then connects via iroh WASM.
 
 Configuration:
 ```toml
@@ -765,7 +744,7 @@ New TUI command: `/invite --discover` or `/invite --nearby`
 
 ```
 M0: Foundations
- +-- M1: Instance-Local Auth (iroh-primary)
+ +-- M1: Instance-Local Auth (iroh)
  |    +-- M3: Instance <-> Registry Integration
  |    |    +-- M6: Blocklists
  |    +-- M7: Iroh Invite Discovery
@@ -790,15 +769,15 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 
 | Milestone | Rust LOC | Frontend LOC | Test LOC | Notes |
 |-----------|----------|-------------|----------|-------|
-| M0: Foundations | ~1600 | -- | ~650 | Shared crate, capability algebra, identity proofs, noun types, stateless auth types, signed session types, formal model, property tests, fuzz |
-| M1: Instance Auth (iroh-primary) | ~2600 | ~1400 | ~1000 | iroh transport adapter, dual-transport auth, multi-instance connection manager, browser fallback (challenge-response, signed sessions, revocation set), reconnection, idempotency, structured errors, QR codes, observability |
+| M0: Foundations | ~1200 | -- | ~500 | Shared crate, capability algebra, identity proofs, noun types, formal model, property tests, fuzz |
+| M1: Instance Auth (iroh) | ~2000 | ~1400 | ~800 | iroh transport layer, embedded relay, iroh RPC handlers, iroh WASM browser integration, multi-instance connection manager, reconnection, idempotency, structured errors, QR codes, observability |
 | M2: Registry Core | ~3200 | ~200 | ~400 | Multi-device keys, key transparency Merkle tree, identity bindings, noun resolution, pending invites |
 | M3: Integration | ~800 | ~50 | ~150 | HTTP client + background task + noun invites + resolved invite delivery + TUI /invite noun command |
 | M4: OIDC Provider | ~1500 | ~50 | ~200 | Fiddly but well-defined |
 | M5: Enterprise SSO | ~1300 | ~400 | ~100 | Mostly registry-side, enterprise identity bindings |
 | M6: Blocklists | ~400 | -- | ~100 | Scoped CRUD + delta sync |
 | M7: Iroh Invite Discovery | ~400 | -- | ~100 | Iroh advertisement + discovery + TUI command (transport already in M1) |
-| **Total** | **~11800** | **~2100** | **~2600** | |
+| **Total** | **~10800** | **~2100** | **~2250** | |
 
 ## Risk Register
 
@@ -806,13 +785,14 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 |------|-----------|--------|------------|
 | OIDC spec compliance edge cases | High | Medium | Use `openidconnect` crate, don't hand-roll. Test against real Okta tenant early in M4, not at the end. |
 | Ed25519 in browser (Web Crypto) | Medium | Medium | Fallback: `@noble/ed25519` polyfill. Verify browser support matrix before M1 frontend work. |
+| **iroh WASM maturity** | **Medium** | **High** | iroh WASM (0.33+) compiles and works in browsers but is relay-only. The API surface is newer than the native API. Mitigate: test early, pin iroh version, maintain a thin abstraction layer in the SvelteKit app so the iroh-wasm binding can be swapped if needed. |
+| **Embedded relay complexity** | **Medium** | **Medium** | Running an in-process iroh relay server adds a new subsystem to each instance. Mitigate: the `iroh-relay` crate is maintained by n0 and designed for embedding. Start with the default config, add tuning knobs later. |
 | Key backup UX ignored by users | High | High | Blocking modal with checkbox. Cannot be dismissed. Download + clipboard options. |
 | Key loss for browser-only users | Medium | High | Blocking modal in M1. Multi-device keys in M2 reduce blast radius. Replace flow in M1 for recovery. |
 | SQLite concurrent writes on registry | Low | Low | WAL mode + single-writer. Traffic is negligible. |
 | Invite token size too large for some channels | Low | Low | 254 chars base32 fits in any medium. Registry short-codes are 8 chars. |
 | OIDC key rotation disrupts active sessions | Low | Medium | Overlap window (2 active keys). Instance JWKS cache TTL = 1 hour. |
 | Double-hop OIDC flow (enterprise) bugs | High | Medium | Both hops use `openidconnect` crate. Test against real IdPs early. |
-| ~~Pending challenges lost on restart~~ | ~~Low~~ | ~~Low~~ | Eliminated — challenge-response is fully stateless. Signed challenge tokens survive restarts. |
 | Blocklist propagation delay (5 min) | Low | Low | Documented as known property. Acceptable at scale. |
 | Delegation chain token size | Low | Low | 3-hop chain is ~660 chars base32. Fits in URLs. Use registry short-codes for longer chains. |
 | Delegation chain forgery | Low | High | Each link signed independently. Chain verification walks root-to-leaf. Property-tested and fuzzed. |
@@ -821,17 +801,13 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 | iroh mDNS discovery reliability | Medium | Low | Fallback to URL-based invites. iroh-native exchange is a convenience, not the primary path. |
 | Key transparency log growth | Low | Low | One entry per key mutation. At projected scale, this grows by single-digit entries per day. |
 | Preview WebSocket information leakage | Low | Medium | Strict allowlist: terminal count, cursor position (not content), user count, uptime. Code review the preview stream. |
-| Signed session token key rotation | Medium | Medium | Instance key rotation invalidates all outstanding session tokens. Mitigation: support 2 active signing keys during rotation (same as registry OIDC keys). |
-| Revocation set memory growth | Low | Low | Set is bounded: entries expire after 15 min (session token TTL). At 1M users, worst case (all suspended simultaneously) is ~40MB. Garbage collection runs on a timer. |
-| Reconnection ring buffer memory | Medium | Medium | 1000 messages per connection. At 10K concurrent connections (iroh + WS) with average message size 500 bytes, that's ~5GB. Cap ring buffer size and fall back to snapshot. Monitor `crabcity_snapshots_total{transport}`. |
-| Clock skew on mobile (challenge-response) | Medium | Low | Only affects browser path. Widened timestamp check to +-5 minutes. The nonce provides replay protection; the timestamp is defense-in-depth. |
-| iroh connection scalability | Medium | Medium | Each iroh QUIC connection consumes a file descriptor and memory for crypto state. At 10K concurrent native clients, this is ~100MB. Monitor `crabcity_iroh_connections_active`. iroh relay fallback adds latency for NAT-punching failures. |
-| Dual transport complexity | Medium | Medium | Two auth paths (iroh handshake vs challenge-response) increases testing surface. Mitigate with transport-agnostic `ConnectedClient` abstraction and shared integration test suite that exercises both paths. |
+| Reconnection ring buffer memory | Medium | Medium | 1000 messages in a global broadcast log. At 10K concurrent connections with average message size 500 bytes, that's ~500KB (shared buffer, per-client cursors). Monitor `crabcity_snapshots_total`. |
+| iroh connection scalability | Medium | Medium | Each iroh QUIC connection consumes a file descriptor and memory for crypto state. Browser clients via embedded relay share a single relay listener but get individual iroh connections. At 10K concurrent clients, ~100MB. Monitor `crabcity_iroh_connections_active`. |
 | Multi-instance connection management | Low | Medium | N simultaneous iroh connections from a single client. Memory and CPU scale linearly. Default cap of 10 concurrent instances. Background instances receive broadcasts but don't render — lower CPU than active instance. |
 | Identity proof trust model confusion | Medium | Medium | Proofs are assertions, not guarantees. Document clearly. UI should display proof status as "claims" not "verified." Full verification requires contacting the remote instance. |
 | Noun resolution depends on registry availability | Medium | Low | Noun-based invites require the registry. Raw keypair invites always work as fallback. Instance caches resolved nouns for display. |
 | Stale identity bindings | Medium | Medium | A person may unlink their GitHub account but the registry still holds the binding. Mitigate: bindings have `revoked_at`, periodic re-verification (future), and the attestation includes a timestamp so instances can assess freshness. |
-| Pending invite spam | Low | Low | Rate-limit `POST /api/v1/invites/by-noun` per instance. Pending invites have a default 30-day TTL. Instances can cancel pending invites. |
+| Pending invite spam | Low | Low | Rate-limit noun invite creation per instance. Pending invites have a default 30-day TTL. Instances can cancel pending invites. |
 
 ## Resolved Questions
 
@@ -851,39 +827,33 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 
 8. **Invite delegation.** **Decision: design the chain format in M0, implement in M1.** The `InviteLink` struct and chain verification are part of `crab_city_auth`. Flat invites are a chain of length 1 — no special-casing needed. `max_depth=0` disables delegation for simple use cases.
 
-9. **Scoped sessions.** **Decision: implement in M1.** The `scope` is embedded in the signed session token. Backward-compatible: omit scope for full grant.
+9. **Hash-chained event log.** **Decision: implement in M0 (types) + M1 (storage).** The `prev_hash` and `hash` fields are part of the `Event` struct in `crab_city_auth`. Computing the hash on every event insert is negligible overhead. Signed checkpoints are optional (configurable interval, default every 100 events).
 
-10. **Hash-chained event log.** **Decision: implement in M0 (types) + M1 (storage).** The `prev_hash` and `hash` fields are part of the `Event` struct in `crab_city_auth`. Computing the hash on every event insert is negligible overhead. Signed checkpoints are optional (configurable interval, default every 100 events).
+10. **Capability algebra.** **Decision: four operations in `crab_city_auth`, property-tested.** `intersect`, `contains`, `is_superset_of`, `diff`. No code outside the crate performs ad-hoc access rights manipulation. Eliminates authorization logic inconsistencies.
 
-11. **Stateless challenge-response vs. in-memory store.** **Decision: stateless.** The server signs a challenge token encoding (nonce, pubkey, scope_hash, expiry). No server-side state, survives restarts, horizontally scalable. Eliminates the `DashMap<Nonce, PendingChallenge>` and its TTL management.
+11. **Reconnection.** **Decision: sequence numbers + bounded ring buffer.** Server assigns monotonic `seq` to each message. Client sends `last_seq` on reconnect. Server replays from ring buffer or sends full snapshot. Connection drops are invisible to users. Same mechanism for native and browser clients (both use iroh).
 
-12. **Session tokens: database rows vs. signed capabilities.** **Decision: signed capabilities.** Session tokens are self-contained documents signed by the instance key. No database lookup on the hot path (~60μs ed25519 verify). Refresh tokens (stored hashed in SQLite) handle revocation. Immediate revocation via in-memory revocation set populated from broadcast channel.
+12. **Error recovery.** **Decision: structured `recovery` field on all error messages.** Closed enum of recovery actions: `reconnect`, `retry`, `contact_admin`, `redeem_invite`, `none`. Client parses into typed actions. No generic error screens.
 
-13. **Capability algebra.** **Decision: four operations in `crab_city_auth`, property-tested.** `intersect`, `contains`, `is_superset_of`, `diff`. No code outside the crate performs ad-hoc access rights manipulation. Eliminates authorization logic inconsistencies.
+13. **QR code invites.** **Decision: implement in M1.** Flat invites (256 chars) and delegated invites (660 chars) both fit in QR codes. TUI renders with Unicode half-blocks. Web UI renders as SVG. Invite response includes `qr_data` field.
 
-14. **WebSocket reconnection.** **Decision: sequence numbers + bounded ring buffer.** Server assigns monotonic `seq` to each message. Client sends `last_seq` on reconnect. Server replays from ring buffer or sends full snapshot. Connection drops are invisible to users.
+14. **Cross-instance identity proofs.** **Decision: implement in M0 (types) + M1 (exchange).** Self-issued signed statements linking keys across instances. Assertions, not guarantees. The missing interconnect primitive.
 
-15. **Error recovery.** **Decision: structured `recovery` field on all error responses.** Closed enum of recovery actions: `refresh`, `reauthenticate`, `retry`, `contact_admin`, `redeem_invite`, `none`. Client SDK parses into typed actions. No generic error screens.
+15. **Formal state machine verification.** **Decision: TLA+ or Alloy model in M0.** The membership state machine is small enough to verify exhaustively. Generate test cases from the model.
 
-16. **QR code invites.** **Decision: implement in M1.** Flat invites (256 chars) and delegated invites (660 chars) both fit in QR codes. TUI renders with Unicode half-blocks. Web UI renders as SVG. Invite response includes `qr_data` field.
+16. **Observability.** **Decision: day-one in M1.** Prometheus metrics endpoint, structured logging for all auth decisions and state transitions, OpenTelemetry trace context propagation for registry communication.
 
-17. **Cross-instance identity proofs.** **Decision: implement in M0 (types) + M1 (exchange).** Self-issued signed statements linking keys across instances. Assertions, not guarantees. The missing interconnect primitive.
+17. **Noun-based invites: where does resolution happen?** **Decision: registry resolves, instance consumes.** The registry is the phonebook that maps nouns (GitHub usernames, emails, handles) to accounts and pubkeys. Instances call the registry at invite time to resolve nouns. Grants remain purely pubkey-based — nouns are an invite-time convenience, not a runtime concept. Pending invites (for people not yet on crabcity) live at the registry and are delivered via heartbeat when the person signs up.
 
-18. **Formal state machine verification.** **Decision: TLA+ or Alloy model in M0.** The membership state machine is small enough to verify exhaustively. Generate test cases from the model.
+18. **Identity bindings: trust model.** **Decision: registry-attested.** The registry signs identity bindings (e.g., "pubkey A is bound to github:foo"). Instances verify the attestation signature at invite time. The binding is established via OAuth/OIDC flows, not self-asserted. This is "pseudo-trustable" — as trustworthy as the OAuth provider and the registry's signing key.
 
-19. **Observability.** **Decision: day-one in M1.** Prometheus metrics endpoint, structured logging for all auth decisions and state transitions, OpenTelemetry trace context propagation for registry communication.
+19. **Transport: iroh everywhere.** **Decision: iroh is the ONLY transport for all clients.** Ed25519 keypairs are iroh NodeIds (same curve). The iroh handshake proves key ownership and establishes E2E encryption — no separate auth protocol needed. Native clients connect via QUIC; browser clients connect via iroh WASM through the instance's embedded relay. One transport, one auth model. No session tokens, no refresh tokens, no challenge-response, no revocation set. Massive simplification over dual-transport.
 
-20. **Noun-based invites: where does resolution happen?** **Decision: registry resolves, instance consumes.** The registry is the phonebook that maps nouns (GitHub usernames, emails, handles) to accounts and pubkeys. Instances call the registry at invite time to resolve nouns. Grants remain purely pubkey-based — nouns are an invite-time convenience, not a runtime concept. Pending invites (for people not yet on crabcity) live at the registry and are delivered via heartbeat when the person signs up.
-
-21. **Identity bindings: trust model.** **Decision: registry-attested.** The registry signs identity bindings (e.g., "pubkey A is bound to github:foo"). Instances verify the attestation signature at invite time. The binding is established via OAuth/OIDC flows, not self-asserted. This is "pseudo-trustable" — as trustworthy as the OAuth provider and the registry's signing key.
-
-22. **Primary transport: iroh or WebSocket?** **Decision: iroh is the primary transport for native clients (CLI/TUI).** Ed25519 keypairs are iroh NodeIds (same curve). The iroh QUIC handshake proves key ownership and establishes E2E encryption — no separate auth protocol needed. WebSocket is the browser fallback, carrying the full cost of challenge-response, session tokens, and refresh tokens. Both transports use the same message protocol (`{ v, seq, type, data }`). The transport adapter abstracts the difference from handlers.
-
-23. **Multi-instance connections.** **Decision: M1.** A native client holds N simultaneous iroh connections. One is "active" (receives input), others are background (presence, notifications). Instance switcher is a keybinding. This is the only new UI feature for multi-instance support.
+20. **Multi-instance connections.** **Decision: M1.** A native client holds N simultaneous iroh connections. One is "active" (receives input), others are background (presence, notifications). Instance switcher is a keybinding. Browser clients use the same model via iroh WASM.
 
 ## Open Questions
 
-1. **Envelope versioning for existing WebSocket messages.** The current WebSocket protocol doesn't use envelope versioning. Wrapping existing messages (`StateChange`, `TaskUpdate`, etc.) in `{ "v": 1, "seq": N, "type": ..., "data": ... }` is a breaking change for connected clients. Options: (a) cut over all at once in M1, (b) support both formats during a transition period, (c) version the WebSocket handshake protocol. Recommend (a) — M1 is already a breaking change (auth required), so bundle the wire format change and sequence number addition.
+1. **Envelope versioning for existing messages.** The current protocol doesn't use envelope versioning. Wrapping existing messages (`StateChange`, `TaskUpdate`, etc.) in `{ "v": 1, "seq": N, "type": ..., "data": ... }` is a breaking change for connected clients. Recommend: cut over all at once in M1 — M1 is already a breaking change (auth required), so bundle the wire format change and sequence number addition.
 
 2. **Merkle tree crate vs hand-roll.** The transparency log needs a basic append-only Merkle tree (RFC 6962). Options: (a) use an existing crate like `merkle-log`, (b) hand-roll ~500 LOC. The algorithm is simple and well-specified, but correctness is critical. Recommend: hand-roll with extensive property tests, since the dependency surface should be minimal for a security-critical component.
 
@@ -893,20 +863,16 @@ Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 
 5. **Iroh-native invite discovery UX.** The discovery flow requires user confirmation on both sides (inviter accepts peer, invitee accepts invite). Should there be a "promiscuous" mode where the instance auto-accepts all discovered peers? Useful for workshops/demos, dangerous for production. Recommend: require explicit confirmation, but allow a `--auto-accept` flag for ephemeral instances.
 
-6. **Instance signing key rotation.** The stateless challenge-response and signed session tokens both depend on the instance's signing key. If the key rotates, all outstanding challenge tokens and session tokens become invalid. Options: (a) support 2 active signing keys during rotation (same as OIDC JWKS), (b) invalidate all tokens on rotation (force re-auth), (c) use a separate signing key for tokens (not the NodeId key). Recommend (a) for operational smoothness.
+6. **Formal verification tooling.** TLA+ has the largest community and tooling (TLC model checker). Alloy is more concise for relational models. Recommend TLA+ for the state machine (it's the standard for distributed systems verification), but this is a judgment call based on team familiarity.
 
-7. **Ring buffer sizing for WebSocket reconnection.** 1000 messages per connection at 10K concurrent connections is significant memory. Options: (a) global ring buffer shared across connections (each client tracks its own position), (b) per-connection buffers with aggressive caps, (c) event log as the replay source (already ordered, but includes all events not just per-connection). Recommend (a) — a single global broadcast log with per-client cursors.
+7. **Noun provider extensibility.** The initial noun vocabulary is `@handle`, `github:`, `google:`, `email:`. Should there be a generic `oidc:<issuer>:<subject>` noun for arbitrary OIDC providers? Or limit to explicitly supported providers? Recommend: start with the four known providers, add `oidc:` as a generic fallback in M5 when enterprise SSO is implemented.
 
-8. **Identity proof exchange protocol.** When should proofs be exchanged? Options: (a) during WebSocket handshake only, (b) on-demand when viewing a user's profile, (c) push-based via a new WebSocket message type. Recommend (a) + (c) — send cached proofs on connect, push new ones as they arrive.
+8. **Pending invite expiry and cleanup.** Pending noun invites could sit at the registry indefinitely if the person never signs up. Options: (a) mandatory expiry (configurable, default 30 days), (b) no expiry but periodic admin notification, (c) instance can cancel via API. Recommend (a) + (c) — default 30-day TTL, admin can cancel anytime, expired invites cleaned up by background sweep.
 
-9. **Formal verification tooling.** TLA+ has the largest community and tooling (TLC model checker). Alloy is more concise for relational models. Recommend TLA+ for the state machine (it's the standard for distributed systems verification), but this is a judgment call based on team familiarity.
+9. **iroh QUIC stream multiplexing strategy.** A single iroh connection can carry multiple QUIC streams. Options: (a) one bidirectional stream for the message protocol (simple, ordered), (b) separate streams per logical channel (messages, file transfer, terminal data — allows independent flow control), (c) start with (a), evolve to (b). Recommend (c) — one stream is sufficient for the current message protocol; multiple streams become valuable when adding large file transfers.
 
-10. **Noun provider extensibility.** The initial noun vocabulary is `@handle`, `github:`, `google:`, `email:`. Should there be a generic `oidc:<issuer>:<subject>` noun for arbitrary OIDC providers? Or limit to explicitly supported providers? Recommend: start with the four known providers, add `oidc:` as a generic fallback in M5 when enterprise SSO is implemented.
+10. **iroh WASM bundle size and startup time.** The iroh WASM build includes QUIC crypto, relay client, and ed25519. Need to measure: (a) compressed bundle size (target: <500KB), (b) cold start time to first connection (target: <2s), (c) memory footprint in browser. If any target is missed, consider lazy-loading the WASM module after the join page renders.
 
-11. **Pending invite expiry and cleanup.** Pending noun invites could sit at the registry indefinitely if the person never signs up. Options: (a) mandatory expiry (configurable, default 30 days), (b) no expiry but periodic admin notification, (c) instance can cancel via API. Recommend (a) + (c) — default 30-day TTL, admin can cancel anytime, expired invites cleaned up by background sweep.
+11. **Embedded relay configuration.** The in-process iroh relay needs: (a) a WebSocket endpoint path (`/relay`), (b) TLS termination for remote connections (handled by reverse proxy), (c) rate limiting (separate from the main iroh connection limits). Should the relay be always-on or started on-demand when the first browser client connects? Recommend: always-on (simpler, negligible resource cost when idle).
 
-12. **iroh QUIC stream multiplexing strategy.** A single iroh connection can carry multiple QUIC streams. Options: (a) one bidirectional stream for the message protocol (simple, ordered), (b) separate streams per logical channel (messages, file transfer, terminal data — allows independent flow control), (c) start with (a), evolve to (b). Recommend (c) — one stream is sufficient for the current message protocol; multiple streams become valuable when adding large file transfers.
-
-13. **Browser iroh support (future).** iroh-web via WebRTC/WebTransport could eventually allow browsers to connect via iroh too, eliminating the dual-transport split. This is not available today. Should the browser path be designed to be easily replaceable? Recommend: yes — the transport-agnostic `ConnectedClient` abstraction makes this a swap, not a rewrite.
-
-14. **Instance switcher UX.** Multi-instance switching in the TUI. Options: (a) numbered keybindings (Ctrl+1/2/3), (b) fuzzy-search picker (like tmux window switcher), (c) both. Recommend (c) — keybindings for quick access, picker for discovery when you have many instances.
+12. **Instance switcher UX.** Multi-instance switching in the TUI. Options: (a) numbered keybindings (Ctrl+1/2/3), (b) fuzzy-search picker (like tmux window switcher), (c) both. Recommend (c) — keybindings for quick access, picker for discovery when you have many instances.

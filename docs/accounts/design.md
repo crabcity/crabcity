@@ -40,23 +40,23 @@ Properties:
 - Never used for lookups or authentication — display only
 - Defined in `crab_city_auth` crate: `PublicKey::fingerprint() -> String`
 
-### 1.3 iroh Transport Authentication (Native Path)
+### 1.3 iroh Authentication (All Clients)
 
-Native clients (CLI/TUI) authenticate via the iroh QUIC handshake. The ed25519
-keypair IS the iroh `NodeId`, so proving keypair ownership is implicit in the
-connection establishment.
+All clients — native and browser — authenticate via the iroh handshake. The
+ed25519 keypair IS the iroh `NodeId`, so proving keypair ownership is implicit
+in connection establishment.
 
 ```
-Native Client                       Instance
+Client (native or browser WASM)    Instance
   |                                    |
-  |  iroh QUIC connect                 |
+  |  iroh connect                      |
   |  (client NodeId = ed25519 pubkey)  |
   | ---------------------------------->|
   |                                    |  extract client NodeId from handshake
   |                                    |  lookup grant by pubkey
   |                                    |  check grant state == active
   |                                    |  open bidirectional stream
-  |  E2E encrypted QUIC stream         |
+  |  E2E encrypted stream              |
   | <--------------------------------->|
   |                                    |
   |  { v:1, seq:0, type:"Snapshot",   |
@@ -68,87 +68,25 @@ Native Client                       Instance
   | <--------------------------------->|
 ```
 
+Native clients connect via QUIC directly. Browser clients connect via iroh WASM
+through the instance's embedded relay (WebSocket transport, same iroh protocol).
+Both paths perform the same ed25519 handshake.
+
 Properties:
 - **Zero token management.** No session tokens, no refresh tokens, no token
-  expiry. The connection IS the authenticated session.
+  expiry, no challenge-response. The connection IS the authenticated session.
 - **Immediate revocation.** When an admin suspends a user, the instance closes
   their iroh connection. No revocation set, no token expiry window.
 - **Connection = session.** Disconnecting ends the session. Reconnecting
   re-authenticates via handshake.
-- **E2E encrypted.** QUIC authenticated encryption — no separate TLS.
+- **E2E encrypted.** QUIC authenticated encryption. Browser clients get the
+  same E2E encryption — the embedded relay cannot decrypt traffic.
 
-The instance maintains a map of `NodeId -> active iroh connection` for
-connected native clients. Presence, broadcast, and connection cleanup are
-driven by connection state, not token state.
+The instance maintains a map of `NodeId -> active iroh connection` for all
+connected clients. Presence, broadcast, and connection cleanup are driven by
+connection state.
 
-### 1.4 Challenge-Response Authentication (Browser/WebSocket Path, Stateless)
-
-Browser clients cannot open raw QUIC connections. They authenticate via a
-**fully stateless** challenge-response over HTTP, then connect via WebSocket.
-
-```
-Browser Client                      Instance
-  |                                    |
-  |  POST /api/auth/challenge          |
-  |  { public_key, timestamp,          |
-  |    scope? }                        |
-  | ---------------------------------->|
-  |                                    |  generate 32-byte random nonce
-  |                                    |  sign challenge_token:
-  |                                    |    instance_sign(
-  |                                    |      "crabcity:challenge:v1:"
-  |                                    |      ++ nonce ++ pubkey
-  |                                    |      ++ scope_hash
-  |                                    |      ++ issued_at ++ expires_at)
-  |  { nonce, challenge_token,         |
-  |    expires_at }                    |
-  | <----------------------------------|
-  |                                    |
-  |  sign("crabcity:auth:v1:"         |
-  |    ++ nonce                        |
-  |    ++ instance_node_id             |
-  |    ++ client_timestamp)            |
-  |                                    |
-  |  POST /api/auth/verify             |
-  |  { public_key, nonce,              |
-  |    challenge_token,                |
-  |    signature, timestamp }          |
-  | ---------------------------------->|
-  |                                    |  verify own sig on challenge_token
-  |                                    |  verify client sig on payload
-  |                                    |  check expires_at not passed
-  |                                    |  check pubkey matches token
-  |                                    |  check grant state == active
-  |                                    |  create signed session token
-  |                                    |    + refresh token
-  |  { session_token, refresh_token,   |
-  |    expires_at }                    |
-  | <----------------------------------|
-```
-
-The signed challenge token encodes: nonce, client public key, scope hash,
-issued_at, and expires_at. The instance verifies its own signature on the
-challenge token, proving it issued this challenge. No server-side state is
-needed.
-
-Properties:
-- **Zero server-side state.** No `DashMap`, no cleanup sweeps, no TTL
-  management.
-- **Survives restarts.** Outstanding challenges remain valid across instance
-  restarts.
-- **Horizontally scalable.** No sticky sessions or shared stores needed.
-- **Replay-safe.** Session creation is idempotent on `(pubkey, nonce)` —
-  replaying the same verify request returns the same session.
-
-The signed payload in the client's response is structured and self-documenting:
-- `crabcity:auth:v1:` prefix prevents cross-protocol confusion if keypairs sign
-  other things
-- `nonce` prevents replay of a different challenge's token
-- `instance_node_id` prevents cross-instance replay
-- `client_timestamp` narrows the replay window (server checks +-5 minutes —
-  wider than typical to accommodate mobile clock skew)
-
-### 1.5 Invite Token Format
+### 1.4 Invite Token Format
 
 A flat (non-delegated) invite:
 
@@ -205,14 +143,14 @@ https://crabcity.dev/join/<short-code>
 Where `short-code` is an 8-character random alphanumeric ID that maps to a
 stored invite in the registry database.
 
-### 1.6 Loopback Identity
+### 1.5 Loopback Identity
 
 The loopback identity is a well-known sentinel public key: 32 zero bytes (`0x00
 * 32`).
 
 Rules:
-- Instances reject this pubkey on any non-loopback connection
-  (challenge-response, invite redemption, OIDC)
+- Instances reject this pubkey on any non-loopback connection (iroh, invite
+  redemption, OIDC)
 - The loopback identity always has an `owner` grant with state `active`
 - It is seeded during instance bootstrap (not created via invite)
 - It cannot be suspended, removed, or have its capability changed
@@ -263,16 +201,6 @@ CREATE TABLE invites (
     FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
 );
 
--- Refresh tokens (long-lived, stored server-side; session tokens are signed and stateless)
-CREATE TABLE refresh_tokens (
-    token_hash BLOB NOT NULL PRIMARY KEY,  -- SHA-256 of 32-byte random token
-    public_key BLOB NOT NULL,              -- 32 bytes
-    scope TEXT NOT NULL DEFAULT '[]',      -- JSON array, intersection of requested access and grant access rights
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
-);
-
 -- Instance-local blocklist
 CREATE TABLE blocklist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,8 +241,6 @@ CREATE TABLE event_checkpoints (
     FOREIGN KEY (event_id) REFERENCES event_log(id)
 );
 
-CREATE INDEX idx_refresh_tokens_expires ON refresh_tokens(expires_at);
-CREATE INDEX idx_refresh_tokens_pubkey ON refresh_tokens(public_key);
 CREATE INDEX idx_invites_expires ON invites(expires_at);
 CREATE INDEX idx_grants_state ON member_grants(state);
 CREATE INDEX idx_grants_invited_via ON member_grants(invited_via);
@@ -400,66 +326,27 @@ Property-tested invariants:
 
 ### 2.3 Instance-Side API
 
-#### `POST /api/auth/challenge`
+All authenticated user-to-instance communication goes over iroh streams. The
+instance exposes no authenticated HTTP API endpoints. HTTP is used only for:
+- Static asset serving (the SvelteKit app)
+- Unauthenticated preview (join page activity stream)
+- OIDC callbacks (enterprise SSO, M4+)
+- `/metrics` (observability)
 
-Request identity challenge. Stateless — no server-side state is stored.
-Optionally request a scoped session.
-
-```
-Request:  { "public_key": "<base64>", "timestamp": "<iso8601>", "scope": [{ "type": "content", "actions": ["read"] }, { "type": "chat", "actions": ["send"] }] }
-Response: { "nonce": "<base64>", "challenge_token": "<base64>", "expires_at": "<iso8601>" }
-```
-
-The `challenge_token` is a signed blob encoding the nonce, client public key,
-scope hash, and expiry. The server verifies its own signature on this token
-during the verify step — no lookup needed.
-
-`scope` is optional. If omitted, the session will have the full access rights of
-the underlying grant. If provided, the session scope is the intersection of the
-requested scope and the grant's access rights (computed via
-`AccessRights::intersect()`).
-
-#### `POST /api/auth/verify`
-
-Complete challenge-response. Returns a signed session token (short-lived, 15
-min) and a refresh token (long-lived, 24 hours). Idempotent on `(pubkey,
-nonce)`.
-
-```
-Request:  { "public_key": "<base64>", "nonce": "<base64>", "challenge_token": "<base64>", "signature": "<base64>", "timestamp": "<iso8601>" }
-Response: { "session_token": "<base64>", "refresh_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "access": [...], "scope": [...] }
-Error:    401 if signature invalid, 403 if no grant or state != active
-```
-
-`session_token` is a self-contained signed document (see section 6). The
-middleware verifies the instance's own signature — no database lookup on the hot
-path. `refresh_token` is stored hashed in SQLite and used to mint new session
-tokens.
-
-`scope` in the response is the actual enforced access rights for this session
-(may be a subset of `access` if a scope was requested during challenge).
-
-#### `POST /api/auth/refresh`
-
-Mint a new session token using a refresh token. Checks grant state, so
-revocation takes effect within one refresh cycle.
-
-```
-Request:  { "refresh_token": "<base64>" }
-Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "scope": [...] }
-Error:    401 if refresh token invalid/expired, 403 if grant no longer active
-```
+The following operations are iroh RPC messages (request/response over the iroh
+stream), not HTTP endpoints:
 
 #### `POST /api/auth/oidc/callback`
 
-OIDC callback from crabcity.dev. Instance acts as OIDC RP.
+OIDC callback from crabcity.dev. Instance acts as OIDC RP. This is an HTTP
+endpoint because the OIDC redirect flow requires it.
 
 ```
 Query:    ?code=<auth_code>&state=<csrf_state>
-Response: 302 redirect to instance UI with session cookie set
+Response: 302 redirect to instance UI (browser then connects via iroh WASM)
 ```
 
-#### `POST /api/invites`
+#### Invite Creation (iroh RPC)
 
 Create an invite. Requires `members` access.
 
@@ -468,15 +355,22 @@ Request:  { "capability": "collaborate", "max_uses": 5, "expires_in_hours": 72 }
 Response: { "token": "<base32>", "url": "https://instance/join#<base32>" }
 ```
 
-#### `POST /api/invites/redeem`
+#### Invite Redemption (iroh RPC)
 
-Redeem an invite token. Idempotent on `(invite_nonce, public_key)` — if a grant already exists for this key from this invite, returns the existing grant.
+Redeem an invite token. Sent as the first message on a new iroh connection when
+the client's NodeId has no active grant. Idempotent on `(invite_nonce,
+NodeId)` — if a grant already exists for this key from this invite, returns
+the existing grant.
 
 ```
-Request:  { "token": "<base32>", "public_key": "<base64>", "display_name": "Alex" }
-Response: { "identity": { ... }, "grant": { ... }, "session_token": "<base64>", "refresh_token": "<base64>" }
-Error:    400 if expired/exhausted, 403 if issuer revoked or blocklisted
+Request:  { "type": "RedeemInvite", "token": "<base32>", "display_name": "Alex" }
+Response: { "type": "InviteRedeemed", "identity": { ... }, "grant": { ... } }
+Error:    { "type": "Error", "code": "invalid_invite", ... }
 ```
+
+The client's public key is implicit — it's the NodeId from the iroh handshake.
+No session tokens or refresh tokens are returned; the iroh connection IS the
+authenticated session.
 
 On redemption:
 1. Verify invite: walk the delegation chain root-to-leaf, verify all signatures, check capability narrowing and depth constraints
@@ -486,55 +380,65 @@ On redemption:
 5. Create `member_grants` row with `state = active`, `invited_via = leaf_link.nonce`, capability from leaf link
 6. Increment use count on the leaf link's nonce (stored in `invites` table)
 7. Log `invite.redeemed` and `member.joined` events (payload includes full chain for auditability)
-8. Create session (scoped to full grant access rights by default)
+8. Send initial state snapshot over the iroh stream
 9. Broadcast `MemberJoined`
 
-#### `POST /api/invites/by-noun`
+#### Invite by Noun (iroh RPC)
 
-Create an invite by noun. Requires `members:invite` access and registry integration. Resolves the noun via the registry and either creates an immediate invite (if resolved) or registers a pending invite.
+Create an invite by noun. Requires `members:invite` access and registry
+integration. Resolves the noun via the registry and either creates an immediate
+invite (if resolved) or registers a pending invite.
 
 ```
-Request:  { "noun": "github:foo", "capability": "collaborate" }
+Request:  { "type": "InviteByNoun", "noun": "github:foo", "capability": "collaborate" }
 Response (resolved): {
+    "type": "NounResolved",
     "status": "resolved",
     "invite": { "token": "<base32>", "url": "https://instance/join#<base32>" },
     "account": { "handle": "...", "fingerprint": "crab_..." }
 }
 Response (pending): {
+    "type": "NounPending",
     "status": "pending",
     "noun": "github:foo",
     "message": "github:foo is not on crabcity yet. They'll receive the invite when they sign up."
 }
-Error:    400 if noun format invalid, 503 if registry unavailable
 ```
 
-On resolution, the instance creates a standard signed invite for the resolved pubkey and optionally notifies the invitee via the heartbeat delivery mechanism. On pending, the instance records the pending noun locally (for admin display) and the registry holds the pending invite for future resolution.
+On resolution, the instance creates a standard signed invite for the resolved
+pubkey and optionally notifies the invitee via the heartbeat delivery mechanism.
+On pending, the instance records the pending noun locally (for admin display)
+and the registry holds the pending invite for future resolution.
 
-#### `GET /api/invites/pending-nouns`
+#### List Pending Nouns (iroh RPC)
 
 List pending noun invites for this instance. Requires `members:read` access.
 
 ```
-Response: { "pending": [{ "noun": "github:foo", "capability": "collaborate", "created_at": "...", "created_by": "crab_2K7XM9QP" }] }
+Request:  { "type": "ListPendingNouns" }
+Response: { "type": "PendingNouns", "pending": [{ "noun": "github:foo", "capability": "collaborate", "created_at": "...", "created_by": "crab_2K7XM9QP" }] }
 ```
 
-#### `POST /api/invites/revoke`
+#### Revoke Invite (iroh RPC)
 
 Revoke an invite. Requires `members` access.
 
 ```
-Request:  { "nonce": "<base64>", "suspend_derived_members": false }
-Response: { "revoked": true, "members_suspended": 0 }
+Request:  { "type": "RevokeInvite", "nonce": "<base64>", "suspend_derived_members": false }
+Response: { "type": "InviteRevoked", "revoked": true, "members_suspended": 0 }
 ```
 
-If `suspend_derived_members` is true, all grants with `invited_via = nonce` and `state = active` are transitioned to `suspended`. Each transition produces a `member.suspended` event.
+If `suspend_derived_members` is true, all grants with `invited_via = nonce` and
+`state = active` are transitioned to `suspended`. Each transition produces a
+`member.suspended` event.
 
-#### `GET /api/members`
+#### List Members (iroh RPC)
 
 List instance members. Requires `content:read` access.
 
 ```
-Response: { "members": [{
+Request:  { "type": "ListMembers" }
+Response: { "type": "Members", "members": [{
     "public_key": "...",
     "fingerprint": "crab_2K7XM9QP",
     "display_name": "...",
@@ -545,68 +449,82 @@ Response: { "members": [{
 }] }
 ```
 
-#### `DELETE /api/members/:public_key`
+#### Remove Member (iroh RPC)
 
-Remove a member. Requires `members` access. Cannot remove `owner`. Transitions grant to `removed`.
-
-#### `PATCH /api/members/:public_key`
-
-Update a member's capability. Requires `members` access. Cannot escalate beyond own capability.
+Remove a member. Requires `members` access. Cannot remove `owner`. Transitions
+grant to `removed`.
 
 ```
-Request:  { "capability": "admin" }
-Response: { "grant": { ... } }
+Request:  { "type": "RemoveMember", "public_key": "<base64>" }
+Response: { "type": "MemberRemoved", "public_key": "..." }
 ```
 
-#### `PATCH /api/members/:public_key/access`
+#### Update Member Capability (iroh RPC)
+
+Update a member's capability. Requires `members` access. Cannot escalate beyond
+own capability.
+
+```
+Request:  { "type": "UpdateMember", "public_key": "<base64>", "capability": "admin" }
+Response: { "type": "GrantUpdated", "grant": { ... } }
+```
+
+#### Tweak Access Rights (iroh RPC)
 
 Tweak individual access rights. Requires `members:update` access.
 
 ```
-Request:  { "add": [{ "type": "terminals", "actions": ["input"] }], "remove": [{ "type": "chat", "actions": ["send"] }] }
-Response: { "access": [...] }
+Request:  { "type": "TweakAccess", "public_key": "<base64>", "add": [{ "type": "terminals", "actions": ["input"] }], "remove": [{ "type": "chat", "actions": ["send"] }] }
+Response: { "type": "AccessUpdated", "access": [...] }
 ```
 
-#### `POST /api/members/:public_key/suspend`
+#### Suspend Member (iroh RPC)
 
 Suspend a member. Requires `members` access.
 
 ```
-Request:  { "reason": "..." }
-Response: { "grant": { ... } }
+Request:  { "type": "SuspendMember", "public_key": "<base64>", "reason": "..." }
+Response: { "type": "GrantUpdated", "grant": { ... } }
 ```
 
-#### `POST /api/members/:public_key/reinstate`
+#### Reinstate Member (iroh RPC)
 
 Reinstate a suspended member. Requires `members` access.
 
-#### `POST /api/members/:public_key/replace`
+```
+Request:  { "type": "ReinstateMember", "public_key": "<base64>" }
+Response: { "type": "GrantUpdated", "grant": { ... } }
+```
+
+#### Replace Member Key (iroh RPC)
 
 Link a new grant to an old one (key loss recovery). Requires `members` access.
 
 ```
-Request:  { "old_public_key": "<base64>" }
-Response: { "grant": { ... } }
+Request:  { "type": "ReplaceMember", "public_key": "<base64>", "old_public_key": "<base64>" }
+Response: { "type": "GrantUpdated", "grant": { ... } }
 ```
 
-Sets `replaces = old_public_key` on the new grant, transitions old grant to `removed`. Logs `member.replaced` event.
+Sets `replaces = old_public_key` on the new grant, transitions old grant to
+`removed`. Logs `member.replaced` event.
 
-#### `GET /api/events`
+#### Query Events (iroh RPC)
 
 Query event log. Requires `members` access.
 
 ```
-Query:    ?target=<base64>&event_type=member.*&limit=50&before=<id>
-Response: { "events": [...], "has_more": true }
+Request:  { "type": "QueryEvents", "target": "<base64>", "event_type": "member.*", "limit": 50, "before": 123 }
+Response: { "type": "Events", "events": [...], "has_more": true }
 ```
 
-#### `GET /api/events/verify`
+#### Verify Events (iroh RPC)
 
 Verify event log integrity. Requires `members` access.
 
 ```
-Query:    ?from=<id>&to=<id>
+Request:  { "type": "VerifyEvents", "from": 1, "to": 847 }
 Response: {
+    "type": "EventVerification",
     "valid": true,
     "events_checked": 847,
     "chain_head": { "event_id": 847, "hash": "<hex>" },
@@ -615,15 +533,16 @@ Response: {
         { "event_id": 200, "hash": "<hex>", "signature": "<base64>", "valid": true }
     ]
 }
-Error:    409 if chain is broken (includes the break point)
 ```
 
-#### `GET /api/events/proof/:event_id`
+#### Event Proof (iroh RPC)
 
 Get an inclusion proof for a specific event. Requires `content:read` access.
 
 ```
+Request:  { "type": "GetEventProof", "event_id": 42 }
 Response: {
+    "type": "EventProof",
     "event": { ... },
     "prev_hash": "<hex>",
     "hash": "<hex>",
@@ -631,9 +550,11 @@ Response: {
 }
 ```
 
-#### `WebSocket /api/preview`
+#### `GET /api/preview` (WebSocket)
 
-Unauthenticated preview stream for the join page. Provides activity signals without content.
+Unauthenticated preview stream for the join page. This is the one WebSocket
+endpoint that remains — it serves browsers that haven't connected via iroh yet
+(they're still on the join page deciding whether to join).
 
 ```
 No authentication required. Rate-limited to 5 concurrent connections per IP.
@@ -652,57 +573,38 @@ Server -> Client messages:
 Sent every 2 seconds while connected. No client -> server messages accepted.
 ```
 
-This is the "looking through the restaurant window" stream. It communicates liveness and activity without leaking any instance data. Terminal content, chat messages, task details, and user identities are never sent on this stream.
+This is the "looking through the restaurant window" stream. It communicates
+liveness and activity without leaking any instance data. Terminal content, chat
+messages, task details, and user identities are never sent on this stream.
 
-### 2.4 Auth Middleware Changes
+### 2.4 Auth Middleware
 
-The auth middleware handles two transport paths:
+All authenticated requests arrive over iroh streams. The auth layer is simple:
 
 ```
-1. Loopback bypass → synthetic owner identity (all-zeros pubkey, owner grant, full scope)
-2. iroh connection → extract NodeId from QUIC handshake → lookup grant → full grant access rights
-3. Session token in Authorization header (browser) → verify instance signature → check revocation set → extract scope
-4. Cookie-based session (browser) → same verification as #3
-5. No credentials → 401
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey, owner grant, full access)
+2. iroh connection → extract NodeId from handshake → lookup grant → full grant access rights
+3. No valid connection → reject
 ```
 
-**iroh path (native clients):** The middleware extracts the `NodeId` (= ed25519
-pubkey) from the iroh connection. No signature verification needed — the QUIC
-handshake already proved key ownership. The middleware looks up the grant (cached
-in memory from the connection establishment) and extracts full access rights.
-Revocation is immediate: the instance closes the iroh connection when a grant
-is suspended. No revocation set needed for native clients.
+The middleware extracts the `NodeId` (= ed25519 pubkey) from the iroh
+connection. No signature verification needed — the QUIC handshake already proved
+key ownership. The grant is cached in memory from connection establishment.
+Access rights are the full grant (no scoped sessions).
 
-**WebSocket/HTTP path (browser clients):** Session tokens are self-contained
-signed documents (see section 6). The middleware verifies the instance's own
-ed25519 signature (~60μs), then checks a small in-memory revocation set (O(1)).
-**No database lookup on the hot path.** If the session token has expired, the
-middleware returns a structured error with
-`recovery: { "action": "refresh", "refresh_url": "/api/auth/refresh" }`.
-
-Both paths populate the same `AuthUser` context. Handlers are
-transport-agnostic:
+Revocation is immediate: when an admin suspends a user, the instance closes
+their iroh connection. No revocation set, no token expiry window.
 
 ```rust
-// In a handler — works identically for iroh and WebSocket clients:
 fn create_task(auth: AuthUser) -> Result<...> {
-    auth.require_access("tasks", "create")?;  // checks scope via AccessRights::contains()
+    auth.require_access("tasks", "create")?;  // checks grant via AccessRights::contains()
     // ...
 }
 ```
 
-For browser clients, scoped sessions work as before: a session requested with
-`scope: [{ "type": "content", "actions": ["read"] }]` will fail the
-`tasks:create` check even if the underlying grant has `collaborate` capability.
-Native iroh clients always have full grant access rights (no scoped sessions —
-the connection is the session).
-
-The `grant_version` field in the session token enables immediate revocation for
-browser clients: when an admin suspends a user, the broadcast adds `(pubkey,
-grant_version)` to the in-memory revocation set. The middleware checks this set
-before accepting the session token. Revocation set entries are
-garbage-collected when the corresponding session tokens expire (15 minutes).
-For native clients, the iroh connection is closed immediately.
+Handlers are transport-unaware. `AuthUser` is populated from the iroh connection
+state. The same code works for native QUIC clients and browser WASM clients
+(both connect via iroh).
 
 ## 3. Registry Data Model (crabcity.dev)
 
@@ -1292,12 +1194,12 @@ Org blocklist delta.
 1. User receives invite URL: https://instance.example/join#<base32>
 2. SvelteKit frontend extracts token from fragment
 3. Join page renders: instance name, inviter name, capability, "Your name" input
-4. If user has no keypair: generate one, store in IndexedDB
+4. If user has no keypair: generate ed25519 keypair (= iroh NodeId), store in IndexedDB
 5. KEY BACKUP MODAL: blocking modal, copy/download key, "I saved my key" checkbox
-6. POST /api/invites/redeem { token, public_key, display_name }
-7. Instance verifies invite, creates identity + grant, returns session token
-8. Client stores session token as cookie, redirects to instance UI
-9. User's presence appears to all connected clients (GrantUpdate broadcast)
+6. iroh WASM connect to instance via embedded relay (ws://localhost:<port>/relay)
+7. Send RedeemInvite { token, display_name } over iroh stream
+8. Instance verifies invite, creates identity + grant, sends initial state snapshot
+9. User's presence appears to all connected clients (MemberJoined broadcast)
 ```
 
 ### 5.2 Flow B: Registry Invite
@@ -1305,13 +1207,14 @@ Org blocklist delta.
 ```
 1. User receives URL: https://crabcity.dev/join/abc12345
 2. If user has no crabcity.dev account:
-   a. Generate keypair (or import existing)
+   a. Generate ed25519 keypair (= iroh NodeId), or import existing
    b. KEY BACKUP MODAL
    c. POST /api/v1/accounts { public_key, handle, proof, key_label }
-3. Registry resolves short_code -> invite token + instance URL
-4. Registry redirects to instance with the invite token
-5. Instance redeems invite (same as Flow A, step 6-9)
-6. Instance also resolves handle via registry API for display
+3. Registry resolves short_code -> invite token + instance connection info (NodeId, relay URL)
+4. Browser: iroh WASM connect to instance via relay
+5. Send RedeemInvite { token, display_name } over iroh stream
+6. Instance verifies invite, creates identity + grant, resolves handle via registry
+7. Instance sends initial state snapshot
 ```
 
 ### 5.3 Flow C: OIDC SSO (Enterprise)
@@ -1328,9 +1231,11 @@ Org blocklist delta.
    e. crabcity.dev maps IdP subject -> account (auto-provisioning if first login)
 5. crabcity.dev issues its own OIDC id_token with crab city claims
 6. Redirect back to instance with auth code
-7. Instance exchanges code for id_token
+7. Instance exchanges code for id_token via HTTP callback (POST /api/auth/oidc/callback)
 8. Instance extracts public_key, handle, org, capability from claims
-9. Instance creates/updates identity + grant, creates session
+9. Instance creates/updates identity + grant
+10. Browser: 302 redirect to SvelteKit app, which connects via iroh WASM
+11. iroh handshake authenticates the user (NodeId matches the OIDC-provisioned grant)
 ```
 
 ### 5.4 Flow D: CLI/TUI Authentication (iroh)
@@ -1412,56 +1317,42 @@ Key loss recovery path:
 8. Old grant -> removed, attribution merged
 ```
 
-## 6. Session Management
+## 6. Connection Lifecycle
 
-**Native clients (CLI/TUI)** connected via iroh have no session tokens. The iroh
-QUIC connection IS the session — authenticated and encrypted by the transport
-layer. Session management in this section applies only to **browser clients**.
+There are no session tokens, refresh tokens, or revocation sets. The iroh
+connection IS the session for all clients — native and browser.
 
-Browser sessions use a **two-token architecture**: short-lived signed session
-tokens (stateless, no DB on hot path) and long-lived refresh tokens (stored
-hashed in SQLite, checked on refresh).
+### 6.1 Connection States
 
-### 6.1 Session Token (Stateless)
+```
+disconnected  → connecting    via: client initiates iroh connect
+connecting    → connected     via: iroh handshake completes, grant lookup succeeds
+connecting    → rejected      via: no active grant, or blocklisted
+connected     → disconnected  via: client disconnects, network loss, or server close
+```
 
-| Property | Value |
-|----------|-------|
-| Format | Signed document: `instance_sign({ public_key, scope, capability, grant_version, issued_at, expires_at })` |
-| Encoding | Base64 (URL-safe, unpadded) |
-| TTL | 15 minutes |
-| Storage | None — verified by checking instance's own signature |
-| Renewal | Via refresh token (see below) |
-| Transport | `Authorization: Bearer <base64>` header or `__crab_session` cookie (HttpOnly, Secure, SameSite=Strict) |
-| Scope | Intersection of requested scope and grant access rights (computed via `AccessRights::intersect()` at issuance). Omit for full grant. |
-| Per-request cost | Ed25519 signature verification (~60μs) + revocation set lookup (O(1)) |
+### 6.2 Immediate Revocation
 
-### 6.2 Refresh Token (Server-Side)
+When an admin suspends a user, the instance closes their iroh connection. The
+client receives a `ConnectionClosed { reason: "suspended" }` message before
+disconnection. There is no revocation window — the connection is closed
+immediately.
 
-| Property | Value |
-|----------|-------|
-| Token size | 32 bytes (256 bits), random |
-| Storage | SHA-256 hash in `refresh_tokens` table |
-| Default TTL | 24 hours |
-| Renewal | Sliding window — successful refresh extends expiry |
-| Revocation | `DELETE /api/auth/session` (logout) deletes the refresh token |
+For browser clients connected via the embedded relay, the same mechanism
+applies: the relay is in-process, so closing the iroh connection closes the
+underlying WebSocket transport.
 
-### 6.3 Immediate Revocation
+### 6.3 Reconnection
 
-When an admin suspends a user or a blocklist hit fires, the `GrantUpdate`
-broadcast adds `(pubkey, grant_version)` to a small in-memory revocation set.
-The auth middleware checks this set before accepting any session token.
-Revocation set entries are garbage-collected when the corresponding session
-tokens expire (15 minutes max).
-
-This means revocation is immediate for all connected clients (they receive the
-broadcast and their middleware rejects the token) and takes at most 15 minutes
-for disconnected clients (their session token expires and the refresh endpoint
-    checks grant state).
+On reconnect, the client re-establishes the iroh connection (handshake =
+re-authentication) and sends `last_seq` in the initial message. The server
+replays from the ring buffer or sends a full snapshot (see section 9.2).
 
 ### 6.4 Cleanup
 
-A background task sweeps expired refresh tokens every hour. Session tokens need
-no cleanup — they're stateless and expire naturally.
+The instance maintains a `NodeId -> connection` map. When a connection drops,
+the entry is removed and a presence update is broadcast. No background cleanup
+tasks needed — connection state is ephemeral.
 
 ## 7. Key Recovery and Multi-Device
 
@@ -1507,19 +1398,18 @@ There is no "forgot password" flow because there are no passwords.
 
 ## 8. Rate Limiting and Abuse Prevention
 
-Despite "almost no traffic," certain endpoints need basic protection:
+Despite "almost no traffic," certain operations need basic protection:
 
-| Endpoint | Limit | Window |
-|----------|-------|--------|
-| `POST /api/auth/challenge` | 10 | per minute per IP |
-| `POST /api/auth/refresh` | 20 | per minute per refresh token |
-| `POST /api/invites/redeem` | 5 | per minute per IP |
+| Operation | Limit | Window |
+|-----------|-------|--------|
+| iroh connect (new) | 10 | per minute per IP |
+| `RedeemInvite` | 5 | per minute per NodeId |
 | `POST /api/v1/accounts` | 3 | per hour per IP |
 | `POST /api/v1/accounts/:id/keys` | 5 | per hour per account |
 | `POST /api/v1/instances/heartbeat` | 15 | per minute per instance |
-| WebSocket `/api/ws` | 10 | concurrent connections per pubkey |
+| iroh connections | 10 | concurrent per NodeId |
 | WebSocket `/api/preview` | 5 | concurrent connections per IP |
-| WebSocket reconnect | 30 | per minute per pubkey |
+| iroh reconnect | 30 | per minute per NodeId |
 
 Implemented as in-memory token buckets. No Redis needed. Counters reset on
 restart (acceptable at this traffic level).
@@ -1539,10 +1429,10 @@ Signatures are encoded as unpadded base64 (URL-safe variant) in JSON payloads.
 
 UUIDs are v7 (time-ordered) for database locality.
 
-### 9.2 Message Protocol (Transport-Agnostic)
+### 9.2 Message Protocol
 
-All messages use envelope versioning with monotonic sequence numbers, regardless
-of transport (iroh QUIC stream or WebSocket):
+All messages use envelope versioning with monotonic sequence numbers over iroh
+QUIC streams:
 
 ```json
 { "v": 1, "seq": 4817, "type": "GrantUpdate", "data": { ... } }
@@ -1551,12 +1441,10 @@ of transport (iroh QUIC stream or WebSocket):
 The `seq` field is a per-connection monotonic counter assigned by the server.
 Clients track their last-seen `seq` for reconnection/resumption.
 
-**Transport framing:**
-- **iroh QUIC stream:** Length-prefixed JSON (4-byte big-endian length + JSON
-  bytes). Future: msgpack for efficiency.
-- **WebSocket:** JSON text frames.
-
-The application layer sees the same message types on both transports.
+**Framing:** Length-prefixed JSON (4-byte big-endian length + JSON bytes) over
+iroh QUIC streams. Both native clients and browser WASM clients use the same
+framing — the iroh library handles the transport differences (raw QUIC vs
+WebSocket-to-relay). Future: msgpack for efficiency.
 
 Server -> Client message types (auth-related):
 
@@ -1565,11 +1453,14 @@ GrantUpdate       { grant }           -- member capability/state changed
 IdentityUpdate    { identity }        -- member display name/handle/avatar changed
 MemberJoined      { identity, grant } -- new member added
 MemberRemoved     { public_key }      -- member removed
+ConnectionClosed  { reason }          -- server is closing the connection (suspended, blocklisted, etc.)
 ```
 
-These are in addition to the existing `StateChange`, `TaskUpdate`, `InstanceList`, `Focus`, etc.
+These are in addition to the existing `StateChange`, `TaskUpdate`,
+`InstanceList`, `Focus`, etc.
 
-Unauthenticated preview stream (`/api/preview`, WebSocket only):
+Unauthenticated preview stream (`/api/preview`, WebSocket — the only non-iroh
+endpoint):
 
 ```
 PreviewActivity    { terminal_count, active_cursors, user_count, instance_name, uptime_secs }
@@ -1580,23 +1471,17 @@ protocol to evolve without breaking existing clients.
 
 #### Reconnection
 
-**iroh (native clients):** QUIC connection migration handles most network
-transitions (WiFi-to-cellular, IP changes) transparently. If the connection is
-truly lost, the client re-establishes the iroh connection (handshake =
-re-authentication) and sends its `last_seq` in the initial stream message. The
-server replays from the ring buffer or sends a full snapshot.
-
-**WebSocket (browser clients):** On reconnect, the client sends `?last_seq=N`
-in the handshake. The server replays missed messages from a bounded ring buffer
-(last 1000 messages or last 5 minutes, whichever is smaller). If the gap is too
-large, the server sends a full state snapshot instead.
-
-Both transports use the same server-side replay logic:
+QUIC connection migration handles most network transitions (WiFi-to-cellular,
+IP changes) transparently. If the connection is truly lost, the client
+re-establishes the iroh connection (handshake = re-authentication) and sends
+`last_seq` in the initial stream message. The server replays from a bounded ring
+buffer (last 1000 messages or last 5 minutes, whichever is smaller). If the gap
+is too large, the server sends a full state snapshot instead.
 
 ```
 Client                              Instance
-  |  connect (iroh or WebSocket)    |
-  |  last_seq=4817                  |
+  |  iroh connect                    |
+  |  { last_seq: 4817 }             |
   | -------------------------------->|
   |                                  |  check ring buffer
   |                                  |  4817 is within buffer
@@ -1619,22 +1504,22 @@ If `last_seq` is too old or not provided:
 
 #### Heartbeat Pings
 
-The server sends ping frames every 30 seconds (WebSocket ping or iroh
-keepalive). If the client doesn't respond within 10 seconds, the server closes
-the connection and removes the user from presence. This prevents ghost users who
-appear online after disconnecting. Both transports use the same timeout logic.
+The iroh connection uses QUIC keepalive (30-second interval). If the client
+doesn't respond within 10 seconds, the server closes the connection and removes
+the user from presence. This prevents ghost users who appear online after
+disconnecting.
 
 ## 10. Protocol Reference
 
 ### 10.1 Membership State Transitions
 
 ```
-invited   -> active      via: first successful auth (challenge-response or session)
-invited   -> removed     via: invite expired before first auth, or admin action
-active    -> suspended   via: admin POST /api/members/:pk/suspend, or blocklist hit
-active    -> removed     via: admin DELETE /api/members/:pk
-suspended -> active      via: admin POST /api/members/:pk/reinstate
-suspended -> removed     via: admin DELETE /api/members/:pk
+invited   -> active      via: invite redemption over iroh stream (RedeemInvite)
+invited   -> removed     via: invite expired before redemption, or admin action
+active    -> suspended   via: admin SuspendMember, or blocklist hit (iroh connection closed)
+active    -> removed     via: admin RemoveMember (iroh connection closed)
+suspended -> active      via: admin ReinstateMember
+suspended -> removed     via: admin RemoveMember
 removed   -> (terminal)  no transitions out of removed
 ```
 
@@ -1660,34 +1545,45 @@ removed   -> (terminal)  no transitions out of removed
 
 Every error response includes a machine-actionable `recovery` field. Clients
 never have to guess what to do next. Recovery actions are a closed enum:
-`refresh`, `reauthenticate`, `retry`, `contact_admin`, `redeem_invite`, `none`.
+`reconnect`, `retry`, `contact_admin`, `redeem_invite`, `none`.
 
-| HTTP Status | Code | Meaning | Recovery |
-|-------------|------|---------|----------|
-| 400 | `invalid_invite` | Invite expired, exhausted, or malformed | `{ "action": "none" }` |
-| 400 | `invalid_signature` | Signature verification failed | `{ "action": "reauthenticate" }` |
-| 400 | `invalid_timestamp` | Client timestamp too far from server time | `{ "action": "reauthenticate", "hint": "Check system clock" }` |
-| 401 | `no_credentials` | No session token or cookie provided | `{ "action": "reauthenticate", "challenge_url": "/api/auth/challenge" }` |
-| 401 | `session_expired` | Session token expired | `{ "action": "refresh", "refresh_url": "/api/auth/refresh" }` |
-| 401 | `refresh_expired` | Refresh token expired | `{ "action": "reauthenticate", "challenge_url": "/api/auth/challenge" }` |
-| 403 | `not_a_member` | No grant exists for this public key | `{ "action": "redeem_invite" }` |
-| 403 | `grant_not_active` | Grant exists but state != active | `{ "action": "contact_admin", "admin_fingerprints": [...], "reason": "..." }` |
-| 403 | `insufficient_access` | Missing required access right | `{ "action": "none", "required": { "type": "...", "action": "..." } }` |
-| 403 | `blocklisted` | Public key is on a blocklist | `{ "action": "contact_admin", "reason": "..." }` |
-| 409 | `handle_taken` | Registry handle already in use | `{ "action": "none" }` |
-| 409 | `already_a_member` | Public key already has an active grant | `{ "action": "reauthenticate" }` |
-| 429 | `rate_limited` | Too many requests | `{ "action": "retry", "retry_after_secs": N }` |
+Errors on the iroh stream use the same JSON envelope:
 
-Example response body:
+```json
+{ "v": 1, "seq": N, "type": "Error", "data": { "code": "...", "message": "...", "recovery": { ... } } }
+```
+
+| Code | Meaning | Recovery |
+|------|---------|----------|
+| `invalid_invite` | Invite expired, exhausted, or malformed | `{ "action": "none" }` |
+| `not_a_member` | No grant exists for this NodeId | `{ "action": "redeem_invite" }` |
+| `grant_not_active` | Grant exists but state != active | `{ "action": "contact_admin", "admin_fingerprints": [...], "reason": "..." }` |
+| `insufficient_access` | Missing required access right | `{ "action": "none", "required": { "type": "...", "action": "..." } }` |
+| `blocklisted` | NodeId is on a blocklist | `{ "action": "contact_admin", "reason": "..." }` |
+| `already_a_member` | NodeId already has an active grant | `{ "action": "reconnect" }` |
+| `rate_limited` | Too many requests | `{ "action": "retry", "retry_after_secs": N }` |
+
+For connection-level errors (`not_a_member`, `grant_not_active`, `blocklisted`),
+the server sends the error and then closes the iroh connection. For
+request-level errors (`insufficient_access`, `invalid_invite`), the connection
+remains open.
+
+Registry HTTP endpoints (section 4) use standard HTTP status codes. Only
+instance-side communication uses this iroh error format.
+
+Example:
 
 ```json
 {
-    "error": "grant_not_active",
-    "message": "Your membership is suspended",
-    "recovery": {
-        "action": "contact_admin",
-        "admin_fingerprints": ["crab_2K7XM9QP", "crab_9F4YN2RZ"],
-        "reason": "Blocklist match (org:acme-corp)"
+    "v": 1, "seq": 3, "type": "Error",
+    "data": {
+        "code": "grant_not_active",
+        "message": "Your membership is suspended",
+        "recovery": {
+            "action": "contact_admin",
+            "admin_fingerprints": ["crab_2K7XM9QP", "crab_9F4YN2RZ"],
+            "reason": "Blocklist match (org:acme-corp)"
+        }
     }
 }
 ```
@@ -1726,9 +1622,9 @@ Identity proofs are **assertions, not guarantees**. They prove the subject
 has an active grant on the claimed instance. Full verification requires
 contacting the instance or registry.
 
-Proofs are exchanged during WebSocket handshake (client sends its proofs as part
-of the initial state) and cached locally. They are refreshed when the registry
-resolves a handle or when the user explicitly re-proves.
+Proofs are exchanged during iroh connection establishment (client sends its
+proofs as part of the initial message) and cached locally. They are refreshed
+when the registry resolves a handle or when the user explicitly re-proves.
 
 ## 12. Invite QR Codes
 
@@ -1757,18 +1653,18 @@ channel, not a replacement.
 
 ## 13. Idempotency
 
-Every mutation endpoint handles the "request succeeded, response lost, client
-retries" failure mode:
+Every mutation handles the "request succeeded, response lost, client retries"
+failure mode. Since all mutations go over iroh streams, the iroh connection
+provides reliable delivery for most cases. Idempotency matters for reconnect
+scenarios where the client replays its last unacknowledged request:
 
-| Endpoint | Idempotency key | Behavior on retry |
-|----------|----------------|-------------------|
-| `POST /api/auth/challenge` | Stateless | Returns a new signed challenge token; no server state to conflict |
-| `POST /api/auth/verify` | `(pubkey, nonce)` | Returns existing session if already verified with this nonce |
-| `POST /api/auth/refresh` | `(refresh_token)` | Mints a new session token; old ones remain valid until expiry |
-| `POST /api/invites` | Client-supplied `idempotency_key` header | Returns existing invite if key matches |
-| `POST /api/invites/redeem` | `(invite_nonce, public_key)` | Returns existing grant if already redeemed by this key |
-| `PATCH /api/members/:pk` | Last-write-wins | Capability change is idempotent by nature |
-| `POST /api/members/:pk/suspend` | State check | No-op if already suspended |
+| Operation | Idempotency key | Behavior on retry |
+|-----------|----------------|-------------------|
+| `CreateInvite` | Client-supplied `idempotency_key` field | Returns existing invite if key matches |
+| `RedeemInvite` | `(invite_nonce, NodeId)` | Returns existing grant if already redeemed by this NodeId |
+| `UpdateMember` | Last-write-wins | Capability change is idempotent by nature |
+| `SuspendMember` | State check | No-op if already suspended |
+| `ReinstateMember` | State check | No-op if already active |
 
 Event logging is serialized within SQLite transactions: `BEGIN → read prev_hash
 → compute new hash → INSERT → COMMIT`. The hash chain requires sequential
@@ -1780,14 +1676,16 @@ writes; concurrent event inserts are serialized by the database.
 
 Every instance and registry exposes `GET /metrics`:
 
-**Auth:**
-- `crabcity_auth_challenges_total{result}` — success, invalid_sig, expired,
-  no_grant
-- `crabcity_auth_refresh_total{result}` — success, expired, revoked
-- `crabcity_sessions_active` (gauge) — currently valid session tokens (estimated
-  from refresh token count)
-- `crabcity_revocation_set_size` (gauge) — entries in the in-memory revocation
-  set
+**iroh Connections:**
+- `crabcity_iroh_connections_active` (gauge) — all connected clients
+- `crabcity_iroh_connections_total{transport}` — cumulative connections
+  (`quic` = native, `relay` = browser via embedded relay)
+- `crabcity_iroh_reconnections_total` — connection re-establishments
+- `crabcity_iroh_auth_rejections_total{reason}` — `no_grant`, `suspended`,
+  `blocklisted`
+- `crabcity_replay_messages_total` — messages replayed on reconnect
+- `crabcity_snapshots_total` — full state snapshots sent (reconnect gap too
+  large)
 
 **Membership:**
 - `crabcity_grants_by_state{state}` (gauge) — invited, active, suspended,
@@ -1797,15 +1695,6 @@ Every instance and registry exposes `GET /metrics`:
 - `crabcity_noun_invites_total{status}` — resolved, pending
 - `crabcity_noun_invites_pending` (gauge) — pending noun invites awaiting
   resolution
-
-**Connectivity:**
-- `crabcity_iroh_connections_active` (gauge) — native clients connected via iroh
-- `crabcity_iroh_reconnections_total` — iroh connection re-establishments
-- `crabcity_ws_connections_active` (gauge) — browser clients connected via WebSocket
-- `crabcity_ws_reconnections_total`
-- `crabcity_replay_messages_total{transport}` — messages replayed on reconnect (iroh or ws)
-- `crabcity_snapshots_total{transport}` — full state snapshots sent (reconnect gap too large)
-- `crabcity_connections_by_transport{transport}` (gauge) — iroh vs ws breakdown
 
 **Registry (instance-side):**
 - `crabcity_registry_heartbeat_latency_seconds` (histogram)
@@ -1818,9 +1707,9 @@ Every instance and registry exposes `GET /metrics`:
 
 ### 14.2 Structured Logging
 
-Every auth decision (success or failure) emits a structured log line with
-fields: `public_key_fingerprint`, `endpoint`, `result`, `reason`,
-`session_scope`, `duration_ms`. This is the forensic trail for investigating
+Every auth decision (connection accepted or rejected) emits a structured log
+line with fields: `node_id_fingerprint`, `result`, `reason`, `grant_capability`,
+`transport` (`quic` or `relay`). This is the forensic trail for investigating
 auth issues.
 
 Every state transition emits a structured log line with: `event_type`,
