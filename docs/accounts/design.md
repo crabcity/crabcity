@@ -76,22 +76,41 @@ The signed payload is structured and self-documenting:
 
 ### 1.4 Invite Token Format
 
+A flat (non-delegated) invite:
+
 ```
 Invite = {
     version: u8,                    // 0x01
-    issuer: [u8; 32],              // ed25519 public key
     instance: [u8; 32],            // instance NodeId
-    capability: u8,                // 0=view, 1=collaborate, 2=admin
-    max_uses: u32,                 // 0 = unlimited
-    expires_at: u64,               // unix timestamp, 0 = never
-    nonce: [u8; 16],               // random, for uniqueness
-    signature: [u8; 64],           // ed25519 signature over all preceding fields
+    chain_length: u8,              // number of InviteLinks (1 for flat invites)
+    links: [InviteLink],          // ordered, root-to-leaf
+}
+
+InviteLink = {
+    issuer: [u8; 32],             // ed25519 public key
+    capability: u8,               // 0=view, 1=collaborate, 2=admin
+    max_depth: u8,                // remaining delegation depth (0 = leaf, cannot delegate further)
+    max_uses: u32,                // 0 = unlimited
+    expires_at: u64,              // unix timestamp, 0 = never
+    nonce: [u8; 16],              // random, for uniqueness
+    signature: [u8; 64],          // signs H(prev_link) ++ instance ++ own fields (root link signs H(0x00*32) ++ instance ++ own fields)
 }
 ```
 
-Total: 1 + 32 + 32 + 1 + 4 + 8 + 16 + 64 = **158 bytes**
+Per-link size: 32 + 1 + 1 + 4 + 8 + 16 + 64 = **126 bytes**
 
-Encoded as base32 (Crockford, no padding): **254 characters**
+Flat invite total: 1 + 32 + 1 + 126 = **160 bytes** (256 chars base32)
+
+Delegated invite (3-hop chain): 1 + 32 + 1 + (126 * 3) = **412 bytes** (660 chars base32)
+
+Verification (delegation chain):
+1. Root link: verify `signature` over `H(0x00*32) ++ instance ++ fields`; root issuer must have `MANAGE_MEMBERS` on the instance
+2. Each subsequent link: verify `signature` over `H(prev_link) ++ instance ++ fields`
+3. Each link's `capability` must be <= previous link's `capability`
+4. Each link's `max_depth` must be < previous link's `max_depth`
+5. All links must be unexpired and within use limits
+
+A flat invite is a chain of length 1 with `max_depth = 0`.
 
 URL format:
 ```
@@ -163,10 +182,11 @@ CREATE TABLE invites (
     FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
 );
 
--- Active sessions
+-- Active sessions (scoped: session permissions <= grant permissions)
 CREATE TABLE sessions (
     token_hash BLOB NOT NULL PRIMARY KEY,  -- SHA-256 of 32-byte random token
     public_key BLOB NOT NULL,              -- 32 bytes
+    scope INTEGER NOT NULL,                -- u32 bitfield, intersection of requested scope and grant permissions
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
@@ -191,14 +211,25 @@ CREATE TABLE blocklist_cache (
     PRIMARY KEY (scope, target_type, target_value)
 );
 
--- Append-only audit trail
+-- Append-only, hash-chained audit trail
 CREATE TABLE event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prev_hash BLOB NOT NULL,               -- 32 bytes, SHA-256 of previous event (genesis: H(instance_node_id))
     event_type TEXT NOT NULL,              -- 'member.joined', 'grant.capability_changed', etc.
     actor BLOB,                            -- pubkey of who did it (NULL for system events)
     target BLOB,                           -- pubkey of who it happened to
     payload TEXT NOT NULL DEFAULT '{}',     -- JSON details
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    hash BLOB NOT NULL                     -- 32 bytes, H(id ++ prev_hash ++ event_type ++ actor ++ target ++ payload ++ created_at)
+);
+
+-- Signed checkpoints for tamper evidence
+CREATE TABLE event_checkpoints (
+    event_id INTEGER NOT NULL PRIMARY KEY, -- the event this checkpoint covers through
+    chain_head_hash BLOB NOT NULL,         -- 32 bytes, hash of the event at event_id
+    signature BLOB NOT NULL,               -- 64 bytes, instance NodeId signs the chain head
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (event_id) REFERENCES event_log(id)
 );
 
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
@@ -209,6 +240,7 @@ CREATE INDEX idx_grants_invited_via ON member_grants(invited_via);
 CREATE INDEX idx_event_log_type ON event_log(event_type);
 CREATE INDEX idx_event_log_target ON event_log(target);
 CREATE INDEX idx_event_log_created ON event_log(created_at);
+CREATE INDEX idx_event_log_hash ON event_log(hash);
 ```
 
 ### 2.2 Permissions Bitfield
@@ -241,22 +273,26 @@ Admins can tweak individual bits via `PATCH /api/members/:public_key/permissions
 
 #### `POST /api/auth/challenge`
 
-Request identity challenge.
+Request identity challenge. Optionally request a scoped session.
 
 ```
-Request:  { "public_key": "<base64>", "timestamp": "<iso8601>" }
+Request:  { "public_key": "<base64>", "timestamp": "<iso8601>", "scope": ["VIEW_CONTENT", "SEND_CHAT"] }
 Response: { "nonce": "<base64>", "expires_at": "<iso8601>" }
 ```
 
+`scope` is optional. If omitted, the session will have the full permissions of the underlying grant. If provided, the session scope is the intersection of the requested scope and the grant's permissions. This implements the principle of least privilege: a CLI tool that only reads tasks can request a `VIEW_CONTENT`-only session, limiting blast radius if the token leaks.
+
 #### `POST /api/auth/verify`
 
-Complete challenge-response, get session.
+Complete challenge-response, get scoped session.
 
 ```
 Request:  { "public_key": "<base64>", "nonce": "<base64>", "signature": "<base64>", "timestamp": "<iso8601>" }
-Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "permissions": 63 }
+Response: { "session_token": "<base64>", "expires_at": "<iso8601>", "capability": "collaborate", "permissions": 63, "scope": 5 }
 Error:    401 if signature invalid, 403 if no grant or state != active
 ```
+
+`scope` in the response is the actual enforced permissions for this session (may be less than `permissions` if a scope was requested during challenge).
 
 #### `POST /api/auth/oidc/callback`
 
@@ -287,13 +323,15 @@ Error:    400 if expired/exhausted, 403 if issuer revoked or blocklisted
 ```
 
 On redemption:
-1. Verify invite signature and validity (not expired, not exhausted, not revoked)
-2. Create `member_identities` row (or update if pubkey already known)
-3. Create `member_grants` row with `state = active`, `invited_via = invite.nonce`
-4. Increment invite `use_count`
-5. Log `invite.redeemed` and `member.joined` events
-6. Create session
-7. Broadcast `GrantUpdate`
+1. Verify invite: walk the delegation chain root-to-leaf, verify all signatures, check capability narrowing and depth constraints
+2. Verify root issuer has `MANAGE_MEMBERS` on this instance (lookup grant)
+3. Check all links: not expired, not exhausted, not revoked
+4. Create `member_identities` row (or update if pubkey already known)
+5. Create `member_grants` row with `state = active`, `invited_via = leaf_link.nonce`, capability from leaf link
+6. Increment use count on the leaf link's nonce (stored in `invites` table)
+7. Log `invite.redeemed` and `member.joined` events (payload includes full chain for auditability)
+8. Create session (scoped to full grant permissions by default)
+9. Broadcast `MemberJoined`
 
 #### `POST /api/invites/revoke`
 
@@ -377,6 +415,60 @@ Query:    ?target=<base64>&event_type=member.*&limit=50&before=<id>
 Response: { "events": [...], "has_more": true }
 ```
 
+#### `GET /api/events/verify`
+
+Verify event log integrity. Requires `MANAGE_MEMBERS` permission.
+
+```
+Query:    ?from=<id>&to=<id>
+Response: {
+    "valid": true,
+    "events_checked": 847,
+    "chain_head": { "event_id": 847, "hash": "<hex>" },
+    "checkpoints": [
+        { "event_id": 100, "hash": "<hex>", "signature": "<base64>", "valid": true },
+        { "event_id": 200, "hash": "<hex>", "signature": "<base64>", "valid": true }
+    ]
+}
+Error:    409 if chain is broken (includes the break point)
+```
+
+#### `GET /api/events/proof/:event_id`
+
+Get an inclusion proof for a specific event. Requires `VIEW_CONTENT` permission.
+
+```
+Response: {
+    "event": { ... },
+    "prev_hash": "<hex>",
+    "hash": "<hex>",
+    "nearest_checkpoint": { "event_id": 200, "hash": "<hex>", "signature": "<base64>" }
+}
+```
+
+#### `WebSocket /api/preview`
+
+Unauthenticated preview stream for the join page. Provides activity signals without content.
+
+```
+No authentication required. Rate-limited to 5 concurrent connections per IP.
+
+Server -> Client messages:
+    { "type": "preview.activity", "data": {
+        "terminal_count": 2,
+        "active_cursors": [
+            { "terminal_id": "...", "row": 24, "col": 80 }   // cursor position only, no content
+        ],
+        "user_count": 3,
+        "instance_name": "Alex's Workshop",
+        "uptime_secs": 84200
+    }}
+
+Sent every 2 seconds while connected. No client -> server messages accepted.
+```
+
+This is the "looking through the restaurant window" stream. It communicates liveness and activity without leaking any instance data. Terminal content, chat messages, task details, and user identities are never sent on this stream.
+
 ### 2.4 Auth Middleware Changes
 
 The existing auth middleware gains a new check in the chain:
@@ -390,15 +482,17 @@ The existing auth middleware gains a new check in the chain:
 
 Session tokens are 32 random bytes, base64-encoded, stored hashed (SHA-256) in the sessions table. Default TTL: 24 hours, configurable.
 
-The middleware extracts both the identity and the grant into the request context. Endpoint handlers check specific permission bits:
+The middleware extracts the identity, the grant, and the **session scope** into the request context. Permission checks use the session scope (not the grant permissions directly), enforcing least privilege:
 
 ```rust
 // In a handler:
 fn create_task(auth: AuthUser) -> Result<...> {
-    auth.require_permission(Permissions::EDIT_TASKS)?;
+    auth.require_permission(Permissions::EDIT_TASKS)?;  // checks session.scope, not grant.permissions
     // ...
 }
 ```
+
+This means a session requested with `scope: [VIEW_CONTENT]` will fail the `EDIT_TASKS` check even if the underlying grant has `collaborate` capability. The full grant permissions are available via `auth.grant_permissions()` for display purposes (e.g., showing what the user *could* do with a full-scope session).
 
 ## 3. Registry Data Model (crabcity.dev)
 
@@ -528,6 +622,27 @@ CREATE TABLE registry_invites (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT,
     FOREIGN KEY (instance_id) REFERENCES instances(id)
+);
+
+-- Key transparency log (Merkle tree of all key binding operations)
+CREATE TABLE transparency_log (
+    tree_index INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,                  -- 'key_added', 'key_revoked'
+    account_id TEXT NOT NULL,
+    public_key BLOB NOT NULL,             -- 32 bytes
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    leaf_hash BLOB NOT NULL,              -- H(action ++ account_id ++ public_key ++ created_at)
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+
+-- Signed tree heads (published on every mutation)
+CREATE TABLE transparency_tree_heads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tree_size INTEGER NOT NULL,
+    root_hash BLOB NOT NULL,              -- 32 bytes
+    signature BLOB NOT NULL,              -- 64 bytes, registry signing key
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- OIDC signing keys (for crabcity.dev as OIDC provider)
@@ -732,7 +847,57 @@ Response: { "short_code": "abc12345", "url": "https://crabcity.dev/join/abc12345
 
 Resolve short-code to invite metadata (does NOT return the raw token until the user authenticates/creates an account).
 
-### 4.7 Blocklist Endpoints
+### 4.7 Key Transparency Endpoints
+
+#### `GET /api/v1/transparency/tree-head`
+
+Current signed tree head.
+
+```
+Response: {
+    "tree_size": 1847,
+    "root_hash": "<hex>",
+    "timestamp": "<iso8601>",
+    "signature": "<base64>"          // registry signing key signs (tree_size ++ root_hash ++ timestamp)
+}
+```
+
+#### `GET /api/v1/transparency/proof?handle=:handle`
+
+Audit an account's key binding history with inclusion proofs.
+
+```
+Response: {
+    "account_id": "...",
+    "entries": [
+        { "action": "key_added", "public_key": "<base64>", "fingerprint": "crab_...", "label": "MacBook", "timestamp": "...", "tree_index": 42 },
+        { "action": "key_added", "public_key": "<base64>", "fingerprint": "crab_...", "label": "Phone", "timestamp": "...", "tree_index": 97 }
+    ],
+    "inclusion_proofs": [
+        { "tree_index": 42, "proof_hashes": ["<hex>", "<hex>", ...] },
+        { "tree_index": 97, "proof_hashes": ["<hex>", "<hex>", ...] }
+    ],
+    "tree_head": { "tree_size": 1847, "root_hash": "<hex>", "signature": "<base64>" }
+}
+```
+
+#### `GET /api/v1/transparency/entries?start=N&end=M`
+
+Raw log entries for monitors. Paginated.
+
+```
+Response: {
+    "entries": [
+        { "index": 42, "action": "key_added", "account_id": "...", "public_key": "<base64>", "timestamp": "..." },
+        ...
+    ],
+    "tree_head": { ... }
+}
+```
+
+Monitors (instances, public auditors) poll this endpoint to watch for unauthorized key bindings. An instance can run a background task that periodically fetches new entries and alerts if any of its members' registry accounts have unexpected key additions.
+
+### 4.8 Blocklist Endpoints
 
 #### `GET /api/v1/blocklist`
 
@@ -839,6 +1004,7 @@ Loopback bypass (existing) still works for local instances.
 | Default TTL | 24 hours |
 | Renewal | Sliding window — activity extends expiry |
 | Revocation | DELETE /api/auth/session (logout) |
+| Scope | Intersection of requested scope and grant permissions. Omit for full grant. |
 | Transport | `Authorization: Bearer <base64>` header or `__crab_session` cookie (HttpOnly, Secure, SameSite=Strict) |
 
 Session cleanup: a background task sweeps expired sessions every hour (or lazily on access — either is fine at this scale).
@@ -920,6 +1086,12 @@ MemberRemoved     { public_key }      -- member removed
 ```
 
 These are in addition to the existing `StateChange`, `TaskUpdate`, `InstanceList`, `Focus`, etc.
+
+Unauthenticated preview stream (`/api/preview`):
+
+```
+PreviewActivity    { terminal_count, active_cursors, user_count, instance_name, uptime_secs }
+```
 
 Clients MUST ignore unknown message types and unknown versions. This allows the protocol to evolve without breaking existing clients.
 

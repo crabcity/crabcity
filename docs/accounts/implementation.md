@@ -6,7 +6,7 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 
 ## Milestone 0: Foundations
 
-**Goal:** Shared crate with cryptographic types, invite token format, permissions model, and key fingerprints.
+**Goal:** Shared crate with cryptographic types, invite token format (with delegation chains), permissions model, key fingerprints, hash-chained event types, and comprehensive property-based tests.
 
 **Deliverables:**
 - [ ] New crate: `packages/crab_city_auth/`
@@ -17,33 +17,51 @@ This plan breaks the account system into deliverable milestones. Each milestone 
 - [ ] `Permissions` bitflags: `VIEW_CONTENT`, `VIEW_TERMINALS`, `SEND_CHAT`, `EDIT_TASKS`, `TERMINAL_INPUT`, `CREATE_INSTANCE`, `MANAGE_MEMBERS`, `MANAGE_INSTANCE`
 - [ ] `Capability::permissions() -> Permissions` — expand preset to bitfield
 - [ ] `MembershipState` enum: `Invited`, `Active`, `Suspended`, `Removed`
-- [ ] `Invite` struct with serialize/deserialize (binary format, 158 bytes)
-- [ ] `Invite::sign()` and `Invite::verify()` methods
+- [ ] `InviteLink` struct: issuer, capability, max_depth, max_uses, expires_at, nonce, signature
+- [ ] `Invite` struct: instance NodeId + `Vec<InviteLink>` chain (flat invite = chain of length 1)
+- [ ] `Invite::sign()`, `Invite::verify()`, `Invite::delegate()` methods
+- [ ] Delegation chain verification: capability narrowing, depth checking, signature walking
 - [ ] Base32 encoding/decoding (Crockford) for invite tokens
-- [ ] Challenge-response protocol types: `Challenge`, `ChallengeResponse`
+- [ ] Challenge-response protocol types: `Challenge`, `ChallengeResponse`, with optional `scope: Permissions`
 - [ ] Structured challenge payload: `"crabcity:auth:v1:" ++ nonce ++ node_id ++ timestamp`
-- [ ] `EventType` enum and `Event` struct for the audit log
-- [ ] Unit tests for all crypto operations, round-trip serialization, permission expansion, state transitions
+- [ ] `EventType` enum and `Event` struct with hash chain fields (`prev_hash`, `hash`)
+- [ ] `Event::compute_hash()` and `Event::verify_chain()` helpers
+- [ ] `EventCheckpoint` struct with instance signature
+- [ ] Property-based tests (using `proptest`):
+  - Round-trip: `Invite::from_bytes(invite.to_bytes()) == invite` for all valid invites
+  - Signature: `invite.sign(k).verify(k.public()) == Ok` for all keypairs and invites
+  - Forgery: `invite.sign(k1).verify(k2.public()) == Err` for all k1 != k2
+  - Capability ordering: `c1 < c2` implies `c1.permissions()` is a strict subset of `c2.permissions()`
+  - Delegation narrowing: verify chain with out-of-order capabilities is rejected
+  - State machine: all reachable states under all transitions produce valid states
+  - Permission expansion idempotency: `Capability::from_permissions(cap.permissions()) == cap` for presets
+  - Hash chain: inserting/deleting/modifying any event in a chain is detectable
+- [ ] Fuzz target for `Invite::from_bytes()` (untrusted input from network — must not panic on any input)
 
 **Crate dependencies:**
 - `ed25519-dalek` (with `rand_core` feature)
 - `data-encoding` (for Crockford base32)
 - `bitflags` (for permissions)
+- `sha2` (for hash chain and token hashing)
 - `serde` (for JSON API types)
 - `uuid` (v7)
+
+**Dev dependencies:**
+- `proptest` (property-based testing)
 
 **Build system:**
 - Add `crab_city_auth` to `Cargo.toml` workspace members
 - Add to `MODULE.bazel` as a local crate
 - Wire into `//tools/format`
+- Add `cargo-fuzz` target for invite parser
 
-**Estimated size:** ~800 lines of Rust + tests
+**Estimated size:** ~1100 lines of Rust + ~400 lines of property-based tests + fuzz target
 
 ---
 
 ## Milestone 1: Instance-Local Auth
 
-**Goal:** Instances can create invites, redeem them, and authenticate users via challenge-response. This milestone replaces the implicit "everyone is authenticated" model with real membership. Includes the join page, key backup modal, event log, and integration tests.
+**Goal:** Instances can create invites (including delegated invites), redeem them, and authenticate users via challenge-response with scoped sessions. This milestone replaces the implicit "everyone is authenticated" model with real membership. Includes the join page with live preview, key backup modal, hash-chained event log, and integration tests.
 
 **Depends on:** Milestone 0
 
@@ -59,10 +77,11 @@ migrations/
   NNNN_create_sessions.sql
   NNNN_create_blocklist.sql
   NNNN_create_event_log.sql
+  NNNN_create_event_checkpoints.sql
   NNNN_seed_loopback_identity.sql
 ```
 
-Tables: `member_identities`, `member_grants`, `invites`, `sessions`, `blocklist`, `blocklist_cache`, `event_log` (see design doc section 2.1).
+Tables: `member_identities`, `member_grants`, `invites`, `sessions`, `blocklist`, `blocklist_cache`, `event_log`, `event_checkpoints` (see design doc section 2.1).
 
 The `seed_loopback_identity` migration inserts the loopback sentinel (all-zeros pubkey) with `owner` grant and `active` state.
 
@@ -96,8 +115,8 @@ Functions:
 New file: `packages/crab_city/src/repository/sessions.rs`
 
 Functions:
-- `create_session(db, token_hash, public_key, expires_at) -> Result<()>`
-- `get_session(db, token_hash) -> Result<Option<Session>>`
+- `create_session(db, token_hash, public_key, scope, expires_at) -> Result<()>`
+- `get_session(db, token_hash) -> Result<Option<Session>>` (includes `scope` field)
 - `delete_session(db, token_hash) -> Result<()>`
 - `extend_session(db, token_hash, new_expires_at) -> Result<()>`
 - `cleanup_expired_sessions(db) -> Result<u64>`
@@ -105,23 +124,28 @@ Functions:
 New file: `packages/crab_city/src/repository/event_log.rs`
 
 Functions:
-- `log_event(db, event) -> Result<i64>`
+- `log_event(db, event) -> Result<i64>` — computes hash chain (reads prev event hash, computes new hash)
 - `query_events(db, filter) -> Result<Vec<Event>>`
+- `verify_chain(db, from, to) -> Result<ChainVerification>` — sequential scan, verify hash linkage
+- `get_chain_head(db) -> Result<(i64, [u8; 32])>` — latest event id and hash
+- `create_checkpoint(db, event_id, signing_key) -> Result<EventCheckpoint>` — sign chain head
+- `get_event_proof(db, event_id) -> Result<EventProof>` — event + surrounding hashes + nearest checkpoint
 
 ### 1.3 Handler Layer
 
 New file: `packages/crab_city/src/handlers/auth.rs`
 
 Endpoints:
-- `POST /api/auth/challenge` — generate nonce, store pending challenge (in-memory)
-- `POST /api/auth/verify` — verify structured signature, check grant state, create session
+- `POST /api/auth/challenge` — generate nonce, store pending challenge (in-memory), accept optional `scope`
+- `POST /api/auth/verify` — verify structured signature, check grant state, create scoped session
 - `DELETE /api/auth/session` — logout (revoke session)
 
 New file: `packages/crab_city/src/handlers/invites.rs`
 
 Endpoints:
-- `POST /api/invites` — create invite (requires `MANAGE_MEMBERS`)
-- `POST /api/invites/redeem` — redeem invite token, create identity + grant + session
+- `POST /api/invites` — create invite (requires `MANAGE_MEMBERS`), supports `max_depth` for delegation
+- `POST /api/invites/redeem` — redeem invite token (flat or delegated chain), create identity + grant + scoped session
+- `POST /api/invites/delegate` — create a sub-invite from an existing invite (client-side, but instance validates on redeem)
 - `GET /api/invites` — list active invites (requires `MANAGE_MEMBERS`)
 - `POST /api/invites/revoke` — revoke invite, optionally suspend derived members
 
@@ -136,18 +160,25 @@ Endpoints:
 - `POST /api/members/:public_key/reinstate` — reinstate member
 - `POST /api/members/:public_key/replace` — link new grant to old (key loss recovery)
 - `GET /api/events` — query event log (requires `MANAGE_MEMBERS`)
+- `GET /api/events/verify` — verify hash chain integrity (requires `MANAGE_MEMBERS`)
+- `GET /api/events/proof/:event_id` — inclusion proof for a specific event (requires `VIEW_CONTENT`)
 
 ### 1.4 Auth Middleware Update
 
 Modify: `packages/crab_city/src/auth.rs`
 
 Updated auth chain:
-1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant)
-2. Check `Authorization: Bearer <token>` header → SHA-256 hash → lookup sessions table → lookup grant (state == active)
+1. Loopback bypass → synthetic owner identity (all-zeros pubkey, `owner` grant, full-scope session)
+2. Check `Authorization: Bearer <token>` header → SHA-256 hash → lookup sessions table (includes `scope`) → lookup grant (state == active)
 3. Check `__crab_session` cookie → same lookup
 4. No credentials → 401
 
-The middleware populates `AuthUser` with both identity and grant, including the `permissions` bitfield. Handlers call `auth.require_permission(Permissions::EDIT_TASKS)?`.
+The middleware populates `AuthUser` with identity, grant, and **session scope**. Permission checks use the session scope (the intersection of requested scope and grant permissions):
+
+```rust
+auth.require_permission(Permissions::EDIT_TASKS)?;  // checks session.scope, not grant.permissions
+auth.grant_permissions();                             // full grant permissions, for display only
+```
 
 ### 1.5 Instance Bootstrap
 
@@ -162,6 +193,11 @@ Modify: `packages/crab_city_ui/`
 **Join page** (`/join` route):
 - Extract invite token from `#fragment`
 - Parse invite to show: instance name, inviter fingerprint, capability being granted
+- If delegated invite: show delegation chain depth ("invited by Blake, who was invited by Alex")
+- **Live preview panel**: connect to `/api/preview` WebSocket, show:
+  - Number of users currently online (live-updating)
+  - Abstracted activity visualization (blurred/stylized terminal with cursor movement, no content)
+  - Instance uptime
 - "Your name" input (pre-filled if registry account detected)
 - "Join" button
 - If existing keypair for this instance: show "Welcome back, [name]. [Rejoin]"
@@ -188,22 +224,29 @@ New file: `packages/crab_city/tests/auth_integration.rs`
 End-to-end tests that spin up an in-memory instance and exercise the security-critical paths:
 
 - Generate keypair → create invite → redeem invite → verify session works → verify capabilities are enforced
+- **Delegated invite chain**: admin creates invite with `max_depth=2` → member delegates → sub-delegate redeems → verify capability narrowing is enforced, depth limit is enforced
+- **Delegation forgery**: tamper with a link in a delegation chain → verify redemption is rejected
 - Challenge-response flow: generate, sign, verify, get session
+- **Scoped sessions**: request `VIEW_CONTENT`-only session → verify `EDIT_TASKS` endpoints return 403 → verify `VIEW_CONTENT` endpoints return 200
+- **Scope intersection**: request `MANAGE_MEMBERS` scope with `collaborate` grant → verify session scope is `collaborate` permissions (cannot escalate via scope)
 - Permission enforcement: `collaborate` user cannot access `MANAGE_MEMBERS` endpoints
 - State machine: active → suspended → reinstate → active; suspended → removed
 - Invite revocation: revoke invite → unredeemed uses fail, existing members unaffected
 - Invite revocation with `suspend_derived_members`: all derived grants suspended
 - Key replacement: new key replaces old, old grant removed
 - Loopback bypass: all-zeros pubkey → owner access on loopback, rejected remotely
+- **Event log hash chain**: verify events have correct hash linkage → tamper with an event → verify `verify_chain` detects the break
+- **Event checkpoints**: create checkpoint → verify signature → tamper with event before checkpoint → verify detection
 - Event log: verify events recorded for all state transitions
+- **Preview WebSocket**: connect to `/api/preview` without auth → verify only non-content signals are received
 
-**Estimated size:** ~1500 lines Rust (handlers + repo + middleware + event log) + ~1000 lines Svelte/TS (join page + key backup + member management) + ~400 lines integration tests
+**Estimated size:** ~1800 lines Rust (handlers + repo + middleware + event log + hash chain) + ~1200 lines Svelte/TS (join page + live preview + key backup + member management) + ~600 lines integration tests
 
 ---
 
 ## Milestone 2: Registry Core (crabcity.dev)
 
-**Goal:** A running registry at `crabcity.dev` where users can create accounts (with multi-device key management from day one) and instances can register for discovery.
+**Goal:** A running registry at `crabcity.dev` where users can create accounts (with multi-device key management and key transparency from day one) and instances can register for discovery.
 
 **Depends on:** Milestone 0 (shares `crab_city_auth` crate)
 
@@ -226,11 +269,13 @@ packages/crab_city_registry/
       instances.rs
       invites.rs
       blocklist.rs
+      transparency.rs
     handlers/
       accounts.rs
       keys.rs
       instances.rs
       invites.rs
+      transparency.rs
       health.rs
     middleware/
       auth.rs
@@ -248,9 +293,21 @@ Handle validation: lowercase, alphanumeric + hyphens, 3-30 chars, no leading/tra
 
 ### 2.3 Key Management
 
-- `POST /api/v1/accounts/:id/keys` — add a new key (authenticated with existing key, proof from new key)
-- `DELETE /api/v1/accounts/:id/keys/:public_key` — revoke a key (cannot revoke last active key)
+- `POST /api/v1/accounts/:id/keys` — add a new key (authenticated with existing key, proof from new key). **Also appends to transparency log.**
+- `DELETE /api/v1/accounts/:id/keys/:public_key` — revoke a key (cannot revoke last active key). **Also appends to transparency log.**
 - `GET /api/v1/accounts/:id/keys` — list active keys
+
+All key mutations go through a single codepath that appends to both the `account_keys` table and the `transparency_log` Merkle tree. This is enforced at the repository layer, not the handler layer — it is impossible to modify a key binding without creating a transparency entry.
+
+### 2.3.1 Key Transparency
+
+- `GET /api/v1/transparency/tree-head` — current signed Merkle tree head
+- `GET /api/v1/transparency/proof?handle=:handle` — audit an account's key binding history with inclusion proofs
+- `GET /api/v1/transparency/entries?start=N&end=M` — raw log entries for monitors (paginated)
+
+The Merkle tree is a simple append-only binary tree (RFC 6962 style). Each leaf is `H(action ++ account_id ++ public_key ++ created_at)`. The tree head is signed by the registry's signing key on every mutation. Inclusion proofs are O(log n) in tree size.
+
+Monitors (instances, public auditors) poll the entries endpoint to watch for unauthorized key bindings. An instance can optionally run a background task (alongside the heartbeat) that checks whether any of its members' registry accounts have unexpected key additions.
 
 ### 2.4 Instance Registration and Directory
 
@@ -284,7 +341,7 @@ Minimal HTML. Server-rendered. No JS required for viewing.
 
 In-memory token bucket per IP (and per account for key management). No external dependencies. Reset on restart (acceptable at this traffic level).
 
-**Estimated size:** ~2300 lines Rust + ~200 lines HTML templates
+**Estimated size:** ~2800 lines Rust + ~200 lines HTML templates (includes Merkle tree implementation ~500 LOC)
 
 ---
 
@@ -486,14 +543,58 @@ If a registry admin blocks an instance:
 
 ---
 
+## Milestone 7: Iroh-Native Invite Exchange
+
+**Goal:** Invites can be exchanged directly via iroh transport — no URL, no side-channel, no registry. Two devices on the same network (or reachable via iroh relay) can discover each other and exchange invites peer-to-peer.
+
+**Depends on:** Milestone 1
+
+### 7.1 Invite Advertisement
+
+Instance-side: publish a short-lived iroh document containing the invite token.
+
+- Discovery via mDNS (local network) and iroh DHT (remote)
+- Document contains: instance name, inviter fingerprint, capability, and the signed invite blob
+- Document has a TTL (configurable, default 15 minutes) and self-destructs after redemption or expiry
+- Multiple concurrent advertisements supported (one per active invite)
+
+### 7.2 Invite Discovery (CLI/TUI)
+
+Client-side: `crabcity join --discover`
+
+- Scan for advertised invites via mDNS and iroh DHT
+- Present discovered invites to the user: instance name, inviter, capability
+- User selects one → client redeems the invite directly via iroh transport
+- Falls back to HTTP redemption if iroh direct connection fails
+
+### 7.3 Invite Discovery (Web)
+
+Browser-based discovery is harder (no mDNS, no raw iroh). Two options:
+
+- **Option A (recommended):** Skip browser discovery. The web flow uses URLs. Iroh-native exchange is a CLI/TUI-only feature.
+- **Option B (future):** WebRTC-based discovery via iroh relay. Requires iroh-web SDK maturity.
+
+### 7.4 TUI `/invite` Command
+
+New TUI command: `/invite --discover` or `/invite --nearby`
+
+- Creates a temporary invite and advertises it
+- Shows discovered peers as they appear
+- Admin confirms each peer before the invite is delivered
+
+**Estimated size:** ~600 lines Rust (iroh advertisement + discovery + TUI command)
+
+---
+
 ## Dependency Graph
 
 ```
 M0: Foundations
  +-- M1: Instance-Local Auth
  |    +-- M3: Instance <-> Registry Integration
- |         +-- M6: Blocklists
- +-- M2: Registry Core (with multi-device keys)
+ |    |    +-- M6: Blocklists
+ |    +-- M7: Iroh-Native Invite Exchange
+ +-- M2: Registry Core (with multi-device keys + key transparency)
       +-- M3: Instance <-> Registry Integration
       +-- M4: OIDC Provider
            +-- M5: Enterprise SSO
@@ -505,23 +606,24 @@ Milestones can be parallelized where dependencies allow:
 
 ```
 Phase 1:  M0 (foundations)              <- everything depends on this
-Phase 2:  M1 + M2 (in parallel)        <- instance auth + registry core (with keys)
+Phase 2:  M1 + M2 (in parallel)        <- instance auth + registry core (with keys + transparency)
 Phase 3:  M3 + M4 (in parallel)        <- integration + OIDC
-Phase 4:  M5 + M6 (in parallel)        <- enterprise + moderation
+Phase 4:  M5 + M6 + M7 (in parallel)   <- enterprise + moderation + iroh invites
 ```
 
 ## Total Estimated Scope
 
 | Milestone | Rust LOC | Frontend LOC | Test LOC | Notes |
 |-----------|----------|-------------|----------|-------|
-| M0: Foundations | ~800 | -- | ~200 | Shared crate, permissions, fingerprints |
-| M1: Instance Auth | ~1500 | ~1000 | ~400 | Core auth UX, join page, event log |
-| M2: Registry Core | ~2300 | ~200 | ~200 | New binary, multi-device keys |
-| M3: Integration | ~600 | -- | ~100 | HTTP client + background task |
+| M0: Foundations | ~1100 | -- | ~400 | Shared crate, delegation chains, hash chain, property tests, fuzz |
+| M1: Instance Auth | ~1800 | ~1200 | ~600 | Scoped sessions, live preview, hash-chained event log |
+| M2: Registry Core | ~2800 | ~200 | ~300 | Multi-device keys, key transparency Merkle tree |
+| M3: Integration | ~600 | -- | ~100 | HTTP client + background task + transparency monitoring |
 | M4: OIDC Provider | ~1500 | ~50 | ~200 | Fiddly but well-defined |
 | M5: Enterprise SSO | ~1200 | ~400 | ~100 | Mostly registry-side |
 | M6: Blocklists | ~400 | -- | ~100 | Scoped CRUD + delta sync |
-| **Total** | **~8300** | **~1650** | **~1300** | |
+| M7: Iroh Invites | ~600 | -- | ~100 | Iroh advertisement + discovery + TUI command |
+| **Total** | **~10000** | **~1850** | **~1900** | |
 
 ## Risk Register
 
@@ -537,6 +639,13 @@ Phase 4:  M5 + M6 (in parallel)        <- enterprise + moderation
 | Double-hop OIDC flow (enterprise) bugs | High | Medium | Both hops use `openidconnect` crate. Test against real IdPs early. |
 | Pending challenges lost on restart | Low | Low | In-memory only, 60s TTL. Users retry. Documented as design choice. |
 | Blocklist propagation delay (5 min) | Low | Low | Documented as known property. Acceptable at scale. |
+| Delegation chain token size | Low | Low | 3-hop chain is ~660 chars base32. Fits in URLs. Use registry short-codes for longer chains. |
+| Delegation chain forgery | Low | High | Each link signed independently. Chain verification walks root-to-leaf. Property-tested and fuzzed. |
+| Hash chain performance on large event logs | Low | Low | SHA-256 is fast. Chain verification is sequential but only needed for auditing, not hot path. |
+| Merkle tree implementation correctness | Medium | High | Use RFC 6962 algorithm. Property-test inclusion proofs. Consider using an existing crate (`merkle-log`). |
+| iroh mDNS discovery reliability | Medium | Low | Fallback to URL-based invites. iroh-native exchange is a convenience, not the primary path. |
+| Key transparency log growth | Low | Low | One entry per key mutation. At projected scale, this grows by single-digit entries per day. |
+| Preview WebSocket information leakage | Low | Medium | Strict allowlist: terminal count, cursor position (not content), user count, uptime. Code review the preview stream. |
 
 ## Resolved Questions
 
@@ -552,6 +661,22 @@ Phase 4:  M5 + M6 (in parallel)        <- enterprise + moderation
 
 6. **Multi-device timing.** **Decision: day-one feature in M2**, not deferred. `account_keys` table is part of the initial registry schema. Users can add devices from the start.
 
+7. **Key transparency timing.** **Decision: day-one feature in M2.** All key mutations go through a single codepath that appends to the transparency log. Designing this in later would require backfilling. The Merkle tree implementation is ~500 LOC and the API surface is 3 endpoints.
+
+8. **Invite delegation.** **Decision: design the chain format in M0, implement in M1.** The `InviteLink` struct and chain verification are part of `crab_city_auth`. Flat invites are a chain of length 1 — no special-casing needed. `max_depth=0` disables delegation for simple use cases.
+
+9. **Scoped sessions.** **Decision: implement in M1.** The `scope` column on `sessions` and the optional `scope` parameter on challenge are minimal additions. Backward-compatible: omit scope for full grant.
+
+10. **Hash-chained event log.** **Decision: implement in M0 (types) + M1 (storage).** The `prev_hash` and `hash` fields are part of the `Event` struct in `crab_city_auth`. Computing the hash on every event insert is negligible overhead. Signed checkpoints are optional (configurable interval, default every 100 events).
+
 ## Open Questions
 
 1. **Envelope versioning for existing WebSocket messages.** The current WebSocket protocol doesn't use envelope versioning. Wrapping existing messages (`StateChange`, `TaskUpdate`, etc.) in `{ "v": 1, "type": ..., "data": ... }` is a breaking change for connected clients. Options: (a) cut over all at once in M1, (b) support both formats during a transition period, (c) version the WebSocket handshake protocol. Recommend (a) — M1 is already a breaking change (auth required), so bundle the wire format change.
+
+2. **Merkle tree crate vs hand-roll.** The transparency log needs a basic append-only Merkle tree (RFC 6962). Options: (a) use an existing crate like `merkle-log`, (b) hand-roll ~500 LOC. The algorithm is simple and well-specified, but correctness is critical. Recommend: hand-roll with extensive property tests, since the dependency surface should be minimal for a security-critical component.
+
+3. **Preview WebSocket scope creep.** The preview stream is intentionally minimal (cursor positions, user count, no content). Need to resist pressure to add "just one more signal" — every addition is a potential information leak. The allowlist should be reviewed by at least two people before shipping.
+
+4. **Delegation chain depth limits.** The design allows `max_depth` up to 255 (u8). In practice, chains deeper than 3-4 are hard to reason about. Should there be a global cap (e.g., max 5 hops)? Or leave it to the invite creator? Recommend: configurable per-instance cap, default 3.
+
+5. **Iroh-native invite discovery UX.** The discovery flow requires user confirmation on both sides (inviter accepts peer, invitee accepts invite). Should there be a "promiscuous" mode where the instance auto-accepts all discovered peers? Useful for workshops/demos, dangerous for production. Recommend: require explicit confirmation, but allow a `--auto-accept` flag for ephemeral instances.

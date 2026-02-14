@@ -247,20 +247,57 @@ Invites are serialized, base32-encoded, and distributed out-of-band (URL, chat, 
 
 **Invite revocation semantics:** Revoking an invite revokes *unredeemed uses only*. Existing memberships created from that invite are not affected. To suspend members who joined via a specific invite, use the separate "revoke invite and suspend derived members" admin action. This requires tracing invite->member relationships via the `invited_via` field on grants.
 
-### Event Log (Audit Trail)
+### Invite Delegation Chains
 
-Every state transition on an instance produces an event:
+Invites support **delegation**: a member who received an invite can sub-delegate it to others, creating a cryptographic chain of authority.
+
+```
+DelegatedInvite {
+    chain: Vec<InviteLink>,        // ordered, root-to-leaf
+}
+
+InviteLink {
+    issuer: PublicKey,
+    capability: Capability,        // can only stay same or decrease down the chain
+    max_depth: u8,                 // how many more delegations allowed (0 = leaf, no further delegation)
+    max_uses: u32,
+    nonce: [u8; 16],
+    signature: Signature,          // signs (prev_link_hash ++ own fields)
+}
+```
+
+Verification walks the chain from root to leaf:
+1. Root issuer must be a member with `MANAGE_MEMBERS` on the instance
+2. Each link's capability must be <= previous link's capability (capabilities can only narrow)
+3. Each link's depth must be < previous link's remaining depth
+4. Each signature is valid over (previous link hash + current fields)
+
+The token is a self-contained proof of authorization — the instance can verify the entire delegation without having seen any intermediate step. This enables viral invite distribution: power users become invite distributors without admin intervention, bounded by `max_depth`.
+
+A flat (non-delegated) invite is just a chain of length 1. The v1 invite format is a degenerate case of the delegation chain.
+
+### Event Log (Verifiable Audit Trail)
+
+Every state transition on an instance produces an event. Events are **hash-chained**: each event includes the SHA-256 hash of the previous event, forming a tamper-evident log.
 
 ```
 Event {
     id: u64,                       // monotonic
+    prev_hash: [u8; 32],          // H(previous event) — genesis event uses H(instance_node_id)
     event_type: String,            // "member.joined", "grant.capability_changed", etc.
     actor: PublicKey,               // who did it
     target: Option<PublicKey>,      // who it happened to
     payload: Json,                 // event-specific details
     created_at: DateTime,
+    hash: [u8; 32],               // H(id ++ prev_hash ++ event_type ++ actor ++ target ++ payload ++ created_at)
 }
 ```
+
+The hash chain provides:
+- **Tamper evidence** — modifying or deleting any event breaks the chain. A sequential scan can verify integrity.
+- **Signed checkpoints** — every N events (configurable, default 100), the instance signs the current chain head hash with its NodeId key. This means even the instance operator cannot silently tamper with the log.
+- **Cross-instance audit** — a signed checkpoint is a portable proof of log integrity. An admin can present a signed chain head to prove their instance's event history is untampered.
+- **Merkle proofs** — users can request inclusion proofs that a specific event (e.g., their `member.joined`) exists in the chain.
 
 Event types:
 - `member.joined` — new identity + grant created (invite redemption, OIDC, loopback)
@@ -276,7 +313,7 @@ Event types:
 - `identity.updated` — display name, handle, or avatar changed
 
 The event log is append-only, never mutated. It serves as:
-1. **Audit trail** — "who invited who, when was someone promoted"
+1. **Verifiable audit trail** — "who invited who, when was someone promoted" — with cryptographic tamper evidence
 2. **Debug tool** — trace the provenance of any membership
 3. **Undo mechanism** — admins can review and reverse actions
 4. **Future: activity feed** — surface meaningful events in the UI
@@ -411,6 +448,35 @@ Pending challenges are stored **in-memory** (e.g., `DashMap<Nonce, PendingChalle
 - **Registry OIDC signing keys**: Published via JWKS endpoint (`/.well-known/jwks.json`). Support multiple active keys. Rotate on a fixed schedule (90 days). Instances cache JWKS with a TTL.
 - **Instance NodeId keys**: Tied to iroh identity. Rotation requires re-registration at the registry.
 
+### Key Transparency
+
+The registry maintains a **verifiable log** of all key binding operations (account creation, key addition, key revocation). This log is a Merkle tree — any entry's inclusion can be proven with a compact proof.
+
+Properties:
+- The tree head is signed by the registry and published periodically (on every mutation)
+- **Monitors** (instances, public auditors, or the users themselves) can watch the log for unauthorized key bindings
+- Users can audit their own account at any time: "show me every key that has ever been bound to `@alex`"
+- If the registry is compromised and a rogue key is bound to an account, any monitor watching the log will detect it
+
+This makes the "registry is a phonebook, not a platform" principle *cryptographically enforceable*. Enterprise customers don't have to trust the registry operator — their instances can independently verify that key bindings haven't been tampered with.
+
+### Scoped Sessions
+
+Session tokens carry an explicit **permission scope** that is the intersection of what the client requested and what the underlying grant allows:
+
+```
+Session {
+    token_hash: [u8; 32],
+    public_key: PublicKey,
+    scope: Permissions,            // <= grant.permissions
+    expires_at: DateTime,
+}
+```
+
+A CLI tool that only needs to read tasks can request a `VIEW_CONTENT`-only session. If the token leaks, the blast radius is limited to the requested scope, not the full grant. This is the principle of least privilege applied to session tokens.
+
+Scoped sessions are backward-compatible: omit the `scope` parameter in the challenge request and you get the full grant permissions, same as an unscoped session.
+
 ## Join Experience
 
 The zero-to-collaborating flow is a first-class design artifact, not an implementation afterthought:
@@ -432,11 +498,15 @@ What Blake sees at `https://instance/join#<token>`:
 
 - Instance name + inviter's display name (extracted from the signed invite)
 - Capability being granted ("You're being invited to **collaborate**")
+- **Live preview**: a small, blurred/abstracted terminal window showing real-time activity (cursor movement, user count, terminal dimensions — no content). This communicates "this is an active, living place" before the user commits to joining.
+- Number of users currently online (live-updating via WebSocket)
 - Single input: "Your name" (pre-filled if they have a registry account)
 - Single button: "Join"
 - Below the fold: "This will create a cryptographic identity on your device. [Learn more]"
 
 If Blake already has a keypair in IndexedDB for this instance: skip the name prompt, show "Welcome back, Blake. [Rejoin]"
+
+The live preview uses a dedicated `preview` WebSocket stream that requires no authentication. It delivers only: terminal dimensions, cursor position (no content), user count, and instance uptime. This is the "looking through the restaurant window" experience — enough to see activity, not enough to see data.
 
 ### Key Backup (Blocking Modal)
 
@@ -462,6 +532,28 @@ When a known user loses their key and can't access the instance:
 7. The UI merges attribution: chat messages, task assignments, and terminal history from the old key are displayed under the new identity
 
 The `replaces` field on `member_grants` enables this linking. The event log records a `member.replaced` event for auditability.
+
+### Iroh-Native Invite Exchange
+
+Invites are transport-agnostic signed blobs. In addition to URL-based distribution, invites can be exchanged **directly via iroh** — no URL, no side-channel, no registry.
+
+```
+Alice's TUI:                              Bob's TUI:
+  > /invite --discover                      > crabcity join --discover
+  Advertising invite via iroh...            Found: "Alice's Workshop"
+  Found: "Bob's MacBook" (crab_7F3X...)     Join as collaborate? [y/n]
+  Accept? [y/n] > y                         > y
+  Invite sent. Bob is joining...            Generating keypair... crab_7F3XM9QP
+                                            Connected.
+```
+
+Under the hood:
+1. Alice's instance publishes a short-lived iroh document with the invite token, discoverable via mDNS or iroh's DHT
+2. Bob's client discovers it, presents it to the user for confirmation
+3. Bob's client redeems the invite directly via iroh transport (no HTTP needed)
+4. The invite document self-destructs after redemption or timeout
+
+This is the **zero-infrastructure invite path**: two devices on the same network (or reachable via iroh relay) and you're in. It's a pure client feature — the invite token format is the same, only the transport differs.
 
 ### CLI/TUI First-Run
 
