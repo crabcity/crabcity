@@ -67,8 +67,8 @@ pub async fn multiplexed_websocket_handler(
     let auth_enabled = state.auth_config.enabled;
 
     let ws_user = maybe_user.0.map(|u| ws::WsUser {
-        user_id: u.user_id,
-        display_name: u.display_name,
+        user_id: u.user_id().to_string(),
+        display_name: u.display_name.clone(),
     });
 
     ws.on_upgrade(move |socket| {

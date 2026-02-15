@@ -25,6 +25,7 @@ mod embedded_ui;
 mod files;
 mod git;
 mod handlers;
+mod identity;
 mod import;
 mod inference;
 mod instance_actor;
@@ -36,6 +37,7 @@ mod onboarding;
 mod persistence;
 mod repository;
 mod terminal;
+mod transport;
 mod views;
 mod virtual_terminal;
 pub mod websocket_proxy;
@@ -137,10 +139,6 @@ struct ServerArgs {
     /// Clean start - reset database (prompt for confirmation)
     #[arg(long)]
     reset_db: bool,
-
-    /// Reset the admin account password
-    #[arg(long)]
-    reset_admin: bool,
 
     /// Import all existing Claude conversations from the system
     #[arg(long)]
@@ -441,15 +439,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     let conversation_watchers = Arc::new(Mutex::new(HashMap::new()));
     let instance_persistors = Arc::new(Mutex::new(HashMap::new()));
 
-    // Reset admin password if requested (one-time)
-    if args.reset_admin {
-        if fc_initial.auth.enabled {
-            onboarding::reset_admin(&repository).await?;
-        } else {
-            warn!("--reset-admin ignored: auth is not enabled");
-        }
-    }
-
     // Restart channel
     let (restart_tx, mut restart_rx) = tokio::sync::watch::channel(());
     let restart_tx = Arc::new(restart_tx);
@@ -689,9 +678,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/health/live", get(handlers::health_live_handler))
             .route("/health/ready", get(handlers::health_ready_handler))
             .route("/metrics", get(handlers::metrics_handler));
-
-        // Merge auth routes
-        app = app.merge(auth::auth_routes().with_state(auth_state.clone()));
 
         // Apply auth middleware if enabled
         if auth_config.enabled {

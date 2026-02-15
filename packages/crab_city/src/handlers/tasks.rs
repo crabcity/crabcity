@@ -50,7 +50,7 @@ pub async fn create_task_handler(
         .unwrap_or(1.0);
 
     let (creator_id, creator_name) = match &maybe_user {
-        MaybeAuthUser(Some(user)) => (Some(user.user_id.clone()), user.display_name.clone()),
+        MaybeAuthUser(Some(user)) => (Some(user.user_id().to_string()), user.display_name.clone()),
         _ => (None, "anonymous".to_string()),
     };
 

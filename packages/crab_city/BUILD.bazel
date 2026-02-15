@@ -15,6 +15,7 @@ rust_binary(
     deps = [
         "//packages/claude_convo",
         "//packages/compositor",
+        "//packages/crab_city_auth",
         "//packages/pty_manager",
         "//packages/virtual_terminal",
         "@crate_index//:anyhow",
@@ -26,6 +27,8 @@ rust_binary(
         "@crate_index//:figment",
         "@crate_index//:futures",
         "@crate_index//:ignore",
+        "@crate_index//:iroh",
+        "@crate_index//:iroh-relay",
         "@crate_index//:maud",
         "@crate_index//:nix",
         "@crate_index//:password-hash",
@@ -76,6 +79,7 @@ rust_binary(
     deps = [
         "//packages/claude_convo",
         "//packages/compositor",
+        "//packages/crab_city_auth",
         "//packages/crab_city_ui/crate:crab_city_ui_crate",
         "//packages/pty_manager",
         "//packages/virtual_terminal",
@@ -88,6 +92,8 @@ rust_binary(
         "@crate_index//:figment",
         "@crate_index//:futures",
         "@crate_index//:ignore",
+        "@crate_index//:iroh",
+        "@crate_index//:iroh-relay",
         "@crate_index//:maud",
         "@crate_index//:mime_guess",
         "@crate_index//:nix",

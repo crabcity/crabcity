@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     fn test_keypair() -> (SigningKey, PublicKey) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let pk = sk.public_key();
         (sk, pk)

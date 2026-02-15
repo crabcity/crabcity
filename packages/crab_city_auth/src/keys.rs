@@ -87,6 +87,16 @@ impl SigningKey {
         Self(ed25519_dalek::SigningKey::generate(rng))
     }
 
+    /// Reconstruct from raw 32-byte seed.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(ed25519_dalek::SigningKey::from_bytes(&bytes))
+    }
+
+    /// Raw 32-byte seed (suitable for persistent storage).
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0.to_bytes()
+    }
+
     pub fn public_key(&self) -> PublicKey {
         PublicKey(self.0.verifying_key().to_bytes())
     }
@@ -156,7 +166,7 @@ mod tests {
 
     #[test]
     fn sign_verify_roundtrip() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let pk = sk.public_key();
         let msg = b"hello crab city";
@@ -166,7 +176,7 @@ mod tests {
 
     #[test]
     fn verify_wrong_key_fails() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk1 = SigningKey::generate(&mut rng);
         let sk2 = SigningKey::generate(&mut rng);
         let msg = b"hello";
@@ -176,7 +186,7 @@ mod tests {
 
     #[test]
     fn verify_tampered_message_fails() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let pk = sk.public_key();
         let sig = sk.sign(b"original");
@@ -185,7 +195,7 @@ mod tests {
 
     #[test]
     fn fingerprint_format() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let fp = sk.public_key().fingerprint();
         assert!(
@@ -227,8 +237,21 @@ mod tests {
     }
 
     #[test]
+    fn signing_key_bytes_roundtrip() {
+        let mut rng = rand::rng();
+        let sk = SigningKey::generate(&mut rng);
+        let bytes = sk.to_bytes();
+        let sk2 = SigningKey::from_bytes(bytes);
+        assert_eq!(sk.public_key(), sk2.public_key());
+        // Signs the same
+        let msg = b"roundtrip test";
+        let sig = sk.sign(msg);
+        assert!(verify(&sk2.public_key(), msg, &sig).is_ok());
+    }
+
+    #[test]
     fn signature_serde_roundtrip() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let sig = sk.sign(b"test");
         let json = serde_json::to_string(&sig).unwrap();

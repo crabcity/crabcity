@@ -92,14 +92,14 @@ pub async fn create_server_invite_handler(
     auth_user: AuthUser,
     Json(req): Json<CreateServerInviteRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !auth_user.is_admin {
+    if !auth_user.is_admin() {
         return Err(StatusCode::FORBIDDEN);
     }
 
     let now = chrono::Utc::now().timestamp();
     let invite = crate::models::ServerInvite {
         token: uuid::Uuid::new_v4().to_string(),
-        created_by: auth_user.user_id,
+        created_by: auth_user.user_id().to_string(),
         label: req.label,
         max_uses: req.max_uses,
         use_count: 0,
@@ -127,7 +127,7 @@ pub async fn list_server_invites_handler(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !auth_user.is_admin {
+    if !auth_user.is_admin() {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -145,7 +145,7 @@ pub async fn revoke_server_invite_handler(
     auth_user: AuthUser,
     Path(token): Path<String>,
 ) -> StatusCode {
-    if !auth_user.is_admin {
+    if !auth_user.is_admin() {
         return StatusCode::FORBIDDEN;
     }
 

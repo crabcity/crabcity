@@ -10,7 +10,7 @@ pub mod keys;
 pub mod membership;
 pub mod noun;
 
-pub use capability::Capability;
+pub use capability::{AccessRights, Capability};
 pub use error::AuthError;
 pub use event::Event;
 pub use identity_proof::IdentityProof;

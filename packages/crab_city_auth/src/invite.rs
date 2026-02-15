@@ -456,7 +456,7 @@ mod tests {
     use super::*;
 
     fn test_keypair() -> (SigningKey, PublicKey) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let sk = SigningKey::generate(&mut rng);
         let pk = sk.public_key();
         (sk, pk)
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn flat_invite_roundtrip_bytes() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([1u8; 32]);
         let invite =
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn flat_invite_roundtrip_base32() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([2u8; 32]);
         let invite = Invite::create_flat(&sk, &instance, Capability::Admin, 0, None, &mut rng);
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn flat_invite_size() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([3u8; 32]);
         let invite = Invite::create_flat(&sk, &instance, Capability::View, 0, None, &mut rng);
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn flat_invite_verify() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([4u8; 32]);
         let invite =
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn delegated_chain_3_hops() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk1, _) = test_keypair();
         let (sk2, _) = test_keypair();
         let (sk3, _) = test_keypair();
@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn capability_escalation_rejected() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk1, _) = test_keypair();
         let (sk2, _) = test_keypair();
         let instance = PublicKey::from_bytes([6u8; 32]);
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn depth_exhausted_rejected() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk1, _) = test_keypair();
         let (sk2, _) = test_keypair();
         let instance = PublicKey::from_bytes([7u8; 32]);
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn forgery_detected() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([8u8; 32]);
         let invite =
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn delegated_roundtrip_bytes() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk1, _) = test_keypair();
         let (sk2, _) = test_keypair();
         let instance = PublicKey::from_bytes([9u8; 32]);
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn verify_at_expired() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([10u8; 32]);
         // Expires at unix timestamp 1000
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn verify_at_no_expiry() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (sk, _) = test_keypair();
         let instance = PublicKey::from_bytes([11u8; 32]);
         let invite = Invite::create_flat(&sk, &instance, Capability::View, 1, None, &mut rng);

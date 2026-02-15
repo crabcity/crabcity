@@ -71,7 +71,7 @@ fn create_delegatable(
     max_uses: u32,
     max_depth: u8,
 ) -> Invite {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let genesis_prev = [0u8; 32];
     let link = InviteLink::sign(
         sk,
@@ -92,7 +92,7 @@ fn create_delegatable(
 
 #[test]
 fn delegated_capability_never_exceeds_root() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let sk_root = SigningKey::generate(&mut rng);
     let sk_del = SigningKey::generate(&mut rng);
     let instance = PublicKey::from_bytes([1u8; 32]);
@@ -122,7 +122,7 @@ fn delegated_capability_never_exceeds_root() {
 
 #[test]
 fn delegation_chain_capabilities_only_narrow() {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let sk1 = SigningKey::generate(&mut rng);
     let sk2 = SigningKey::generate(&mut rng);
     let sk3 = SigningKey::generate(&mut rng);

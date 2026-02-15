@@ -71,6 +71,8 @@ pub async fn test_app_state() -> (AppState, tempfile::TempDir) {
 /// Returns `(AppState, TempDir, AuthUser)` where `AuthUser` can be inserted into
 /// request extensions to simulate an authenticated caller.
 pub async fn test_app_state_with_auth() -> (AppState, tempfile::TempDir, crate::auth::AuthUser) {
+    use crab_city_auth::{Capability, PublicKey};
+
     let (mut state, tmp) = test_app_state().await;
 
     // Enable auth
@@ -81,13 +83,16 @@ pub async fn test_app_state_with_auth() -> (AppState, tempfile::TempDir, crate::
         https: false,
     });
 
-    // Create an admin user in the database
-    let password_hash = crate::auth::hash_password("admin123").unwrap();
+    // Create an admin AuthUser with a deterministic key
+    let pk = PublicKey::from_bytes([0xAA; 32]);
+    let auth_user = crate::auth::AuthUser::from_grant(pk, "Admin".into(), Capability::Owner);
+
+    // Insert a User row in the DB to satisfy FK constraints on instance_permissions etc.
     let user = crate::models::User {
-        id: "admin-user".to_string(),
+        id: auth_user.user_id().to_string(),
         username: "admin".to_string(),
         display_name: "Admin".to_string(),
-        password_hash,
+        password_hash: "unused".to_string(),
         is_admin: true,
         is_disabled: false,
         created_at: chrono::Utc::now().timestamp(),
@@ -95,30 +100,35 @@ pub async fn test_app_state_with_auth() -> (AppState, tempfile::TempDir, crate::
     };
     state.repository.create_user(&user).await.unwrap();
 
-    let auth_user = crate::auth::AuthUser {
-        user_id: "admin-user".to_string(),
-        display_name: "Admin".to_string(),
-        is_admin: true,
-        session_token: "test-session-token".to_string(),
-        csrf_token: "test-csrf-token".to_string(),
-    };
-
     (state, tmp, auth_user)
 }
 
 /// Create a non-admin `AuthUser` and insert the backing user into the database.
+///
+/// The `seed` parameter is hashed to produce a deterministic public key.
+/// The returned AuthUser's `user_id()` is the fingerprint of that key.
 pub async fn create_test_user(
     repository: &ConversationRepository,
-    user_id: &str,
+    seed: &str,
     username: &str,
     display_name: &str,
 ) -> crate::auth::AuthUser {
-    let password_hash = crate::auth::hash_password("password123").unwrap();
+    use crab_city_auth::{Capability, PublicKey};
+
+    // Derive a deterministic 32-byte key from the seed string
+    let mut key_bytes = [0u8; 32];
+    for (i, b) in seed.bytes().enumerate() {
+        key_bytes[i % 32] ^= b;
+    }
+    let pk = PublicKey::from_bytes(key_bytes);
+    let auth_user = crate::auth::AuthUser::from_grant(pk, display_name.into(), Capability::View);
+
+    // Insert User row to satisfy FK constraints
     let user = crate::models::User {
-        id: user_id.to_string(),
+        id: auth_user.user_id().to_string(),
         username: username.to_string(),
         display_name: display_name.to_string(),
-        password_hash,
+        password_hash: "unused".to_string(),
         is_admin: false,
         is_disabled: false,
         created_at: chrono::Utc::now().timestamp(),
@@ -126,11 +136,5 @@ pub async fn create_test_user(
     };
     repository.create_user(&user).await.unwrap();
 
-    crate::auth::AuthUser {
-        user_id: user_id.to_string(),
-        display_name: display_name.to_string(),
-        is_admin: false,
-        session_token: format!("session-{}", user_id),
-        csrf_token: format!("csrf-{}", user_id),
-    }
+    auth_user
 }

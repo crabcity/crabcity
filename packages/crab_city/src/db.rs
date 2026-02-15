@@ -84,7 +84,7 @@ pub struct DbStats {
 }
 
 /// Current schema version - increment when adding migrations
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -681,11 +681,189 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    // v10: Interconnect auth tables — keypair-based identity replaces sessions/passwords
+
+    // WHO you are (identity, cached from registry or self-reported)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS member_identities (
+            public_key BLOB NOT NULL PRIMARY KEY,
+            display_name TEXT NOT NULL DEFAULT '',
+            handle TEXT,
+            avatar_url TEXT,
+            registry_account_id TEXT,
+            resolved_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // WHAT you can do (authorization, instance-local)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS member_grants (
+            public_key BLOB NOT NULL PRIMARY KEY,
+            capability TEXT NOT NULL,
+            access TEXT NOT NULL DEFAULT '[]',
+            state TEXT NOT NULL DEFAULT 'invited',
+            org_id TEXT,
+            invited_by BLOB,
+            invited_via BLOB,
+            replaces BLOB,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (public_key) REFERENCES member_identities(public_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_grants_state ON member_grants(state)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_grants_invited_via ON member_grants(invited_via)")
+        .execute(pool)
+        .await?;
+
+    // Invite tokens created by this instance
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS invites (
+            nonce BLOB NOT NULL PRIMARY KEY,
+            issuer BLOB NOT NULL,
+            capability TEXT NOT NULL,
+            max_uses INTEGER NOT NULL DEFAULT 0,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            expires_at TEXT,
+            chain_blob BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            revoked_at TEXT,
+            FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites(expires_at)")
+        .execute(pool)
+        .await?;
+
+    // Instance-local blocklist
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS blocklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL,
+            target_value BLOB NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            added_by BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Cached registry blocklist
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS blocklist_cache (
+            scope TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            target_type TEXT NOT NULL,
+            target_value BLOB NOT NULL,
+            PRIMARY KEY (scope, target_type, target_value)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Append-only, hash-chained audit trail
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS event_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prev_hash BLOB NOT NULL,
+            event_type TEXT NOT NULL,
+            actor BLOB,
+            target BLOB,
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            hash BLOB NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_target ON event_log(target)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_created ON event_log(created_at)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_hash ON event_log(hash)")
+        .execute(pool)
+        .await?;
+
+    // Signed checkpoints for tamper evidence
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS event_checkpoints (
+            event_id INTEGER NOT NULL PRIMARY KEY,
+            chain_head_hash BLOB NOT NULL,
+            signature BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (event_id) REFERENCES event_log(id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Seed loopback identity (all-zeros pubkey = local CLI/TUI)
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO member_identities (public_key, display_name)
+        VALUES (X'0000000000000000000000000000000000000000000000000000000000000000', 'Local')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO member_grants (public_key, capability, access, state)
+        VALUES (
+            X'0000000000000000000000000000000000000000000000000000000000000000',
+            'owner',
+            '[{"type":"content","actions":["read"]},{"type":"terminals","actions":["input","read"]},{"type":"chat","actions":["send"]},{"type":"tasks","actions":["create","edit","read"]},{"type":"instances","actions":["create"]},{"type":"members","actions":["invite","read","reinstate","remove","suspend","update"]},{"type":"instance","actions":["manage","transfer"]}]',
+            'active'
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Old auth tables (sessions, users, instance_permissions, instance_invitations,
+    // server_invites) are kept for now — they'll be dropped in Phase 3 when old auth
+    // code is deleted. The 'users' table has a FK to server_invites so both must go
+    // together.
+
     // Record the schema version
     if current_version < SCHEMA_VERSION {
         sqlx::query("INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)")
             .bind(SCHEMA_VERSION)
-            .bind("Add task_dispatches table, migrate sent->in_progress")
+            .bind("Interconnect auth: member_identities, member_grants, invites, event_log, blocklist")
             .execute(pool)
             .await?;
         info!("Schema upgraded to version {}", SCHEMA_VERSION);

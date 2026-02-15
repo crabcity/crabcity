@@ -90,7 +90,7 @@ crate_index.spec(
 )
 crate_index.spec(
     package = "thiserror",
-    version = "1.0",
+    version = "2.0",
 )
 crate_index.spec(
     package = "regex",
@@ -98,7 +98,7 @@ crate_index.spec(
 )
 crate_index.spec(
     package = "rand",
-    version = "0.8",
+    version = "0.9",
 )
 crate_index.spec(
     package = "tempfile",
@@ -127,7 +127,7 @@ crate_index.spec(
 crate_index.spec(
     features = ["connect"],
     package = "tokio-tungstenite",
-    version = "0.24",
+    version = "0.28",
 )
 crate_index.spec(
     features = [
@@ -270,7 +270,7 @@ crate_index.spec(
 # File / directory utilities
 crate_index.spec(
     package = "dirs",
-    version = "5.0",
+    version = "6",
 )
 crate_index.spec(
     package = "ignore",
@@ -354,11 +354,22 @@ crate_index.spec(
     version = "2",
 )
 
+# P2P transport
+crate_index.spec(
+    package = "iroh",
+    version = "=0.96.1",
+)
+crate_index.spec(
+    features = ["server"],
+    package = "iroh-relay",
+    version = "=0.96.1",
+)
+
 # Crab City Auth
 crate_index.spec(
     features = ["rand_core"],
     package = "ed25519-dalek",
-    version = "2",
+    version = "=3.0.0-pre.1",
 )
 crate_index.spec(
     package = "data-encoding",
@@ -366,7 +377,7 @@ crate_index.spec(
 )
 crate_index.spec(
     package = "sha2",
-    version = "0.10",
+    version = "=0.11.0-rc.2",
 )
 crate_index.spec(
     package = "proptest",

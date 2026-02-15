@@ -29,12 +29,12 @@ pub async fn list_instances(
 
     if state.auth_config.enabled {
         if let MaybeAuthUser(Some(ref user)) = maybe_user {
-            if user.is_admin {
+            if user.is_admin() {
                 return Json(all_instances);
             }
             let permitted = state
                 .repository
-                .list_user_instance_ids(&user.user_id)
+                .list_user_instance_ids(user.user_id())
                 .await
                 .unwrap_or_default();
             let filtered = all_instances
@@ -89,7 +89,7 @@ pub async fn create_instance(
                 if let MaybeAuthUser(Some(ref user)) = maybe_user {
                     let perm = crate::models::InstancePermission {
                         instance_id: instance.id.clone(),
-                        user_id: user.user_id.clone(),
+                        user_id: user.user_id().to_string(),
                         role: "owner".to_string(),
                         granted_at: chrono::Utc::now().timestamp(),
                         granted_by: None,
@@ -151,10 +151,10 @@ pub async fn delete_instance(
 ) -> StatusCode {
     if state.auth_config.enabled {
         if let MaybeAuthUser(Some(ref user)) = maybe_user {
-            if !user.is_admin {
+            if !user.is_admin() {
                 match state
                     .repository
-                    .check_instance_permission(&id, &user.user_id)
+                    .check_instance_permission(&id, user.user_id())
                     .await
                 {
                     Ok(Some(perm)) if perm.role == "owner" => {}
@@ -241,10 +241,10 @@ pub async fn create_invitation(
         None => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    if !user.is_admin {
+    if !user.is_admin() {
         match state
             .repository
-            .check_instance_permission(&instance_id, &user.user_id)
+            .check_instance_permission(&instance_id, user.user_id())
             .await
         {
             Ok(Some(perm)) if perm.role == "owner" => {}
@@ -256,7 +256,7 @@ pub async fn create_invitation(
     let invite = crate::models::InstanceInvitation {
         invite_token: uuid::Uuid::new_v4().to_string(),
         instance_id,
-        created_by: user.user_id,
+        created_by: user.user_id().to_string(),
         role: req.role.unwrap_or_else(|| "collaborator".to_string()),
         max_uses: req.max_uses,
         use_count: 0,
@@ -297,7 +297,7 @@ pub async fn accept_invitation(
 
     let perm = crate::models::InstancePermission {
         instance_id: invite.instance_id.clone(),
-        user_id: user.user_id,
+        user_id: user.user_id().to_string(),
         role: invite.role.clone(),
         granted_at: chrono::Utc::now().timestamp(),
         granted_by: Some(invite.created_by.clone()),
@@ -331,10 +331,10 @@ pub async fn remove_collaborator(
         None => return StatusCode::UNAUTHORIZED,
     };
 
-    if !user.is_admin {
+    if !user.is_admin() {
         match state
             .repository
-            .check_instance_permission(&instance_id, &user.user_id)
+            .check_instance_permission(&instance_id, user.user_id())
             .await
         {
             Ok(Some(perm)) if perm.role == "owner" => {}
@@ -807,7 +807,7 @@ mod tests {
         let invite = crate::models::InstanceInvitation {
             invite_token: "test-invite-token".to_string(),
             instance_id: "inst-1".to_string(),
-            created_by: admin_user.user_id.clone(),
+            created_by: admin_user.user_id().to_string(),
             role: "collaborator".to_string(),
             max_uses: Some(5),
             use_count: 0,
@@ -845,13 +845,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_invitation_expired() {
-        let (app, _tmp, _admin, state) = auth_test_router().await;
+        let (app, _tmp, admin_user, state) = auth_test_router().await;
 
         // Create an expired invitation
         let invite = crate::models::InstanceInvitation {
             invite_token: "expired-token".to_string(),
             instance_id: "inst-1".to_string(),
-            created_by: "admin-user".to_string(),
+            created_by: admin_user.user_id().to_string(),
             role: "collaborator".to_string(),
             max_uses: None,
             use_count: 0,
@@ -877,12 +877,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_invitation_used_up() {
-        let (app, _tmp, _admin, state) = auth_test_router().await;
+        let (app, _tmp, admin_user, state) = auth_test_router().await;
 
         let invite = crate::models::InstanceInvitation {
             invite_token: "used-up-token".to_string(),
             instance_id: "inst-1".to_string(),
-            created_by: "admin-user".to_string(),
+            created_by: admin_user.user_id().to_string(),
             role: "collaborator".to_string(),
             max_uses: Some(1),
             use_count: 1, // already fully used
@@ -911,7 +911,7 @@ mod tests {
         let (app, _tmp, admin_user, state) = auth_test_router().await;
 
         // Create the collaborator user first (FK constraint)
-        let _ = crate::test_helpers::create_test_user(
+        let collab_user = crate::test_helpers::create_test_user(
             &state.repository,
             "collab-user",
             "collab",
@@ -922,10 +922,10 @@ mod tests {
         // Create a collaborator permission
         let perm = crate::models::InstancePermission {
             instance_id: "inst-1".to_string(),
-            user_id: "collab-user".to_string(),
+            user_id: collab_user.user_id().to_string(),
             role: "collaborator".to_string(),
             granted_at: chrono::Utc::now().timestamp(),
-            granted_by: Some("admin-user".to_string()),
+            granted_by: Some(admin_user.user_id().to_string()),
         };
         state
             .repository
@@ -935,7 +935,10 @@ mod tests {
 
         let mut req = Request::builder()
             .method("DELETE")
-            .uri("/instances/inst-1/collaborators/collab-user")
+            .uri(format!(
+                "/instances/inst-1/collaborators/{}",
+                collab_user.user_id()
+            ))
             .body(Body::empty())
             .unwrap();
         inject_auth(&mut req, &admin_user);
@@ -1067,10 +1070,10 @@ mod tests {
         .await;
         let perm = crate::models::InstancePermission {
             instance_id: ids[0].clone(),
-            user_id: "regular-4".to_string(),
+            user_id: regular_user.user_id().to_string(),
             role: "collaborator".to_string(),
             granted_at: chrono::Utc::now().timestamp(),
-            granted_by: Some("admin-user".to_string()),
+            granted_by: Some(admin_user.user_id().to_string()),
         };
         state
             .repository
@@ -1137,7 +1140,7 @@ mod tests {
         // Grant owner permission
         let perm = crate::models::InstancePermission {
             instance_id: "owned-inst".to_string(),
-            user_id: "owner-1".to_string(),
+            user_id: owner_user.user_id().to_string(),
             role: "owner".to_string(),
             granted_at: chrono::Utc::now().timestamp(),
             granted_by: None,
@@ -1176,7 +1179,7 @@ mod tests {
         // Grant owner permission
         let perm = crate::models::InstancePermission {
             instance_id: "owned-inst-2".to_string(),
-            user_id: "owner-2".to_string(),
+            user_id: owner_user.user_id().to_string(),
             role: "owner".to_string(),
             granted_at: chrono::Utc::now().timestamp(),
             granted_by: None,
@@ -1188,7 +1191,7 @@ mod tests {
             .unwrap();
 
         // Create the collaborator user first (FK constraint)
-        let _ = crate::test_helpers::create_test_user(
+        let collab_user = crate::test_helpers::create_test_user(
             &state.repository,
             "collab-to-remove",
             "collabrem",
@@ -1199,10 +1202,10 @@ mod tests {
         // Create collaborator permission to remove
         let collab_perm = crate::models::InstancePermission {
             instance_id: "owned-inst-2".to_string(),
-            user_id: "collab-to-remove".to_string(),
+            user_id: collab_user.user_id().to_string(),
             role: "collaborator".to_string(),
             granted_at: chrono::Utc::now().timestamp(),
-            granted_by: Some("owner-2".to_string()),
+            granted_by: Some(owner_user.user_id().to_string()),
         };
         state
             .repository
@@ -1213,7 +1216,10 @@ mod tests {
         // Owner removes collaborator
         let mut req = Request::builder()
             .method("DELETE")
-            .uri("/instances/owned-inst-2/collaborators/collab-to-remove")
+            .uri(format!(
+                "/instances/owned-inst-2/collaborators/{}",
+                collab_user.user_id()
+            ))
             .body(Body::empty())
             .unwrap();
         inject_auth(&mut req, &owner_user);

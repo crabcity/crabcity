@@ -75,7 +75,7 @@ impl InstanceManager {
             "forge", "oracle", "mute",
         ];
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let adj_idx = rng.gen_range(0..ADJECTIVES.len());
         let color_idx = rng.gen_range(0..COLORS.len());
         let noun_idx = rng.gen_range(0..NOUNS.len());
