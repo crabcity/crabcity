@@ -26,6 +26,18 @@ const LINK_SIZE: usize = 126;
 /// untrusted input (the byte is a u8, so a malicious sender could claim 255).
 pub const MAX_CHAIN_DEPTH: usize = 16;
 
+/// Parse errors for invite binary decoding — `Copy`, no allocation.
+/// Kani harnesses test core parse functions directly, avoiding `format!()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InviteParseError {
+    TooShort,
+    EmptyChain,
+    ChainTooDeep(u8),
+    WrongSize { expected: usize, actual: usize },
+    WrongLinkSize(usize),
+    UnknownCapability(u8),
+}
+
 impl InviteLink {
     /// SHA-256 of the link's fields (excluding signature — the signature covers
     /// this hash via the signing message).
@@ -127,15 +139,20 @@ impl InviteLink {
         buf
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self, AuthError> {
+    /// Core link parser — returns simple enum errors, no `format!()`.
+    /// Kani harnesses verify this function directly.
+    fn parse_link(bytes: &[u8]) -> Result<Self, InviteParseError> {
         if bytes.len() != LINK_SIZE {
-            return Err(AuthError::InvalidInvite(format!(
-                "link size {}, expected {LINK_SIZE}",
-                bytes.len()
-            )));
+            return Err(InviteParseError::WrongLinkSize(bytes.len()));
         }
         let issuer = PublicKey::from_bytes(bytes[0..32].try_into().unwrap());
-        let capability = byte_to_capability(bytes[32])?;
+        let capability = match bytes[32] {
+            0 => Capability::View,
+            1 => Capability::Collaborate,
+            2 => Capability::Admin,
+            3 => Capability::Owner,
+            b => return Err(InviteParseError::UnknownCapability(b)),
+        };
         let max_depth = bytes[33];
         let max_uses = u32::from_be_bytes(bytes[34..38].try_into().unwrap());
         let expires_raw = u64::from_be_bytes(bytes[38..46].try_into().unwrap());
@@ -228,10 +245,9 @@ impl Invite {
             ));
         }
         if capability > leaf.capability {
-            return Err(AuthError::InvalidInvite(format!(
-                "cannot escalate capability: {capability} > {}",
-                leaf.capability
-            )));
+            return Err(AuthError::InvalidInvite(
+                "cannot escalate capability beyond parent".into(),
+            ));
         }
 
         let prev_hash = leaf.hash();
@@ -272,10 +288,7 @@ impl Invite {
     /// Useful for testing expiry without mocking `SystemTime`.
     pub fn verify_at(&self, now_unix_secs: u64) -> Result<InviteClaims, AuthError> {
         if self.version != 0x01 {
-            return Err(AuthError::InvalidInvite(format!(
-                "unsupported version: {}",
-                self.version
-            )));
+            return Err(AuthError::InvalidInvite("unsupported version".into()));
         }
         if self.links.is_empty() {
             return Err(AuthError::InvalidInvite("empty chain".to_string()));
@@ -352,36 +365,35 @@ impl Invite {
         buf
     }
 
-    /// Parse from binary.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AuthError> {
+    /// Core invite parser — returns simple enum errors, no `format!()`.
+    /// Kani harnesses verify this function directly.
+    fn parse_invite(bytes: &[u8]) -> Result<Self, InviteParseError> {
         if bytes.len() < 34 {
-            return Err(AuthError::InvalidInvite("too short".to_string()));
+            return Err(InviteParseError::TooShort);
         }
         let version = bytes[0];
         let instance = PublicKey::from_bytes(bytes[1..33].try_into().unwrap());
-        let chain_length = bytes[33] as usize;
+        let chain_length = bytes[33];
 
         if chain_length == 0 {
-            return Err(AuthError::InvalidInvite("empty chain".to_string()));
+            return Err(InviteParseError::EmptyChain);
         }
-        if chain_length > MAX_CHAIN_DEPTH {
-            return Err(AuthError::InvalidInvite(format!(
-                "chain length {chain_length} exceeds maximum {MAX_CHAIN_DEPTH}"
-            )));
+        if chain_length as usize > MAX_CHAIN_DEPTH {
+            return Err(InviteParseError::ChainTooDeep(chain_length));
         }
 
-        let expected = 34 + chain_length * LINK_SIZE;
+        let expected = 34 + chain_length as usize * LINK_SIZE;
         if bytes.len() != expected {
-            return Err(AuthError::InvalidInvite(format!(
-                "size {}, expected {expected} for {chain_length} links",
-                bytes.len()
-            )));
+            return Err(InviteParseError::WrongSize {
+                expected,
+                actual: bytes.len(),
+            });
         }
 
-        let mut links = Vec::with_capacity(chain_length);
-        for i in 0..chain_length {
+        let mut links = Vec::with_capacity(chain_length as usize);
+        for i in 0..chain_length as usize {
             let offset = 34 + i * LINK_SIZE;
-            let link = InviteLink::from_bytes(&bytes[offset..offset + LINK_SIZE])?;
+            let link = InviteLink::parse_link(&bytes[offset..offset + LINK_SIZE])?;
             links.push(link);
         }
 
@@ -392,6 +404,29 @@ impl Invite {
         })
     }
 
+    /// Parse from binary.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AuthError> {
+        Self::parse_invite(bytes).map_err(|e| {
+            let msg = match e {
+                InviteParseError::TooShort => "too short".to_string(),
+                InviteParseError::EmptyChain => "empty chain".to_string(),
+                InviteParseError::ChainTooDeep(n) => {
+                    format!("chain length {n} exceeds maximum {MAX_CHAIN_DEPTH}")
+                }
+                InviteParseError::WrongSize { expected, actual } => {
+                    format!("wrong size: expected {expected}, got {actual}")
+                }
+                InviteParseError::WrongLinkSize(n) => {
+                    format!("link size {n}, expected {LINK_SIZE}")
+                }
+                InviteParseError::UnknownCapability(b) => {
+                    format!("unknown capability byte: {b}")
+                }
+            };
+            AuthError::InvalidInvite(msg)
+        })
+    }
+
     /// Crockford base32 encoding.
     pub fn to_base32(&self) -> String {
         crockford_encode(&self.to_bytes())
@@ -399,8 +434,8 @@ impl Invite {
 
     /// Parse from Crockford base32.
     pub fn from_base32(s: &str) -> Result<Self, AuthError> {
-        let bytes = crockford_decode(s)
-            .map_err(|e| AuthError::InvalidInvite(format!("base32 decode: {e}")))?;
+        let bytes =
+            crockford_decode(s).map_err(|_| AuthError::InvalidInvite("invalid base32".into()))?;
         Self::from_bytes(&bytes)
     }
 }
@@ -413,18 +448,6 @@ fn capability_to_byte(c: Capability) -> u8 {
         Capability::Collaborate => 1,
         Capability::Admin => 2,
         Capability::Owner => 3,
-    }
-}
-
-fn byte_to_capability(b: u8) -> Result<Capability, AuthError> {
-    match b {
-        0 => Ok(Capability::View),
-        1 => Ok(Capability::Collaborate),
-        2 => Ok(Capability::Admin),
-        3 => Ok(Capability::Owner),
-        _ => Err(AuthError::InvalidInvite(format!(
-            "unknown capability byte: {b}"
-        ))),
     }
 }
 
@@ -665,40 +688,40 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Prove: `InviteLink::from_bytes` never panics on any 126-byte input.
+    /// Prove: `parse_link` never panics on any 126-byte input.
     /// Covers all `try_into().unwrap()` calls — Kani verifies the slice sizes
     /// are always correct after the length guard.
     #[kani::proof]
     fn link_from_bytes_no_panic() {
         let bytes: [u8; LINK_SIZE] = kani::any();
-        let _ = InviteLink::from_bytes(&bytes);
+        let _ = InviteLink::parse_link(&bytes);
     }
 
-    /// Prove: `InviteLink::from_bytes` never panics on wrong-sized input.
+    /// Prove: `parse_link` never panics on wrong-sized input.
     #[kani::proof]
     fn link_from_bytes_wrong_size_no_panic() {
         let len: usize = kani::any();
         kani::assume(len <= 200 && len != LINK_SIZE);
         let buf: [u8; 200] = kani::any();
-        let _ = InviteLink::from_bytes(&buf[..len]);
+        let _ = InviteLink::parse_link(&buf[..len]);
     }
 
-    /// Prove: `Invite::from_bytes` never panics on any 160-byte input
+    /// Prove: `parse_invite` never panics on any 160-byte input
     /// (the size of a flat invite: 34-byte header + one 126-byte link).
     #[kani::proof]
     #[kani::unwind(3)]
     fn invite_from_bytes_flat_no_panic() {
         let bytes: [u8; 160] = kani::any();
-        let _ = Invite::from_bytes(&bytes);
+        let _ = Invite::parse_invite(&bytes);
     }
 
-    /// Prove: `Invite::from_bytes` never panics on short inputs.
+    /// Prove: `parse_invite` never panics on short inputs.
     #[kani::proof]
     fn invite_from_bytes_short_no_panic() {
         let len: usize = kani::any();
         kani::assume(len <= 34);
         let buf: [u8; 34] = kani::any();
-        let _ = Invite::from_bytes(&buf[..len]);
+        let _ = Invite::parse_invite(&buf[..len]);
     }
 
     /// Prove: any chain_length > MAX_CHAIN_DEPTH is rejected, regardless
@@ -709,7 +732,7 @@ mod proofs {
         let chain_length: u8 = kani::any();
         kani::assume(chain_length as usize > MAX_CHAIN_DEPTH);
         header[33] = chain_length;
-        let result = Invite::from_bytes(&header);
+        let result = Invite::parse_invite(&header);
         assert!(result.is_err());
     }
 }

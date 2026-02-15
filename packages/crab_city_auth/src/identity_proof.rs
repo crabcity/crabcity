@@ -24,6 +24,19 @@ pub struct IdentityProofClaims {
     pub timestamp: u64,
 }
 
+/// Parse errors for the core binary parser — `Copy`, no allocation.
+/// Kani harnesses test `parse_bytes` directly, avoiding `format!()` overhead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProofParseError {
+    TooShort,
+    KeyCountExceedsMax(u32),
+    TruncatedKeys,
+    TruncatedHandleLen,
+    TruncatedHandle,
+    InvalidUtf8Handle,
+    TruncatedTrailer,
+}
+
 impl IdentityProof {
     /// Sign a new identity proof.
     pub fn sign(
@@ -123,12 +136,11 @@ impl IdentityProof {
     /// Maximum number of related keys allowed in an identity proof.
     const MAX_RELATED_KEYS: usize = 256;
 
-    /// Parse from binary.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AuthError> {
-        let err = |msg: &str| AuthError::InvalidIdentityProof(msg.to_string());
-
+    /// Core binary parser — returns simple enum errors, no `format!()`.
+    /// Kani harnesses verify this function directly.
+    fn parse_bytes(bytes: &[u8]) -> Result<Self, ProofParseError> {
         if bytes.len() < 1 + 32 + 32 + 4 {
-            return Err(err("too short"));
+            return Err(ProofParseError::TooShort);
         }
 
         let mut pos = 0;
@@ -141,18 +153,16 @@ impl IdentityProof {
         let instance = PublicKey::from_bytes(bytes[pos..pos + 32].try_into().unwrap());
         pos += 32;
 
-        let key_count = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let key_count = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap());
         pos += 4;
 
-        if key_count > Self::MAX_RELATED_KEYS {
-            return Err(err(&format!(
-                "key count {key_count} exceeds maximum {}",
-                Self::MAX_RELATED_KEYS
-            )));
+        if key_count as usize > Self::MAX_RELATED_KEYS {
+            return Err(ProofParseError::KeyCountExceedsMax(key_count));
         }
+        let key_count = key_count as usize;
 
         if bytes.len() < pos + key_count * 32 + 1 {
-            return Err(err("truncated keys"));
+            return Err(ProofParseError::TruncatedKeys);
         }
 
         let mut related_keys = Vec::with_capacity(key_count);
@@ -168,15 +178,15 @@ impl IdentityProof {
 
         let registry_handle = if has_handle == 1 {
             if bytes.len() < pos + 2 {
-                return Err(err("truncated handle length"));
+                return Err(ProofParseError::TruncatedHandleLen);
             }
             let handle_len = u16::from_be_bytes(bytes[pos..pos + 2].try_into().unwrap()) as usize;
             pos += 2;
             if bytes.len() < pos + handle_len {
-                return Err(err("truncated handle"));
+                return Err(ProofParseError::TruncatedHandle);
             }
             let handle = std::str::from_utf8(&bytes[pos..pos + handle_len])
-                .map_err(|_| err("invalid utf8 in handle"))?
+                .map_err(|_| ProofParseError::InvalidUtf8Handle)?
                 .to_string();
             pos += handle_len;
             Some(handle)
@@ -185,7 +195,7 @@ impl IdentityProof {
         };
 
         if bytes.len() < pos + 8 + 64 {
-            return Err(err("truncated timestamp/signature"));
+            return Err(ProofParseError::TruncatedTrailer);
         }
 
         let timestamp = u64::from_be_bytes(bytes[pos..pos + 8].try_into().unwrap());
@@ -201,6 +211,24 @@ impl IdentityProof {
             registry_handle,
             timestamp,
             signature,
+        })
+    }
+
+    /// Parse from binary.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AuthError> {
+        Self::parse_bytes(bytes).map_err(|e| {
+            let msg = match e {
+                ProofParseError::TooShort => "too short".to_string(),
+                ProofParseError::KeyCountExceedsMax(n) => {
+                    format!("key count {n} exceeds maximum {}", Self::MAX_RELATED_KEYS)
+                }
+                ProofParseError::TruncatedKeys => "truncated keys".to_string(),
+                ProofParseError::TruncatedHandleLen => "truncated handle length".to_string(),
+                ProofParseError::TruncatedHandle => "truncated handle".to_string(),
+                ProofParseError::InvalidUtf8Handle => "invalid utf8 in handle".to_string(),
+                ProofParseError::TruncatedTrailer => "truncated timestamp/signature".to_string(),
+            };
+            AuthError::InvalidIdentityProof(msg)
         })
     }
 }
@@ -302,47 +330,45 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Prove: `from_bytes` never panics on any 142-byte input.
+    /// Prove: `parse_bytes` never panics on any 142-byte input.
     /// 142 = minimum valid size (version + subject + instance + key_count=0
     ///       + has_handle=0 + timestamp + signature).
     /// Covers all `try_into().unwrap()` calls and bounds checks.
     #[kani::proof]
     fn from_bytes_min_size_no_panic() {
         let bytes: [u8; 142] = kani::any();
-        let _ = IdentityProof::from_bytes(&bytes);
+        let _ = IdentityProof::parse_bytes(&bytes);
     }
 
-    /// Prove: `from_bytes` never panics on short inputs (below minimum).
+    /// Prove: `parse_bytes` never panics on short inputs (below minimum).
     #[kani::proof]
     fn from_bytes_short_no_panic() {
         let len: usize = kani::any();
         kani::assume(len <= 69);
         let buf: [u8; 69] = kani::any();
-        let _ = IdentityProof::from_bytes(&buf[..len]);
+        let _ = IdentityProof::parse_bytes(&buf[..len]);
     }
 
-    /// Prove: `from_bytes` never panics on input with 1 related key
+    /// Prove: `parse_bytes` never panics on input with 1 related key
     /// (142 + 32 = 174 bytes).
     #[kani::proof]
     fn from_bytes_one_key_no_panic() {
         let bytes: [u8; 174] = kani::any();
-        let _ = IdentityProof::from_bytes(&bytes);
+        let _ = IdentityProof::parse_bytes(&bytes);
     }
 
     /// Prove: any key_count > MAX_RELATED_KEYS is rejected regardless
     /// of other input content.
+    ///
+    /// Buffer is concrete zeros — only key_count is symbolic, since the
+    /// other 65 bytes are irrelevant to the bounds check.
     #[kani::proof]
     fn key_count_bound_enforced() {
-        let mut buf: [u8; 69] = kani::any();
-        // Force key_count > MAX_RELATED_KEYS at bytes[65..69]
+        let mut buf = [0u8; 69];
         let key_count: u32 = kani::any();
         kani::assume(key_count as usize > IdentityProof::MAX_RELATED_KEYS);
-        let kc_bytes = key_count.to_be_bytes();
-        buf[65] = kc_bytes[0];
-        buf[66] = kc_bytes[1];
-        buf[67] = kc_bytes[2];
-        buf[68] = kc_bytes[3];
-        let result = IdentityProof::from_bytes(&buf);
+        buf[65..69].copy_from_slice(&key_count.to_be_bytes());
+        let result = IdentityProof::parse_bytes(&buf);
         assert!(result.is_err());
     }
 }
