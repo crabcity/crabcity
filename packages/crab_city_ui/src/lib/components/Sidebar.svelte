@@ -13,14 +13,14 @@
 	import { activityLevel, getInstanceVerb, clearInstanceVerbs } from '$lib/stores/activity';
 	import { instancePresence } from '$lib/stores/websocket';
 	import { tasks, pendingTasks, getTaskCount } from '$lib/stores/tasks';
-	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
+	import { currentIdentity, isAuthenticated, clearIdentity } from '$lib/stores/auth';
 	import { theme, toggleTheme } from '$lib/stores/settings';
 	import type { ClaudeState, Instance } from '$lib/types';
 	import InstanceItem from './sidebar/InstanceItem.svelte';
 
 	async function handleLogout() {
-		await logout();
-		window.location.href = `${base}/login`;
+		await clearIdentity();
+		window.location.href = `${base}/join`;
 	}
 
 	let isCreating = false;
@@ -130,7 +130,7 @@
 			<p class="tagline">Claude Manager</p>
 		</div>
 		{#if !$isDesktop}
-			<button class="close-btn" on:click={closeSidebar} aria-label="Close sidebar">
+			<button class="close-btn" onclick={closeSidebar} aria-label="Close sidebar">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M6 18L18 6M6 6l12 12" />
 				</svg>
@@ -139,7 +139,7 @@
 	</header>
 
 	<!-- New Instance Button -->
-	<button class="new-instance-btn" on:click={handleCreate} disabled={isCreating} aria-label="Create new Claude instance">
+	<button class="new-instance-btn" onclick={handleCreate} disabled={isCreating} aria-label="Create new Claude instance">
 		{#if isCreating}
 			<span class="spinner"></span>
 			Creating...
@@ -174,10 +174,10 @@
 
 	<!-- Footer -->
 	<footer class="sidebar-footer">
-		{#if $isAuthenticated && $currentUser}
+		{#if $isAuthenticated && $currentIdentity}
 			<div class="user-info">
-				<span class="user-display-name">{$currentUser.display_name}</span>
-				<button class="logout-btn" on:click={handleLogout}>Logout</button>
+				<span class="user-display-name">{$currentIdentity.displayName}</span>
+				<button class="logout-btn" onclick={handleLogout}>Logout</button>
 			</div>
 		{/if}
 		<div class="footer-row">
@@ -194,7 +194,7 @@
 			<button
 				class="theme-toggle"
 				class:analog={$theme === 'analog'}
-				on:click={toggleTheme}
+				onclick={toggleTheme}
 				title={$theme === 'phosphor' ? 'Switch to analog (⇧⌘L)' : 'Switch to phosphor (⇧⌘L)'}
 				aria-label="Toggle theme"
 			>

@@ -59,82 +59,10 @@ pub async fn test_app_state() -> (AppState, tempfile::TempDir) {
         instance_persistors: Arc::new(Mutex::new(HashMap::new())),
         notes_storage,
         global_state_manager,
+        identity: None,
         runtime_overrides: Arc::new(tokio::sync::RwLock::new(RuntimeOverrides::default())),
         restart_tx: Arc::new(restart_tx),
     };
 
     (state, tmp)
-}
-
-/// Like `test_app_state`, but with auth **enabled** and a pre-created admin user.
-///
-/// Returns `(AppState, TempDir, AuthUser)` where `AuthUser` can be inserted into
-/// request extensions to simulate an authenticated caller.
-pub async fn test_app_state_with_auth() -> (AppState, tempfile::TempDir, crate::auth::AuthUser) {
-    use crab_city_auth::{Capability, PublicKey};
-
-    let (mut state, tmp) = test_app_state().await;
-
-    // Enable auth
-    state.auth_config = Arc::new(AuthConfig {
-        enabled: true,
-        session_ttl_secs: 3600,
-        allow_registration: true,
-        https: false,
-    });
-
-    // Create an admin AuthUser with a deterministic key
-    let pk = PublicKey::from_bytes([0xAA; 32]);
-    let auth_user = crate::auth::AuthUser::from_grant(pk, "Admin".into(), Capability::Owner);
-
-    // Insert a User row in the DB to satisfy FK constraints on instance_permissions etc.
-    let user = crate::models::User {
-        id: auth_user.user_id().to_string(),
-        username: "admin".to_string(),
-        display_name: "Admin".to_string(),
-        password_hash: "unused".to_string(),
-        is_admin: true,
-        is_disabled: false,
-        created_at: chrono::Utc::now().timestamp(),
-        updated_at: chrono::Utc::now().timestamp(),
-    };
-    state.repository.create_user(&user).await.unwrap();
-
-    (state, tmp, auth_user)
-}
-
-/// Create a non-admin `AuthUser` and insert the backing user into the database.
-///
-/// The `seed` parameter is hashed to produce a deterministic public key.
-/// The returned AuthUser's `user_id()` is the fingerprint of that key.
-pub async fn create_test_user(
-    repository: &ConversationRepository,
-    seed: &str,
-    username: &str,
-    display_name: &str,
-) -> crate::auth::AuthUser {
-    use crab_city_auth::{Capability, PublicKey};
-
-    // Derive a deterministic 32-byte key from the seed string
-    let mut key_bytes = [0u8; 32];
-    for (i, b) in seed.bytes().enumerate() {
-        key_bytes[i % 32] ^= b;
-    }
-    let pk = PublicKey::from_bytes(key_bytes);
-    let auth_user = crate::auth::AuthUser::from_grant(pk, display_name.into(), Capability::View);
-
-    // Insert User row to satisfy FK constraints
-    let user = crate::models::User {
-        id: auth_user.user_id().to_string(),
-        username: username.to_string(),
-        display_name: display_name.to_string(),
-        password_hash: "unused".to_string(),
-        is_admin: false,
-        is_disabled: false,
-        created_at: chrono::Utc::now().timestamp(),
-        updated_at: chrono::Utc::now().timestamp(),
-    };
-    repository.create_user(&user).await.unwrap();
-
-    auth_user
 }

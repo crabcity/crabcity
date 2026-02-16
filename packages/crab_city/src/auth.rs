@@ -172,6 +172,8 @@ fn is_public_route(path: &str) -> bool {
     path == "/health"
         || path.starts_with("/health/")
         || path == "/metrics"
+        || path == "/api/ws"
+        || path == "/api/preview"
         || path.starts_with("/spa/")
         || path == "/"
         || path.ends_with(".js")
@@ -278,6 +280,8 @@ mod tests {
         assert!(is_public_route("/"));
         assert!(is_public_route("/bundle.js"));
         assert!(is_public_route("/style.css"));
+        assert!(is_public_route("/api/ws"));
+        assert!(is_public_route("/api/preview"));
         assert!(!is_public_route("/api/instances"));
         assert!(!is_public_route("/api/tasks"));
     }

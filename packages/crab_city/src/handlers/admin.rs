@@ -1,15 +1,9 @@
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{error, info};
 
 use crate::AppState;
-use crate::auth::AuthUser;
 
 pub async fn get_database_stats(
     State(state): State<AppState>,
@@ -76,84 +70,6 @@ pub async fn trigger_import(
         failed: stats.failed,
         total: stats.total(),
     }))
-}
-
-// Server invite admin handlers
-
-#[derive(Deserialize)]
-pub struct CreateServerInviteRequest {
-    label: Option<String>,
-    max_uses: Option<i32>,
-    expires_in_hours: Option<i64>,
-}
-
-pub async fn create_server_invite_handler(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Json(req): Json<CreateServerInviteRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    if !auth_user.is_admin() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    let now = chrono::Utc::now().timestamp();
-    let invite = crate::models::ServerInvite {
-        token: uuid::Uuid::new_v4().to_string(),
-        created_by: auth_user.user_id().to_string(),
-        label: req.label,
-        max_uses: req.max_uses,
-        use_count: 0,
-        expires_at: req.expires_in_hours.map(|h| now + h * 3600),
-        revoked: false,
-        created_at: now,
-    };
-
-    state
-        .repository
-        .create_server_invite(&invite)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Ok(Json(serde_json::json!({
-        "token": invite.token,
-        "label": invite.label,
-        "max_uses": invite.max_uses,
-        "expires_at": invite.expires_at,
-        "created_at": invite.created_at,
-    })))
-}
-
-pub async fn list_server_invites_handler(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-) -> Result<impl IntoResponse, StatusCode> {
-    if !auth_user.is_admin() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    match state.repository.list_server_invites().await {
-        Ok(invites) => Ok(Json(invites)),
-        Err(e) => {
-            error!("Failed to list server invites: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
-
-pub async fn revoke_server_invite_handler(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    Path(token): Path<String>,
-) -> StatusCode {
-    if !auth_user.is_admin() {
-        return StatusCode::FORBIDDEN;
-    }
-
-    match state.repository.revoke_server_invite(&token).await {
-        Ok(true) => StatusCode::NO_CONTENT,
-        Ok(false) => StatusCode::NOT_FOUND,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
 }
 
 /// Trigger an HTTP server restart to reload configuration.
@@ -686,20 +602,6 @@ mod tests {
             serde_json::from_str(r#"{"import_all": false, "project_path": "/tmp/foo"}"#).unwrap();
         assert!(!req.import_all);
         assert_eq!(req.project_path.as_deref(), Some("/tmp/foo"));
-    }
-
-    #[test]
-    fn test_create_server_invite_request_deserialization() {
-        let req: CreateServerInviteRequest = serde_json::from_str(r#"{}"#).unwrap();
-        assert!(req.label.is_none());
-        assert!(req.max_uses.is_none());
-        assert!(req.expires_in_hours.is_none());
-
-        let req: CreateServerInviteRequest =
-            serde_json::from_str(r#"{"label":"test","max_uses":5,"expires_in_hours":24}"#).unwrap();
-        assert_eq!(req.label.as_deref(), Some("test"));
-        assert_eq!(req.max_uses, Some(5));
-        assert_eq!(req.expires_in_hours, Some(24));
     }
 
     #[test]

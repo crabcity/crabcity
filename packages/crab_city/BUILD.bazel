@@ -31,12 +31,9 @@ rust_binary(
         "@crate_index//:iroh-relay",
         "@crate_index//:maud",
         "@crate_index//:nix",
-        "@crate_index//:password-hash",
         "@crate_index//:rand",
         "@crate_index//:ratatui",
-        "@crate_index//:regex",
         "@crate_index//:reqwest",
-        "@crate_index//:rpassword",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
         "@crate_index//:similar",
@@ -65,7 +62,6 @@ rust_binary(
         "@crate_index//:tree-sitter-typescript",
         "@crate_index//:uuid",
         "@crate_index//:vt100",
-        "@crate_index//:walkdir",
     ],
 )
 
@@ -97,12 +93,9 @@ rust_binary(
         "@crate_index//:maud",
         "@crate_index//:mime_guess",
         "@crate_index//:nix",
-        "@crate_index//:password-hash",
         "@crate_index//:rand",
         "@crate_index//:ratatui",
-        "@crate_index//:regex",
         "@crate_index//:reqwest",
-        "@crate_index//:rpassword",
         "@crate_index//:rust-embed",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
@@ -132,7 +125,6 @@ rust_binary(
         "@crate_index//:tree-sitter-typescript",
         "@crate_index//:uuid",
         "@crate_index//:vt100",
-        "@crate_index//:walkdir",
     ],
 )
 

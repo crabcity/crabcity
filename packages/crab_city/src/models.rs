@@ -2,6 +2,24 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+/// A local user account (username/password bridge into the keypair identity system).
+///
+/// When a user registers with username/password, the server generates a keypair
+/// and creates a corresponding `MemberGrant`. The password is a convenience
+/// alternative to managing key files directly.
+#[derive(Debug, Clone, FromRow)]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    /// Argon2 password hash (never serialized).
+    pub password_hash: String,
+    /// Ed25519 public key linking this user to their member identity.
+    pub public_key: Option<Vec<u8>>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
@@ -262,141 +280,6 @@ pub struct PaginatedResponse<T> {
     pub page: i64,
     pub per_page: i64,
     pub total_pages: i64,
-}
-
-// === Auth models ===
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct User {
-    pub id: String,
-    pub username: String,
-    pub display_name: String,
-    #[serde(skip_serializing)]
-    pub password_hash: String,
-    pub is_admin: bool,
-    pub is_disabled: bool,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-/// Public user info (no password hash)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub id: String,
-    pub username: String,
-    pub display_name: String,
-    pub is_admin: bool,
-}
-
-impl From<User> for UserInfo {
-    fn from(u: User) -> Self {
-        Self {
-            id: u.id,
-            username: u.username,
-            display_name: u.display_name,
-            is_admin: u.is_admin,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
-    pub token: String,
-    pub user_id: String,
-    pub csrf_token: String,
-    pub expires_at: i64,
-    pub last_active_at: i64,
-    pub user_agent: Option<String>,
-    pub ip_address: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstancePermission {
-    pub instance_id: String,
-    pub user_id: String,
-    pub role: String, // "owner" or "collaborator"
-    pub granted_at: i64,
-    pub granted_by: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstanceInvitation {
-    pub invite_token: String,
-    pub instance_id: String,
-    pub created_by: String,
-    pub role: String,
-    pub max_uses: Option<i32>,
-    pub use_count: i32,
-    pub expires_at: Option<i64>,
-    pub created_at: i64,
-}
-
-impl InstanceInvitation {
-    pub fn is_expired(&self) -> bool {
-        if let Some(expires) = self.expires_at {
-            Utc::now().timestamp() > expires
-        } else {
-            false
-        }
-    }
-
-    pub fn is_used_up(&self) -> bool {
-        if let Some(max) = self.max_uses {
-            self.use_count >= max
-        } else {
-            false
-        }
-    }
-}
-
-// === Server Invite models ===
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerInvite {
-    pub token: String,
-    pub created_by: String,
-    pub label: Option<String>,
-    pub max_uses: Option<i32>,
-    pub use_count: i32,
-    pub expires_at: Option<i64>,
-    pub revoked: bool,
-    pub created_at: i64,
-}
-
-impl ServerInvite {
-    pub fn is_expired(&self) -> bool {
-        if let Some(expires) = self.expires_at {
-            Utc::now().timestamp() > expires
-        } else {
-            false
-        }
-    }
-
-    pub fn is_used_up(&self) -> bool {
-        if let Some(max) = self.max_uses {
-            self.use_count >= max
-        } else {
-            false
-        }
-    }
-
-    pub fn is_valid(&self) -> bool {
-        !self.revoked && !self.is_expired() && !self.is_used_up()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerInviteWithAcceptors {
-    pub invite: ServerInvite,
-    pub acceptors: Vec<InviteAcceptor>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InviteAcceptor {
-    pub user_id: String,
-    pub username: String,
-    pub display_name: String,
-    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,147 +545,6 @@ mod model_tests {
     fn test_share_access_limit_none() {
         let s = ConversationShare::new("conv-1".into(), None);
         assert!(!s.is_access_limit_reached());
-    }
-
-    // ── InstanceInvitation ──────────────────────────────────────────────
-
-    #[test]
-    fn test_invitation_is_expired_no_expiry() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: None,
-            use_count: 0,
-            expires_at: None,
-            created_at: 0,
-        };
-        assert!(!inv.is_expired());
-    }
-
-    #[test]
-    fn test_invitation_is_expired_past() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: None,
-            use_count: 0,
-            expires_at: Some(0),
-            created_at: 0,
-        };
-        assert!(inv.is_expired());
-    }
-
-    #[test]
-    fn test_invitation_is_used_up() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: Some(3),
-            use_count: 3,
-            expires_at: None,
-            created_at: 0,
-        };
-        assert!(inv.is_used_up());
-    }
-
-    #[test]
-    fn test_invitation_not_used_up() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: Some(3),
-            use_count: 1,
-            expires_at: None,
-            created_at: 0,
-        };
-        assert!(!inv.is_used_up());
-    }
-
-    #[test]
-    fn test_invitation_unlimited_uses() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: None,
-            use_count: 1000,
-            expires_at: None,
-            created_at: 0,
-        };
-        assert!(!inv.is_used_up());
-    }
-
-    // ── ServerInvite ────────────────────────────────────────────────────
-
-    fn make_server_invite() -> ServerInvite {
-        ServerInvite {
-            token: "tok".into(),
-            created_by: "admin".into(),
-            label: None,
-            max_uses: None,
-            use_count: 0,
-            expires_at: None,
-            revoked: false,
-            created_at: Utc::now().timestamp(),
-        }
-    }
-
-    #[test]
-    fn test_server_invite_is_valid() {
-        let inv = make_server_invite();
-        assert!(inv.is_valid());
-    }
-
-    #[test]
-    fn test_server_invite_revoked_not_valid() {
-        let mut inv = make_server_invite();
-        inv.revoked = true;
-        assert!(!inv.is_valid());
-    }
-
-    #[test]
-    fn test_server_invite_expired_not_valid() {
-        let mut inv = make_server_invite();
-        inv.expires_at = Some(0);
-        assert!(!inv.is_valid());
-    }
-
-    #[test]
-    fn test_server_invite_used_up_not_valid() {
-        let mut inv = make_server_invite();
-        inv.max_uses = Some(1);
-        inv.use_count = 1;
-        assert!(!inv.is_valid());
-    }
-
-    // ── UserInfo ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_user_to_user_info() {
-        let user = User {
-            id: "u1".into(),
-            username: "alice".into(),
-            display_name: "Alice".into(),
-            password_hash: "secret_hash".into(),
-            is_admin: true,
-            is_disabled: false,
-            created_at: 100,
-            updated_at: 200,
-        };
-        let info: UserInfo = user.into();
-        assert_eq!(info.id, "u1");
-        assert_eq!(info.username, "alice");
-        assert_eq!(info.display_name, "Alice");
-        assert!(info.is_admin);
     }
 
     // ── normalize_attribution_content ───────────────────────────────────
@@ -1294,83 +1036,6 @@ mod serde_tests {
     }
 
     #[test]
-    fn user_password_hash_not_serialized() {
-        let user = User {
-            id: "u-1".into(),
-            username: "alice".into(),
-            display_name: "Alice".into(),
-            password_hash: "super_secret".into(),
-            is_admin: false,
-            is_disabled: false,
-            created_at: 0,
-            updated_at: 0,
-        };
-        let json = serde_json::to_value(&user).unwrap();
-        // password_hash has #[serde(skip_serializing)]
-        assert!(json.get("password_hash").is_none());
-    }
-
-    #[test]
-    fn session_serde() {
-        let s = Session {
-            token: "tok".into(),
-            user_id: "u-1".into(),
-            csrf_token: "csrf".into(),
-            expires_at: 9999,
-            last_active_at: 1000,
-            user_agent: Some("test-agent".into()),
-            ip_address: None,
-        };
-        let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["csrf_token"], "csrf");
-        let rt: Session = serde_json::from_value(json).unwrap();
-        assert_eq!(rt.expires_at, 9999);
-        assert!(rt.ip_address.is_none());
-    }
-
-    #[test]
-    fn instance_permission_serde() {
-        let p = InstancePermission {
-            instance_id: "inst-1".into(),
-            user_id: "u-1".into(),
-            role: "owner".into(),
-            granted_at: 500,
-            granted_by: Some("admin".into()),
-        };
-        let json = serde_json::to_value(&p).unwrap();
-        assert_eq!(json["role"], "owner");
-        let rt: InstancePermission = serde_json::from_value(json).unwrap();
-        assert_eq!(rt.granted_by, Some("admin".into()));
-    }
-
-    #[test]
-    fn server_invite_with_acceptors_serde() {
-        let siwa = ServerInviteWithAcceptors {
-            invite: ServerInvite {
-                token: "tok".into(),
-                created_by: "admin".into(),
-                label: Some("Team invite".into()),
-                max_uses: Some(5),
-                use_count: 2,
-                expires_at: None,
-                revoked: false,
-                created_at: 100,
-            },
-            acceptors: vec![InviteAcceptor {
-                user_id: "u-1".into(),
-                username: "alice".into(),
-                display_name: "Alice".into(),
-                created_at: 200,
-            }],
-        };
-        let json = serde_json::to_value(&siwa).unwrap();
-        assert_eq!(json["invite"]["label"], "Team invite");
-        assert_eq!(json["acceptors"][0]["username"], "alice");
-        let rt: ServerInviteWithAcceptors = serde_json::from_value(json).unwrap();
-        assert_eq!(rt.acceptors.len(), 1);
-    }
-
-    #[test]
     fn conversation_share_serde() {
         let cs = ConversationShare::new("conv-1".into(), Some(7));
         let json = serde_json::to_value(&cs).unwrap();
@@ -1424,25 +1089,6 @@ mod serde_tests {
         assert_eq!(json["name"], "bug");
         let rt: Tag = serde_json::from_value(json).unwrap();
         assert_eq!(rt.color, Some("#ff0000".into()));
-    }
-
-    #[test]
-    fn instance_invitation_serde() {
-        let inv = InstanceInvitation {
-            invite_token: "tok".into(),
-            instance_id: "inst-1".into(),
-            created_by: "alice".into(),
-            role: "collaborator".into(),
-            max_uses: Some(3),
-            use_count: 1,
-            expires_at: Some(99999),
-            created_at: 100,
-        };
-        let json = serde_json::to_value(&inv).unwrap();
-        assert_eq!(json["role"], "collaborator");
-        assert_eq!(json["max_uses"], 3);
-        let rt: InstanceInvitation = serde_json::from_value(json).unwrap();
-        assert_eq!(rt.use_count, 1);
     }
 
     #[test]

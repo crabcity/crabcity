@@ -1,65 +1,27 @@
 /**
- * API utility that adds CSRF token and credentials to requests.
- * Intercepts 401 responses to clear stale auth state and redirect to login.
+ * API utility for HTTP requests.
+ *
+ * With keypair auth, most state flows over WebSocket. HTTP endpoints are
+ * primarily used for loopback access (local CLI/TUI). This wrapper adds
+ * content-type headers and basic error handling.
  */
-
-import { get } from 'svelte/store';
-import { base } from '$app/paths';
-import { csrfToken, currentUser, authEnabled } from '$lib/stores/auth';
-
-const MUTATION_METHODS = ['POST', 'PUT', 'DELETE', 'PATCH'];
-
-/**
- * Handle 401 by clearing auth state and redirecting to login.
- * Skips redirect if auth is disabled or already on an auth page.
- */
-function handleUnauthorized(): void {
-	if (!get(authEnabled)) return;
-
-	const path = window.location.pathname;
-	if (path === `${base}/login` || path === `${base}/register`) return;
-
-	currentUser.set(null);
-	csrfToken.set(null);
-	window.location.href = `${base}/login`;
-}
 
 /**
  * Fetch wrapper that:
- * - Sets credentials: 'same-origin' for cookie auth
- * - Adds X-CSRF-Token header on mutation requests
- * - Sets Content-Type to application/json for mutations with body
- * - Intercepts 401 responses to clear stale auth and redirect
+ * - Sets Content-Type to application/json for requests with body
+ * - Returns the raw Response for caller to handle
  */
 export async function api(path: string, options: RequestInit = {}): Promise<Response> {
-	const method = (options.method || 'GET').toUpperCase();
 	const headers = new Headers(options.headers);
 
-	// Add CSRF token for mutations
-	if (MUTATION_METHODS.includes(method)) {
-		const token = get(csrfToken);
-		if (token) {
-			headers.set('X-CSRF-Token', token);
-		}
-	}
-
-	// Set content type if we have a body and it's not already set
 	if (options.body && !headers.has('Content-Type')) {
 		headers.set('Content-Type', 'application/json');
 	}
 
-	const response = await fetch(path, {
+	return fetch(path, {
 		...options,
 		headers,
-		credentials: 'same-origin'
 	});
-
-	// Intercept 401: session expired or invalid
-	if (response.status === 401 && !path.startsWith('/api/auth/')) {
-		handleUnauthorized();
-	}
-
-	return response;
 }
 
 /**

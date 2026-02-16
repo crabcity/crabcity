@@ -102,6 +102,34 @@ pub struct BackpressureSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
+    // === Auth handshake ===
+    /// Ed25519 challenge-response: client signs the server's nonce
+    ChallengeResponse {
+        /// Hex-encoded 32-byte Ed25519 public key
+        public_key: String,
+        /// Hex-encoded signature of the nonce
+        signature: String,
+        /// Human-readable display name
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+    },
+
+    /// Password-based auth bridge: server generates keypair on behalf of the user.
+    /// If invite_token is present and user is new, also redeems the invite.
+    PasswordAuth {
+        username: String,
+        password: String,
+        /// Invite token for new user registration (optional for returning users)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite_token: Option<String>,
+        /// Display name for new user registration
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+    },
+
+    /// Reconnect with replay: client sends last seen sequence number
+    Reconnect { last_seq: u64 },
+
     /// Switch focus to a different instance (triggers history replay)
     /// If `since_uuid` is provided, only returns entries after that UUID.
     /// If `since_uuid` is None, returns full conversation.
@@ -186,8 +214,13 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_in_secs: Option<u64>,
     },
-    /// Redeem an invite token
-    RedeemInvite { token: String, display_name: String },
+    /// Redeem an invite token (public_key is hex-encoded 32-byte ed25519 key)
+    RedeemInvite {
+        token: String,
+        display_name: String,
+        /// Hex-encoded 32-byte Ed25519 public key to bind to this invite
+        public_key: String,
+    },
     /// Revoke an invite by nonce (hex-encoded)
     RevokeInvite {
         nonce: String,
@@ -232,6 +265,26 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ServerMessage {
+    // === Auth handshake ===
+    /// Server sends a challenge nonce for the client to sign
+    Challenge {
+        /// Hex-encoded 32-byte random nonce
+        nonce: String,
+    },
+    /// Auth succeeded — connection is authenticated
+    Authenticated {
+        /// The user's fingerprint (crab_XXXXXXXX)
+        fingerprint: String,
+        /// Capability level
+        capability: String,
+    },
+    /// Auth required — no grant found for this identity
+    AuthRequired {
+        /// Hint for recovery (e.g. "redeem_invite")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovery: Option<String>,
+    },
+
     // === High-resolution messages (focused instance only) ===
     // All content messages include instance_id for proper client-side routing
     /// Terminal output from focused instance
@@ -361,6 +414,7 @@ pub enum ServerMessage {
     /// Invite was redeemed by a new member
     InviteRedeemed {
         public_key: String,
+        fingerprint: String,
         display_name: String,
         capability: String,
     },
@@ -377,16 +431,19 @@ pub enum ServerMessage {
     /// Broadcast: member suspended
     MemberSuspended {
         public_key: String,
+        fingerprint: String,
         display_name: String,
     },
     /// Broadcast: member reinstated
     MemberReinstated {
         public_key: String,
+        fingerprint: String,
         display_name: String,
     },
     /// Broadcast: member removed
     MemberRemoved {
         public_key: String,
+        fingerprint: String,
         display_name: String,
     },
     /// Event log query response
@@ -1655,6 +1712,7 @@ mod tests {
         let original = ClientMessage::RedeemInvite {
             token: "ABCDEF123456".to_string(),
             display_name: "Alice".to_string(),
+            public_key: "aa".repeat(32),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -1662,9 +1720,11 @@ mod tests {
             ClientMessage::RedeemInvite {
                 token,
                 display_name,
+                public_key,
             } => {
                 assert_eq!(token, "ABCDEF123456");
                 assert_eq!(display_name, "Alice");
+                assert_eq!(public_key, "aa".repeat(32));
             }
             _ => panic!("Expected RedeemInvite"),
         }
@@ -1855,6 +1915,7 @@ mod tests {
     fn test_server_message_invite_redeemed_roundtrip() {
         let original = ServerMessage::InviteRedeemed {
             public_key: "pk123".to_string(),
+            fingerprint: "crab_ABCD1234".to_string(),
             display_name: "Bob".to_string(),
             capability: "view".to_string(),
         };
@@ -1863,10 +1924,12 @@ mod tests {
         match decoded {
             ServerMessage::InviteRedeemed {
                 public_key,
+                fingerprint,
                 display_name,
                 capability,
             } => {
                 assert_eq!(public_key, "pk123");
+                assert_eq!(fingerprint, "crab_ABCD1234");
                 assert_eq!(display_name, "Bob");
                 assert_eq!(capability, "view");
             }
@@ -1953,6 +2016,7 @@ mod tests {
     fn test_server_message_member_suspended_roundtrip() {
         let original = ServerMessage::MemberSuspended {
             public_key: "pk1".to_string(),
+            fingerprint: "crab_AAAA1111".to_string(),
             display_name: "Suspended User".to_string(),
         };
         let json = serde_json::to_string(&original).unwrap();
@@ -1960,9 +2024,11 @@ mod tests {
         match decoded {
             ServerMessage::MemberSuspended {
                 public_key,
+                fingerprint,
                 display_name,
             } => {
                 assert_eq!(public_key, "pk1");
+                assert_eq!(fingerprint, "crab_AAAA1111");
                 assert_eq!(display_name, "Suspended User");
             }
             _ => panic!("Expected MemberSuspended"),
@@ -1973,6 +2039,7 @@ mod tests {
     fn test_server_message_member_reinstated_roundtrip() {
         let original = ServerMessage::MemberReinstated {
             public_key: "pk2".to_string(),
+            fingerprint: "crab_BBBB2222".to_string(),
             display_name: "Reinstated User".to_string(),
         };
         let json = serde_json::to_string(&original).unwrap();
@@ -1980,9 +2047,11 @@ mod tests {
         match decoded {
             ServerMessage::MemberReinstated {
                 public_key,
+                fingerprint,
                 display_name,
             } => {
                 assert_eq!(public_key, "pk2");
+                assert_eq!(fingerprint, "crab_BBBB2222");
                 assert_eq!(display_name, "Reinstated User");
             }
             _ => panic!("Expected MemberReinstated"),
@@ -1993,6 +2062,7 @@ mod tests {
     fn test_server_message_member_removed_roundtrip() {
         let original = ServerMessage::MemberRemoved {
             public_key: "pk3".to_string(),
+            fingerprint: "crab_CCCC3333".to_string(),
             display_name: "Removed User".to_string(),
         };
         let json = serde_json::to_string(&original).unwrap();
@@ -2000,9 +2070,11 @@ mod tests {
         match decoded {
             ServerMessage::MemberRemoved {
                 public_key,
+                fingerprint,
                 display_name,
             } => {
                 assert_eq!(public_key, "pk3");
+                assert_eq!(fingerprint, "crab_CCCC3333");
                 assert_eq!(display_name, "Removed User");
             }
             _ => panic!("Expected MemberRemoved"),
@@ -2095,5 +2167,63 @@ mod tests {
         };
         let json = serde_json::to_string(&original).unwrap();
         assert!(!json.contains("nearest_checkpoint"));
+    }
+
+    #[test]
+    fn test_client_message_password_auth_roundtrip() {
+        let original = ClientMessage::PasswordAuth {
+            username: "alice".to_string(),
+            password: "hunter2".to_string(),
+            invite_token: Some("ABCDEF123456".to_string()),
+            display_name: Some("Alice".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::PasswordAuth {
+                username,
+                password,
+                invite_token,
+                display_name,
+            } => {
+                assert_eq!(username, "alice");
+                assert_eq!(password, "hunter2");
+                assert_eq!(invite_token, Some("ABCDEF123456".to_string()));
+                assert_eq!(display_name, Some("Alice".to_string()));
+            }
+            _ => panic!("Expected PasswordAuth"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_password_auth_no_optional_fields() {
+        let json = r#"{"type":"PasswordAuth","username":"bob","password":"pw123"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::PasswordAuth {
+                username,
+                invite_token,
+                display_name,
+                ..
+            } => {
+                assert_eq!(username, "bob");
+                assert!(invite_token.is_none());
+                assert!(display_name.is_none());
+            }
+            _ => panic!("Expected PasswordAuth"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_password_auth_skip_serializing_none() {
+        let msg = ClientMessage::PasswordAuth {
+            username: "x".to_string(),
+            password: "y".to_string(),
+            invite_token: None,
+            display_name: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("invite_token"));
+        assert!(!json.contains("display_name"));
     }
 }

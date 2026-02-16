@@ -181,23 +181,9 @@ impl ConversationRepository {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{InputAttribution, User};
+    use crate::models::InputAttribution;
     use crate::repository::test_helpers;
     use chrono::Utc;
-
-    fn make_user(id: &str) -> User {
-        let now = Utc::now().timestamp();
-        User {
-            id: id.to_string(),
-            username: id.to_string(),
-            display_name: id.to_string(),
-            password_hash: "hashed".to_string(),
-            is_admin: false,
-            is_disabled: false,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 
     fn make_attribution(
         instance_id: &str,
@@ -220,7 +206,6 @@ mod tests {
     #[tokio::test]
     async fn record_and_get_by_entry_uuid() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let mut attr = make_attribution("inst-1", "u-1", Some("hello world"), now);
@@ -250,7 +235,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_by_content_match() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         // Record an uncorrelated attribution (no entry_uuid)
@@ -271,7 +255,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_no_match_without_content() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         // Record an attribution
@@ -289,7 +272,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_no_match_empty_content() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let attr = make_attribution("inst-1", "alice", Some("hello"), now);
@@ -305,7 +287,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_outside_time_window() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let attr = make_attribution("inst-1", "alice", Some("hello world"), now);
@@ -322,7 +303,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_wrong_instance() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let attr = make_attribution("inst-1", "alice", Some("hello"), now);
@@ -338,7 +318,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_already_claimed_not_reused() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let attr = make_attribution("inst-1", "alice", Some("hello world"), now);
@@ -362,8 +341,6 @@ mod tests {
     #[tokio::test]
     async fn correlate_picks_correct_content_when_multiple_candidates() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
-        repo.create_user(&make_user("bob")).await.unwrap();
         let now = Utc::now().timestamp();
 
         // Two attributions from different users at similar times
@@ -384,9 +361,6 @@ mod tests {
     #[tokio::test]
     async fn batch_get_attributions() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
-        repo.create_user(&make_user("bob")).await.unwrap();
-        repo.create_user(&make_user("carol")).await.unwrap();
         let now = Utc::now().timestamp();
 
         let mut a1 = make_attribution("inst-1", "alice", Some("msg1"), now);
@@ -419,7 +393,6 @@ mod tests {
     #[tokio::test]
     async fn get_or_correlate_uses_cached_first() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("alice")).await.unwrap();
         let now = Utc::now().timestamp();
 
         // Record an already-correlated attribution
@@ -439,7 +412,6 @@ mod tests {
     #[tokio::test]
     async fn get_or_correlate_falls_back_to_correlation() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("bob")).await.unwrap();
         let now = Utc::now().timestamp();
 
         // Record uncorrelated attribution

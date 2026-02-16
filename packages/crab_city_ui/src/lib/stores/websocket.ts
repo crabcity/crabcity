@@ -15,6 +15,8 @@ import { currentInstanceId, addPendingInput, flushPendingInput, getLastConversat
 import { recordWebSocketMessage, recordWebSocketReconnect } from './metrics';
 import { setLoadingHistory } from './chat';
 import { createMessageHandler, type MuxClientMessage, type MuxServerMessage } from './ws-handlers';
+import { localKeypair, setAuthenticated, clearAuthentication, authError } from './auth';
+import { sign, hexEncode, hexDecode } from '$lib/crypto/keys';
 
 // =============================================================================
 // Connection State (formerly connection.ts)
@@ -83,6 +85,14 @@ let lastMessageTime: number = Date.now();
 let visibilityHandler: (() => void) | null = null;
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let conversationSyncTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/** Pending password auth — when set, handleChallenge sends PasswordAuth instead of ChallengeResponse. */
+let pendingPasswordAuth: {
+	username: string;
+	password: string;
+	inviteToken?: string;
+	displayName?: string;
+} | null = null;
 
 const STALE_THRESHOLD_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -358,6 +368,17 @@ export { baudRate, activityLevel } from './activity';
 // Internal Functions
 // =============================================================================
 
+/** Whether we're in the auth handshake phase (before normal message flow). */
+let authPhase = false;
+
+/** Callback invoked when server sends AuthRequired (no grant for this identity) or auth Error. */
+let authRequiredCallback: ((error?: string) => void) | null = null;
+
+/** Register a callback for AuthRequired/error events during auth phase. */
+export function setAuthRequiredCallback(cb: ((error?: string) => void) | null): void {
+	authRequiredCallback = cb;
+}
+
 function connectMultiplexed(onConnected?: () => void): void {
 	if (socket && socket.readyState === WebSocket.OPEN) {
 		onConnected?.();
@@ -370,24 +391,16 @@ function connectMultiplexed(onConnected?: () => void): void {
 	console.log('[WebSocket] Connecting to multiplexed endpoint:', wsUrl);
 
 	socket = new WebSocket(wsUrl);
+	authPhase = true;
 
 	socket.onopen = () => {
-		console.log('[WebSocket] Connected');
-		reconnectAttempt = 0;
-
-		const pendingFocus = get(currentInstanceId);
-		if (pendingFocus) {
-			sendFocus(pendingFocus);
-		}
-
-		onConnected?.();
+		console.log('[WebSocket] Socket open, waiting for auth challenge...');
+		// Don't mark connected yet — wait for auth handshake
 	};
 
 	socket.onmessage = (event) => {
 		lastMessageTime = Date.now();
-		recordWebSocketMessage();
 
-		const t0 = performance.now();
 		let msg: MuxServerMessage;
 		try {
 			msg = JSON.parse(event.data);
@@ -395,7 +408,18 @@ function connectMultiplexed(onConnected?: () => void): void {
 			console.warn('[WebSocket] Received non-JSON message:', event.data.slice(0, 100));
 			return;
 		}
-		const parseMs = performance.now() - t0;
+
+		// Auth handshake phase
+		if (authPhase) {
+			handleAuthMessage(msg, onConnected);
+			return;
+		}
+
+		// Normal message flow
+		recordWebSocketMessage();
+
+		const t0 = performance.now();
+		const parseMs = 0; // already parsed
 
 		try {
 			const t1 = performance.now();
@@ -423,6 +447,8 @@ function connectMultiplexed(onConnected?: () => void): void {
 	socket.onclose = () => {
 		console.log('[WebSocket] Disconnected');
 		socket = null;
+		authPhase = false;
+		clearAuthentication();
 
 		const selectedId = get(currentInstanceId);
 		if (selectedId) {
@@ -432,6 +458,132 @@ function connectMultiplexed(onConnected?: () => void): void {
 			setDisconnected();
 		}
 	};
+}
+
+/** Handle messages during the auth handshake phase. */
+function handleAuthMessage(msg: MuxServerMessage, onConnected?: () => void): void {
+	switch (msg.type) {
+		case 'Challenge': {
+			const challenge = msg as { type: 'Challenge'; nonce: string };
+			console.log('[WebSocket] Received auth challenge');
+			handleChallenge(challenge.nonce);
+			break;
+		}
+		case 'Authenticated': {
+			const auth = msg as { type: 'Authenticated'; fingerprint: string; capability: string };
+			console.log('[WebSocket] Authenticated as', auth.fingerprint, auth.capability);
+			authPhase = false;
+			setAuthRequiredCallback(null); // clear any pending callback
+
+			const kp = get(localKeypair);
+			setAuthenticated(
+				auth.fingerprint,
+				auth.capability,
+				kp?.fingerprint ?? auth.fingerprint,
+				kp?.publicKey ?? new Uint8Array(32),
+			);
+
+			reconnectAttempt = 0;
+			const pendingFocus = get(currentInstanceId);
+			if (pendingFocus) {
+				sendFocus(pendingFocus);
+			}
+			onConnected?.();
+			break;
+		}
+		case 'AuthRequired': {
+			console.log('[WebSocket] Auth required — no grant for this identity');
+			// Keep authPhase=true — server is waiting for RedeemInvite
+			if (authRequiredCallback) {
+				authRequiredCallback();
+			} else {
+				authPhase = false;
+				// Redirect to join page if not already there
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/join')) {
+					window.location.href = '/join';
+				}
+			}
+			break;
+		}
+		case 'InviteRedeemed': {
+			// During auth phase, this confirms invite was redeemed.
+			// Stay in auth phase — Authenticated message follows.
+			console.log('[WebSocket] Invite redeemed during auth, waiting for Authenticated...');
+			break;
+		}
+		case 'Error': {
+			const err = msg as { type: 'Error'; message: string };
+			console.error('[WebSocket] Auth error:', err.message);
+			authError.set(err.message);
+			authRequiredCallback?.(err.message);
+			authPhase = false;
+			break;
+		}
+		default:
+			// InstanceList etc. can arrive after auth — transition to normal
+			authPhase = false;
+			handleMultiplexedMessage(msg);
+			break;
+	}
+}
+
+/** Sign the challenge nonce and send ChallengeResponse, or PasswordAuth if pending. */
+function handleChallenge(nonceHex: string): void {
+	// Password auth bridge: if pending, send PasswordAuth instead of signing the challenge
+	if (pendingPasswordAuth) {
+		const msg: Record<string, string> = {
+			type: 'PasswordAuth',
+			username: pendingPasswordAuth.username,
+			password: pendingPasswordAuth.password,
+		};
+		if (pendingPasswordAuth.inviteToken) msg.invite_token = pendingPasswordAuth.inviteToken;
+		if (pendingPasswordAuth.displayName) msg.display_name = pendingPasswordAuth.displayName;
+		pendingPasswordAuth = null;
+		socket?.send(JSON.stringify(msg));
+		return;
+	}
+
+	const kp = get(localKeypair);
+	if (!kp) {
+		console.warn('[WebSocket] No keypair available for challenge-response');
+		// Can't authenticate — close and redirect
+		socket?.close();
+		return;
+	}
+
+	const nonceBytes = hexDecode(nonceHex);
+	const signature = sign(nonceBytes, kp.privateKey);
+
+	const response: Record<string, string> = {
+		type: 'ChallengeResponse',
+		public_key: hexEncode(kp.publicKey),
+		signature: hexEncode(signature),
+	};
+
+	socket?.send(JSON.stringify(response));
+}
+
+/**
+ * Set pending password auth. When the server sends Challenge, we'll respond
+ * with PasswordAuth instead of ChallengeResponse.
+ */
+export function setPendingPasswordAuth(
+	auth: { username: string; password: string; inviteToken?: string; displayName?: string } | null,
+): void {
+	pendingPasswordAuth = auth;
+}
+
+/** Send invite redemption during auth phase. Includes public_key from local keypair. */
+export function sendRedeemInvite(token: string, displayName: string): void {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	const kp = get(localKeypair);
+	const msg: Record<string, string> = {
+		type: 'RedeemInvite',
+		token,
+		display_name: displayName,
+		public_key: kp ? hexEncode(kp.publicKey) : '00'.repeat(32),
+	};
+	socket.send(JSON.stringify(msg));
 }
 
 function setupVisibilityHandler(): void {

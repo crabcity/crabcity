@@ -1,8 +1,7 @@
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 
-/// Create a fresh ConversationRepository backed by an in-memory SQLite database.
-/// Each call returns an isolated database with all migrations applied (~1ms).
-pub async fn test_repository() -> super::ConversationRepository {
+/// Create a fresh in-memory SQLite pool with all migrations applied.
+pub async fn test_pool() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -18,5 +17,11 @@ pub async fn test_repository() -> super::ConversationRepository {
         .await
         .expect("Failed to enable foreign keys");
 
-    super::ConversationRepository::new(pool)
+    pool
+}
+
+/// Create a fresh ConversationRepository backed by an in-memory SQLite database.
+/// Each call returns an isolated database with all migrations applied (~1ms).
+pub async fn test_repository() -> super::ConversationRepository {
+    super::ConversationRepository::new(test_pool().await)
 }

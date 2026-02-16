@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{ConnectInfo, Path, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
+use std::net::SocketAddr;
 
 use crate::AppState;
-use crate::auth::MaybeAuthUser;
 use crate::ws;
 
 pub async fn websocket_handler(
@@ -53,10 +53,13 @@ pub async fn websocket_handler(
     })
 }
 
-/// Multiplexed WebSocket handler - single connection for all instances
+/// Multiplexed WebSocket handler - single connection for all instances.
+///
+/// Auth is handled inside the WS connection via challenge-response handshake,
+/// so this endpoint is in the public routes list (no middleware auth needed).
 pub async fn multiplexed_websocket_handler(
     State(state): State<AppState>,
-    maybe_user: MaybeAuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
 ) -> Response {
     let instance_manager = state.instance_manager.clone();
@@ -64,13 +67,9 @@ pub async fn multiplexed_websocket_handler(
     let server_config = state.server_config.clone();
     let metrics = state.metrics.clone();
     let repository = state.repository.clone();
-    let auth_enabled = state.auth_config.enabled;
+    let identity = state.identity.clone();
 
-    let ws_user = maybe_user.0.map(|u| ws::WsUser {
-        user_id: u.user_id().to_string(),
-        display_name: u.display_name.clone(),
-        access: Some(u.access.clone()),
-    });
+    let is_loopback = addr.ip().is_loopback();
 
     ws.on_upgrade(move |socket| {
         ws::handle_multiplexed_ws(
@@ -79,8 +78,9 @@ pub async fn multiplexed_websocket_handler(
             global_state_manager,
             Some(server_config),
             Some(metrics),
-            ws_user,
-            if auth_enabled { Some(repository) } else { None },
+            repository,
+            identity,
+            is_loopback,
         )
     })
 }

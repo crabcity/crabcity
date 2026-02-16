@@ -84,7 +84,7 @@ pub struct DbStats {
 }
 
 /// Current schema version - increment when adding migrations
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -854,10 +854,183 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // Old auth tables (sessions, users, instance_permissions, instance_invitations,
-    // server_invites) are kept for now — they'll be dropped in Phase 3 when old auth
-    // code is deleted. The 'users' table has a FK to server_invites so both must go
-    // together.
+    // v11: Drop old password/session auth tables.
+    //
+    // Several tables (input_attributions, chat_messages, tasks) had FK references
+    // to users(id). SQLite can't ALTER TABLE to drop constraints, so we recreate
+    // the affected tables without the FK references. We wrap this in a single
+    // transaction with foreign_keys OFF to avoid constraint violations mid-migration.
+    if current_version < 11 {
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(pool)
+            .await?;
+
+        // Recreate input_attributions without FK to users(id)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS input_attributions_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                timestamp INTEGER NOT NULL DEFAULT (unixepoch()),
+                entry_uuid TEXT,
+                content_preview TEXT,
+                task_id INTEGER
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO input_attributions_new SELECT id, instance_id, user_id, display_name, timestamp, entry_uuid, content_preview, task_id FROM input_attributions",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DROP TABLE input_attributions")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE input_attributions_new RENAME TO input_attributions")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_attributions_instance ON input_attributions(instance_id, timestamp)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_attributions_entry ON input_attributions(entry_uuid)",
+        )
+        .execute(pool)
+        .await?;
+
+        // Recreate chat_messages without FK to users(id)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS chat_messages_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE NOT NULL,
+                scope TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                forwarded_from TEXT,
+                topic TEXT
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO chat_messages_new SELECT id, uuid, scope, user_id, display_name, content, created_at, forwarded_from, topic FROM chat_messages",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DROP TABLE chat_messages")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE chat_messages_new RENAME TO chat_messages")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_messages(scope, created_at)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_chat_scope_topic ON chat_messages(scope, topic, created_at)",
+        )
+        .execute(pool)
+        .await?;
+
+        // Recreate tasks without FK to users(id)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS tasks_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority INTEGER NOT NULL DEFAULT 0,
+                instance_id TEXT,
+                creator_id TEXT,
+                creator_name TEXT NOT NULL DEFAULT 'anonymous',
+                sort_order REAL NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                completed_at INTEGER,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                sent_text TEXT,
+                conversation_id TEXT
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO tasks_new SELECT id, uuid, title, body, status, priority, instance_id, creator_id, creator_name, sort_order, created_at, updated_at, completed_at, is_deleted, sent_text, conversation_id FROM tasks",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DROP TABLE tasks").execute(pool).await?;
+        sqlx::query("ALTER TABLE tasks_new RENAME TO tasks")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_uuid ON tasks(uuid)")
+            .execute(pool)
+            .await?;
+
+        // Recreate users table: drop server_invite_token FK, add public_key column
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS users_new (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                public_key BLOB,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO users_new (id, username, display_name, password_hash, created_at, updated_at) SELECT id, username, display_name, password_hash, created_at, updated_at FROM users",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("DROP TABLE users").execute(pool).await?;
+        sqlx::query("ALTER TABLE users_new RENAME TO users")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+            .execute(pool)
+            .await?;
+
+        // Drop the old session/permission/invite tables
+        sqlx::query("DROP TABLE IF EXISTS sessions")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS instance_permissions")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS instance_invitations")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS server_invites")
+            .execute(pool)
+            .await?;
+
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(pool)
+            .await?;
+
+        info!("v11: Migrated users table, dropped old session/permission tables");
+    }
 
     // Record the schema version
     if current_version < SCHEMA_VERSION {

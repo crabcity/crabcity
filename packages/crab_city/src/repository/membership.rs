@@ -353,6 +353,21 @@ impl ConversationRepository {
         Ok(())
     }
 
+    /// List all grants (any state).
+    pub async fn list_grants(&self) -> Result<Vec<MemberGrant>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT public_key, capability, access, state, org_id,
+                   invited_by, invited_via, replaces, created_at, updated_at
+            FROM member_grants
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(row_to_grant).collect())
+    }
+
     pub async fn list_grants_by_invite(&self, invite_nonce: &[u8]) -> Result<Vec<MemberGrant>> {
         let rows = sqlx::query(
             r#"

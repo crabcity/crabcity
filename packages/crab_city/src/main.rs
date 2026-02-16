@@ -33,7 +33,6 @@ mod instance_manager;
 mod metrics;
 mod models;
 mod notes;
-mod onboarding;
 mod persistence;
 mod repository;
 mod terminal;
@@ -107,9 +106,6 @@ enum Commands {
 
     /// Stop the daemon and all sessions
     KillServer(KillServerArgs),
-
-    /// Manage authentication
-    Auth(AuthArgs),
 }
 
 #[derive(Parser)]
@@ -177,22 +173,6 @@ struct KillServerArgs {
     force: bool,
 }
 
-#[derive(Parser)]
-struct AuthArgs {
-    #[command(subcommand)]
-    command: AuthCommands,
-}
-
-#[derive(Subcommand)]
-enum AuthCommands {
-    /// Enable authentication (writes config, restarts server, prompts for admin if needed)
-    Enable,
-    /// Disable authentication
-    Disable,
-    /// Show current auth status
-    Status,
-}
-
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AppState {
@@ -215,6 +195,8 @@ pub(crate) struct AppState {
     pub global_state_manager: Arc<ws::GlobalStateManager>,
     /// Ephemeral runtime overrides (from TUI/API)
     pub runtime_overrides: Arc<tokio::sync::RwLock<RuntimeOverrides>>,
+    /// Instance identity (ed25519 keypair) for interconnect auth
+    pub identity: Option<Arc<InstanceIdentity>>,
     /// Send to trigger an HTTP server restart (config reload)
     pub restart_tx: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -242,11 +224,6 @@ async fn main() -> Result<()> {
         Some(Commands::List(args)) => cli::list_command(&config, args.json).await,
         Some(Commands::Kill(args)) => cli::kill_command(&config, &args.target).await,
         Some(Commands::KillServer(args)) => cli::kill_server_command(&config, args.force).await,
-        Some(Commands::Auth(args)) => match args.command {
-            AuthCommands::Enable => cli::auth::enable_command(&config).await,
-            AuthCommands::Disable => cli::auth::disable_command(&config).await,
-            AuthCommands::Status => cli::auth::status_command(&config).await,
-        },
         Some(Commands::Server(args)) => run_server(args, config).await,
     }
 }
@@ -452,6 +429,9 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     let identity = Arc::new(InstanceIdentity::load_or_generate(&config.data_dir)?);
     info!("Instance identity: {}", identity.public_key.fingerprint());
 
+    // First-run detection: if no active grants exist, generate an owner invite
+    first_run_bootstrap(&identity, &repository).await;
+
     // Conditionally start iroh transport
     let transport_config = TransportConfig::from_file(&fc_initial.transport);
     let iroh_transport = if transport_config.enabled {
@@ -493,9 +473,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     let instances_for_shutdown = instance_manager.clone();
     let config_for_shutdown = config.clone();
 
-    // Track whether session cleanup task has been spawned
-    let mut cleanup_spawned = false;
-
     // === Server loop: reload config and rebuild router on each iteration ===
     let mut first_iteration = true;
     loop {
@@ -531,26 +508,11 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             bound_port = None;
         }
 
-        if auth_config_raw.enabled {
-            info!(
-                "Authentication ENABLED (session TTL: {}s)",
-                auth_config_raw.session_ttl_secs
-            );
-        } else {
-            info!("Authentication disabled (use `crab auth enable` to enable)");
-        }
-
         info!(
             "Server config: max_history={}KB, max_buffer={}MB",
             server_config.websocket.max_history_replay_bytes / 1024,
             server_config.instance.max_buffer_bytes / (1024 * 1024)
         );
-
-        // Onboarding only on first iteration (interactive prompt needs a real TTY;
-        // on restart the daemon's stdin is /dev/null — the CLI handles admin creation).
-        if first_iteration {
-            onboarding::maybe_run_onboarding(&repository, &auth_config_raw).await?;
-        }
 
         let auth_config = Arc::new(auth_config_raw);
 
@@ -567,6 +529,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             instance_persistors: instance_persistors.clone(),
             notes_storage: notes_storage.clone(),
             global_state_manager: global_state_manager.clone(),
+            identity: Some(identity.clone()),
             runtime_overrides: runtime_overrides.clone(),
             restart_tx: restart_tx.clone(),
         };
@@ -597,6 +560,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/api/instances/{id}/name", patch(handlers::set_custom_name))
             .route("/api/instances/{id}/ws", get(handlers::websocket_handler))
             .route("/api/ws", get(handlers::multiplexed_websocket_handler))
+            .route("/api/preview", get(handlers::preview_websocket_handler))
             .route(
                 "/api/instances/{id}/output",
                 get(handlers::get_instance_output),
@@ -627,19 +591,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route(
                 "/api/instances/{id}/conversation/poll",
                 get(handlers::poll_conversation),
-            )
-            // Instance permission / invitation endpoints
-            .route(
-                "/api/instances/{id}/invite",
-                post(handlers::create_invitation),
-            )
-            .route(
-                "/api/invitations/{token}/accept",
-                post(handlers::accept_invitation),
-            )
-            .route(
-                "/api/instances/{id}/collaborators/{user_id}",
-                delete(handlers::remove_collaborator),
             )
             // Database conversation endpoints
             .route("/api/conversations", get(handlers::list_conversations))
@@ -699,44 +650,18 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/admin/config",
                 get(handlers::get_config_handler).patch(handlers::patch_config_handler),
             )
-            .route(
-                "/api/admin/invites",
-                post(handlers::create_server_invite_handler)
-                    .get(handlers::list_server_invites_handler),
-            )
-            .route(
-                "/api/admin/invites/{token}",
-                delete(handlers::revoke_server_invite_handler),
-            )
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))
             .route("/health/ready", get(handlers::health_ready_handler))
             .route("/metrics", get(handlers::metrics_handler));
 
-        // Apply auth middleware if enabled
-        if auth_config.enabled {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                auth_state,
-                auth::auth_middleware,
-            ));
-        }
-
-        // Spawn periodic expired session cleanup (once, on whichever iteration auth is first enabled)
-        if !cleanup_spawned && auth_config.enabled {
-            cleanup_spawned = true;
-            let cleanup_repo = repository.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-                loop {
-                    interval.tick().await;
-                    match cleanup_repo.cleanup_expired_sessions().await {
-                        Ok(n) if n > 0 => info!("Cleaned up {} expired sessions", n),
-                        _ => {}
-                    }
-                }
-            });
-        }
+        // Auth middleware: loopback → Owner access, public routes → pass through,
+        // all other HTTP → 401 (must use WS challenge-response or iroh transport).
+        app = app.layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            auth::auth_middleware,
+        ));
 
         let app = app
             .layer(TraceLayer::new_for_http().make_span_with(RequestIdMakeSpan))
@@ -833,4 +758,78 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+/// Detect first-run (no active grants) and generate an owner invite.
+async fn first_run_bootstrap(
+    identity: &Arc<InstanceIdentity>,
+    repository: &Arc<ConversationRepository>,
+) {
+    use crab_city_auth::{Capability, Invite};
+
+    // Check if any active grants exist
+    let grants = match repository.list_grants().await {
+        Ok(g) => g,
+        Err(e) => {
+            warn!("Failed to check grants for first-run detection: {}", e);
+            return;
+        }
+    };
+
+    if !grants.is_empty() {
+        return;
+    }
+
+    // First run — generate an owner invite
+    info!("First run detected — generating owner invite...");
+
+    let expires_at = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600, // 1 hour
+    );
+
+    let invite = Invite::create_flat(
+        identity.signing_key(),
+        &identity.public_key,
+        Capability::Owner,
+        1,
+        expires_at,
+        &mut rand::rng(),
+    );
+
+    let nonce = invite.links[0].nonce;
+    let token = invite.to_base32();
+    let chain_blob = invite.to_bytes();
+
+    let expires_str = expires_at.map(|ts| {
+        chrono::DateTime::from_timestamp(ts as i64, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default()
+    });
+
+    if let Err(e) = repository
+        .store_invite(
+            &nonce,
+            identity.public_key.as_bytes(),
+            "owner",
+            1,
+            expires_str.as_deref(),
+            &chain_blob,
+        )
+        .await
+    {
+        warn!("Failed to store first-run invite: {}", e);
+        return;
+    }
+
+    info!("");
+    info!("=== FIRST RUN — OWNER INVITE ===");
+    info!("Token: {}", token);
+    info!("Expires in 1 hour, single use.");
+    info!("Join at: /join#{}", token);
+    info!("=================================");
+    info!("");
 }

@@ -156,23 +156,9 @@ impl ConversationRepository {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{ChatMessage, User};
+    use crate::models::ChatMessage;
     use crate::repository::test_helpers;
     use chrono::Utc;
-
-    fn make_user(id: &str, username: &str) -> User {
-        let now = Utc::now().timestamp();
-        User {
-            id: id.to_string(),
-            username: username.to_string(),
-            display_name: username.to_string(),
-            password_hash: "hashed".to_string(),
-            is_admin: false,
-            is_disabled: false,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 
     fn make_msg(scope: &str, user_id: &str, content: &str, topic: Option<&str>) -> ChatMessage {
         ChatMessage {
@@ -191,7 +177,6 @@ mod tests {
     #[tokio::test]
     async fn insert_and_get_by_id() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         let msg = make_msg("global", "u-1", "hello world", None);
         let id = repo.insert_chat_message(&msg).await.unwrap();
@@ -205,7 +190,6 @@ mod tests {
     #[tokio::test]
     async fn chat_history_ordering() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         repo.insert_chat_message(&make_msg("global", "u-1", "first", None))
             .await
@@ -231,7 +215,6 @@ mod tests {
     #[tokio::test]
     async fn chat_history_pagination() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         for i in 0..5 {
             repo.insert_chat_message(&make_msg("global", "u-1", &format!("msg {}", i), None))
@@ -263,7 +246,6 @@ mod tests {
     #[tokio::test]
     async fn chat_scope_isolation() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         repo.insert_chat_message(&make_msg("global", "u-1", "global msg", None))
             .await
@@ -290,7 +272,6 @@ mod tests {
     #[tokio::test]
     async fn chat_topic_filter() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         repo.insert_chat_message(&make_msg("global", "u-1", "no topic", None))
             .await
@@ -313,7 +294,6 @@ mod tests {
     #[tokio::test]
     async fn chat_topics_listing() {
         let repo = test_helpers::test_repository().await;
-        repo.create_user(&make_user("u-1", "alice")).await.unwrap();
 
         repo.insert_chat_message(&make_msg("global", "u-1", "msg1", Some("bugs")))
             .await

@@ -39,11 +39,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
 dirs = "6"
 
-# Password hashing
-argon2 = "0.5"
-password-hash = "0.5"
-rpassword = "7"
-
 # Diff highlighting
 similar = "2"
 syndiff = "0.2"
@@ -64,6 +59,10 @@ tree-sitter-bash = "0.25"
 figment = { version = "0.10", features = ["toml", "env"] }
 toml = "0.8"
 
+# Password auth bridge
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+
 # Utilities
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -82,7 +81,7 @@ tokio-tungstenite = { version = "0.28", features = ["connect"] }
 # Embedded UI assets
 crab_city_ui = { path = "../crab_city_ui/crate", optional = true }
 rust-embed = { version = "8", optional = true }
-mime_guess = { version = "2", optional = true }
+mime_guess = "2"
 
 # Virtual terminal emulator (for screen buffer / keyframe snapshots)
 vt100 = "0.15"
@@ -99,4 +98,4 @@ tempfile = { workspace = true }
 
 [features]
 default = []
-embedded-ui = ["crab_city_ui", "rust-embed", "mime_guess"]
+embedded-ui = ["crab_city_ui", "rust-embed"]

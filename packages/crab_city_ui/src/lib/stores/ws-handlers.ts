@@ -21,13 +21,17 @@ import {
 	type ChatTopicSummary
 } from './chat';
 import { handleTaskUpdate, handleTaskDeleted } from './tasks';
+import { handleMembersMessage } from './members';
+import { handleInvitesMessage } from './invites';
 
 // =============================================================================
 // Multiplexed Message Types
 // =============================================================================
 
 export interface MuxClientMessage {
-	type: 'Focus' | 'Input' | 'Resize' | 'SessionSelect' | 'ConversationSync' | 'Lobby' | 'TerminalLockRequest' | 'TerminalLockRelease' | 'ChatSend' | 'ChatHistory' | 'ChatForward' | 'ChatTopics' | 'TerminalVisible' | 'TerminalHidden';
+	type: 'Focus' | 'Input' | 'Resize' | 'SessionSelect' | 'ConversationSync' | 'Lobby' | 'TerminalLockRequest' | 'TerminalLockRelease' | 'ChatSend' | 'ChatHistory' | 'ChatForward' | 'ChatTopics' | 'TerminalVisible' | 'TerminalHidden'
+		| 'ChallengeResponse' | 'PasswordAuth' | 'Reconnect'
+		| 'CreateInvite' | 'RedeemInvite' | 'RevokeInvite' | 'ListInvites' | 'ListMembers' | 'UpdateMember' | 'SuspendMember' | 'ReinstateMember' | 'RemoveMember';
 	instance_id?: string;
 	since_uuid?: string;
 	data?: string;
@@ -45,6 +49,20 @@ export interface MuxClientMessage {
 	message_id?: number;
 	target_scope?: string;
 	topic?: string | null;
+	// Auth fields
+	public_key?: string;
+	signature?: string;
+	display_name?: string;
+	last_seq?: number;
+	username?: string;
+	password?: string;
+	// Interconnect fields
+	capability?: string;
+	max_uses?: number;
+	expires_in_secs?: number;
+	token?: string;
+	nonce?: string;
+	suspend_derived?: boolean;
 }
 
 interface SessionCandidate {
@@ -75,7 +93,25 @@ export type MuxServerMessage =
 	| { type: 'ChatHistoryResponse'; scope: string; messages: ChatMessageData[]; has_more: boolean }
 	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] }
 	| { type: 'TaskUpdate'; task: Task }
-	| { type: 'TaskDeleted'; task_id: number };
+	| { type: 'TaskDeleted'; task_id: number }
+	// Auth handshake
+	| { type: 'Challenge'; nonce: string }
+	| { type: 'Authenticated'; fingerprint: string; capability: string }
+	| { type: 'AuthRequired'; recovery?: string }
+	// Interconnect responses
+	| { type: 'InviteCreated'; token: string; nonce: string; capability: string; max_uses: number; expires_at?: string }
+	| { type: 'InviteRedeemed'; public_key: string; fingerprint: string; display_name: string; capability: string }
+	| { type: 'InviteRevoked'; nonce: string }
+	| { type: 'InviteList'; invites: unknown[] }
+	| { type: 'MembersList'; members: unknown[] }
+	| { type: 'MemberJoined'; member: { public_key: string; fingerprint: string; display_name: string; capability: string; state: string } }
+	| { type: 'MemberUpdated'; member: { public_key: string; fingerprint: string; display_name?: string; capability?: string } }
+	| { type: 'MemberSuspended'; public_key: string; fingerprint: string; display_name: string }
+	| { type: 'MemberReinstated'; public_key: string; fingerprint: string; display_name: string }
+	| { type: 'MemberRemoved'; public_key: string; fingerprint: string; display_name: string }
+	| { type: 'EventsResponse'; events: unknown[] }
+	| { type: 'EventVerification'; valid: boolean; events_checked: number; error?: string }
+	| { type: 'EventProofResponse'; event: unknown; proof?: unknown };
 
 // =============================================================================
 // Handler Context — mutable state owned by websocket.ts
@@ -289,6 +325,36 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 
 			case 'TaskDeleted':
 				handleTaskDeleted(msg.task_id);
+				break;
+
+			// Auth messages (handled in websocket.ts auth phase, not here)
+			case 'Challenge':
+			case 'Authenticated':
+			case 'AuthRequired':
+				break;
+
+			// Interconnect responses — delegate to domain stores
+			case 'InviteCreated':
+			case 'InviteRevoked':
+			case 'InviteList':
+				handleInvitesMessage(msg);
+				break;
+
+			case 'InviteRedeemed':
+			case 'MembersList':
+			case 'MemberJoined':
+			case 'MemberUpdated':
+			case 'MemberSuspended':
+			case 'MemberReinstated':
+			case 'MemberRemoved':
+				handleMembersMessage(msg);
+				break;
+
+			case 'EventsResponse':
+			case 'EventVerification':
+			case 'EventProofResponse':
+				// Events are typically requested one-off; log for now
+				console.log('[WebSocket] Event response:', msg.type);
 				break;
 		}
 	};

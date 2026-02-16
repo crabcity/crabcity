@@ -3,7 +3,7 @@
 		"target": "ES2022",
 		"module": "ES2022",
 		"moduleResolution": "Bundler",
-		"lib": ["ES2022"],
+		"lib": ["ES2022", "DOM"],
 		"types": ["node", "jest"],
 		"strict": true,
 		"noImplicitAny": true,
@@ -28,8 +28,8 @@
 		"declarationMap": true,
 		"sourceMap": true,
 		"inlineSources": true,
-		"rootDir": "src/lib/utils",
+		"rootDir": "src/lib",
 		"outDir": "dist-test"
 	},
-	"include": ["src/lib/utils/*.ts"]
+	"include": ["src/lib/utils/*.ts", "src/lib/crypto/*.ts", "src/lib/stores/members.ts", "src/lib/stores/members.test.ts", "src/lib/stores/invites.ts", "src/lib/stores/invites.test.ts"]
 }

@@ -37,6 +37,16 @@ pub struct ServerMetrics {
     /// WebSocket errors
     pub websocket_errors: AtomicU64,
 
+    // Auth / interconnect metrics
+    /// Active iroh (QUIC) connections
+    pub iroh_connections_active: AtomicU64,
+    /// Total iroh connections since start
+    pub iroh_connections_total: AtomicU64,
+    /// Auth rejections (bad signature, no grant, etc.)
+    pub auth_rejections: AtomicU64,
+    /// Invites redeemed
+    pub invites_redeemed: AtomicU64,
+
     // Performance metrics
     /// Number of focus switches
     pub focus_switches: AtomicU64,
@@ -88,6 +98,24 @@ impl ServerMetrics {
         self.messages_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Auth / interconnect tracking
+    pub fn iroh_connection_opened(&self) {
+        self.iroh_connections_active.fetch_add(1, Ordering::Relaxed);
+        self.iroh_connections_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn iroh_connection_closed(&self) {
+        self.iroh_connections_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn auth_rejected(&self) {
+        self.auth_rejections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn invite_redeemed(&self) {
+        self.invites_redeemed.fetch_add(1, Ordering::Relaxed);
+    }
+
     // Error tracking
     pub fn pty_error(&self) {
         self.pty_errors.fetch_add(1, Ordering::Relaxed);
@@ -120,6 +148,12 @@ impl ServerMetrics {
                 pty: self.pty_errors.load(Ordering::Relaxed),
                 websocket: self.websocket_errors.load(Ordering::Relaxed),
             },
+            auth: AuthMetrics {
+                iroh_connections_active: self.iroh_connections_active.load(Ordering::Relaxed),
+                iroh_connections_total: self.iroh_connections_total.load(Ordering::Relaxed),
+                auth_rejections: self.auth_rejections.load(Ordering::Relaxed),
+                invites_redeemed: self.invites_redeemed.load(Ordering::Relaxed),
+            },
             performance: PerformanceMetrics {
                 focus_switches: self.focus_switches.load(Ordering::Relaxed),
                 history_replays: self.history_replays.load(Ordering::Relaxed),
@@ -137,6 +171,7 @@ pub struct MetricsSnapshot {
     pub instances: InstanceMetrics,
     pub messages: MessageMetrics,
     pub errors: ErrorMetrics,
+    pub auth: AuthMetrics,
     pub performance: PerformanceMetrics,
 }
 
@@ -164,6 +199,14 @@ pub struct MessageMetrics {
 pub struct ErrorMetrics {
     pub pty: u64,
     pub websocket: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthMetrics {
+    pub iroh_connections_active: u64,
+    pub iroh_connections_total: u64,
+    pub auth_rejections: u64,
+    pub invites_redeemed: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

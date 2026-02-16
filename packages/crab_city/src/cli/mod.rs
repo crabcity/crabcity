@@ -1,5 +1,4 @@
 pub mod attach;
-pub mod auth;
 pub mod daemon;
 pub mod picker;
 pub mod settings;

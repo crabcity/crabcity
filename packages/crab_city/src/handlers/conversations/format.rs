@@ -963,23 +963,9 @@ mod attribution_integration_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::models::{InputAttribution, User};
+    use crate::models::InputAttribution;
     use crate::repository::test_helpers::test_repository;
     use crate::ws::{GlobalStateManager, create_state_broadcast};
-
-    fn make_user(id: &str, name: &str) -> User {
-        let now = chrono::Utc::now().timestamp();
-        User {
-            id: id.to_string(),
-            username: name.to_string(),
-            display_name: name.to_string(),
-            password_hash: "hashed".to_string(),
-            is_admin: false,
-            is_disabled: false,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 
     fn make_user_entry(uuid: &str, content: &str, ts: &str) -> ConversationEntry {
         ConversationEntry {
@@ -1041,12 +1027,6 @@ mod attribution_integration_tests {
         }
     }
 
-    /// Ensure user exists in DB (idempotent).
-    async fn ensure_user(repo: &crate::repository::ConversationRepository, id: &str, name: &str) {
-        // Ignore error if already exists
-        let _ = repo.create_user(&make_user(id, name)).await;
-    }
-
     /// Return an RFC-3339 timestamp string for "now", suitable for conversation entries
     /// whose DB rows are written with `Utc::now().timestamp()`.
     fn now_rfc3339() -> String {
@@ -1077,7 +1057,6 @@ mod attribution_integration_tests {
         )
         .await;
         // DB row (spawned in handler, but we await here for determinism)
-        ensure_user(repo, user_id, display_name).await;
         let ts = chrono::Utc::now().timestamp();
         repo.record_input_attribution(&InputAttribution {
             id: None,
@@ -1115,7 +1094,6 @@ mod attribution_integration_tests {
         let repo = Arc::new(test_repository().await);
         let sm = Arc::new(GlobalStateManager::new(create_state_broadcast()));
 
-        ensure_user(&repo, "u1", "Alice").await;
         let ts: i64 = chrono::DateTime::parse_from_rfc3339("2024-06-01T12:00:00Z")
             .unwrap()
             .timestamp();
@@ -1399,24 +1377,10 @@ mod attribution_pipeline_diagnostic_tests {
     use std::sync::Arc;
 
     use crate::models::{
-        InputAttribution, User, attribution_content_matches, normalize_attribution_content,
+        InputAttribution, attribution_content_matches, normalize_attribution_content,
     };
     use crate::repository::test_helpers::test_repository;
     use crate::ws::{GlobalStateManager, create_state_broadcast};
-
-    fn make_user(id: &str, name: &str) -> User {
-        let now = chrono::Utc::now().timestamp();
-        User {
-            id: id.to_string(),
-            username: name.to_string(),
-            display_name: name.to_string(),
-            password_hash: "hashed".to_string(),
-            is_admin: false,
-            is_disabled: false,
-            created_at: now,
-            updated_at: now,
-        }
-    }
 
     fn make_user_entry(uuid: &str, content: &str, ts: &str) -> ConversationEntry {
         ConversationEntry {
@@ -1533,7 +1497,6 @@ mod attribution_pipeline_diagnostic_tests {
         sm.push_pending_attribution("inst1", "u1".into(), "Alice".into(), "Test", None)
             .await;
         // NOTE: handler also writes a DB record — simulate that
-        let _ = repo.create_user(&make_user("u1", "Alice")).await;
         let ts = chrono::Utc::now().timestamp();
         repo.record_input_attribution(&InputAttribution {
             id: None,
@@ -1624,8 +1587,6 @@ mod attribution_pipeline_diagnostic_tests {
     async fn rest_consumes_queue_before_watcher() {
         let repo = Arc::new(test_repository().await);
         let sm = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-
-        let _ = repo.create_user(&make_user("u1", "Alice")).await;
 
         // Handler pushes queue + DB
         sm.push_pending_attribution("inst1", "u1".into(), "Alice".into(), "Test", None)
@@ -1769,8 +1730,6 @@ mod attribution_pipeline_diagnostic_tests {
         let repo = Arc::new(test_repository().await);
         let sm = Arc::new(GlobalStateManager::new(create_state_broadcast()));
         let ts = now_rfc3339();
-
-        let _ = repo.create_user(&make_user("u1", "Alice")).await;
 
         // === Step A: WebSocket handler receives Input{data: "Test"} ===
         // (from handler.rs lines 327-368)

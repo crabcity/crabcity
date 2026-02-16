@@ -67,8 +67,16 @@ fn parse_nonce(hex: &str) -> Result<[u8; 16], ServerMessage> {
 }
 
 fn member_to_json(m: &crate::repository::membership::Member) -> serde_json::Value {
+    let pk = PublicKey::from_bytes(
+        m.identity
+            .public_key
+            .as_slice()
+            .try_into()
+            .unwrap_or([0u8; 32]),
+    );
     json!({
         "public_key": bytes_to_hex(&m.identity.public_key),
+        "fingerprint": pk.fingerprint(),
         "display_name": m.identity.display_name,
         "handle": m.identity.handle,
         "avatar_url": m.identity.avatar_url,
@@ -294,6 +302,7 @@ pub async fn handle_redeem_invite(
     // Broadcast MemberJoined
     let member_json = json!({
         "public_key": pk_hex,
+        "fingerprint": redeemer_pk.fingerprint(),
         "display_name": display_name,
         "capability": cap_str,
         "state": "active",
@@ -311,6 +320,7 @@ pub async fn handle_redeem_invite(
 
     Ok(ServerMessage::InviteRedeemed {
         public_key: pk_hex,
+        fingerprint: redeemer_pk.fingerprint(),
         display_name: display_name.to_string(),
         capability: cap_str,
     })
@@ -405,8 +415,12 @@ pub async fn handle_revoke_invite(
                     .await
                     .ok();
 
+                let suspended_pk = PublicKey::from_bytes(
+                    grant.public_key.as_slice().try_into().unwrap_or([0u8; 32]),
+                );
                 let _ = ctx.broadcast_tx.send(ServerMessage::MemberSuspended {
                     public_key: bytes_to_hex(&grant.public_key),
+                    fingerprint: suspended_pk.fingerprint(),
                     display_name: dn,
                 });
             }
@@ -627,6 +641,7 @@ pub async fn handle_suspend_member(
 
     let msg = ServerMessage::MemberSuspended {
         public_key: public_key_hex.to_string(),
+        fingerprint: target_pk.fingerprint(),
         display_name: display_name.clone(),
     };
     let _ = ctx.broadcast_tx.send(msg.clone());
@@ -689,6 +704,7 @@ pub async fn handle_reinstate_member(
 
     let msg = ServerMessage::MemberReinstated {
         public_key: public_key_hex.to_string(),
+        fingerprint: target_pk.fingerprint(),
         display_name,
     };
     let _ = ctx.broadcast_tx.send(msg.clone());
@@ -749,6 +765,7 @@ pub async fn handle_remove_member(
 
     let msg = ServerMessage::MemberRemoved {
         public_key: public_key_hex.to_string(),
+        fingerprint: target_pk.fingerprint(),
         display_name,
     };
     let _ = ctx.broadcast_tx.send(msg.clone());

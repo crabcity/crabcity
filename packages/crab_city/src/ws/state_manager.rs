@@ -699,6 +699,18 @@ impl GlobalStateManager {
         updates
     }
 
+    /// Count total unique connected users across all instances.
+    pub async fn total_connected_users(&self) -> usize {
+        let presence = self.presence.read().await;
+        let mut user_ids = HashSet::new();
+        for entries in presence.values() {
+            for entry in entries.values() {
+                user_ids.insert(entry.user_id.clone());
+            }
+        }
+        user_ids.len()
+    }
+
     /// Deduplicate presence by user_id (a user may have multiple connections).
     fn dedupe_presence(entries: &HashMap<String, PresenceEntry>) -> Vec<PresenceUser> {
         let mut seen = HashSet::new();

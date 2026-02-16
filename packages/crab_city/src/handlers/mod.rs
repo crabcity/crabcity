@@ -4,14 +4,13 @@ pub mod health;
 pub mod instances;
 pub mod interconnect;
 pub mod notes;
+pub mod preview;
 pub mod tasks;
 pub mod websocket;
 
 // Re-export all handlers for easy route registration
 pub use admin::{
-    create_server_invite_handler, get_config_handler, get_database_stats,
-    list_server_invites_handler, patch_config_handler, restart_handler,
-    revoke_server_invite_handler, trigger_import,
+    get_config_handler, get_database_stats, patch_config_handler, restart_handler, trigger_import,
 };
 pub use conversations::{
     add_comment, create_share, format_entry, format_entry_with_attribution, get_comments,
@@ -20,10 +19,11 @@ pub use conversations::{
 };
 pub use health::{health_handler, health_live_handler, health_ready_handler, metrics_handler};
 pub use instances::{
-    accept_invitation, create_instance, create_invitation, delete_instance, get_instance,
-    get_instance_output, list_instances, remove_collaborator, set_custom_name,
+    create_instance, delete_instance, get_instance, get_instance_output, list_instances,
+    set_custom_name,
 };
 pub use notes::{create_note, delete_note, get_notes, update_note};
+pub use preview::preview_websocket_handler;
 pub use tasks::{
     add_task_tag_handler, create_dispatch_handler, create_task_handler, delete_task_handler,
     get_task_handler, list_tasks_handler, migrate_tasks_handler, remove_task_tag_handler,

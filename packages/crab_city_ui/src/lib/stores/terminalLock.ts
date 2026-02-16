@@ -8,7 +8,7 @@
 
 import { derived, writable, get } from 'svelte/store';
 import { currentInstanceId } from './instances';
-import { currentUser } from './auth';
+import { currentIdentity } from './auth';
 import type { PresenceUser } from '$lib/types';
 
 // =============================================================================
@@ -39,20 +39,20 @@ export const currentTerminalLock = derived(
 
 /** Whether the current user holds the lock for the focused instance */
 export const iHoldLock = derived(
-	[currentTerminalLock, currentUser],
-	([$lock, $user]) => {
-		if (!$lock?.holder || !$user) return false;
-		return $lock.holder.user_id === $user.id;
+	[currentTerminalLock, currentIdentity],
+	([$lock, $identity]) => {
+		if (!$lock?.holder || !$identity) return false;
+		return $lock.holder.user_id === $identity.fingerprint;
 	}
 );
 
 /** Whether another user holds the lock (and it's not me) */
 export const isLockedByOther = derived(
-	[currentTerminalLock, currentUser],
-	([$lock, $user]) => {
+	[currentTerminalLock, currentIdentity],
+	([$lock, $identity]) => {
 		if (!$lock?.holder) return false;
-		if (!$user) return true; // Not authenticated, someone else has it
-		return $lock.holder.user_id !== $user.id;
+		if (!$identity) return true; // Not authenticated, someone else has it
+		return $lock.holder.user_id !== $identity.fingerprint;
 	}
 );
 

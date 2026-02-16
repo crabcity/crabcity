@@ -543,6 +543,7 @@ impl IrohTransport {
             ClientMessage::RedeemInvite {
                 token,
                 display_name,
+                ..
             } => {
                 let resp = collapse(
                     interconnect::handle_redeem_invite(
@@ -677,7 +678,7 @@ impl IrohTransport {
             _ = cancel.cancelled() => {}
             msg = framing::read_message(&mut recv) => {
                 match msg {
-                    Ok(Some(framing::IncomingMessage { message: ClientMessage::RedeemInvite { token, display_name }, request_id })) => {
+                    Ok(Some(framing::IncomingMessage { message: ClientMessage::RedeemInvite { token, display_name, .. }, request_id })) => {
                         match interconnect::handle_redeem_invite(&rpc_ctx, &public_key, &token, &display_name).await {
                             Ok(resp) => {
                                 // Send success response, then close

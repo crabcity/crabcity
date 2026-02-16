@@ -142,6 +142,7 @@ vite_bin.vite_binary(
 ts_project(
     name = "test_lib",
     srcs = [
+        # Utils
         "src/lib/utils/authGuard.test.ts",
         "src/lib/utils/authGuard.ts",
         "src/lib/utils/fileLinkMatch.test.ts",
@@ -154,17 +155,28 @@ ts_project(
         "src/lib/utils/virtualList.ts",
         "src/lib/utils/wrapLines.test.ts",
         "src/lib/utils/wrapLines.ts",
+        # Crypto
+        "src/lib/crypto/keys.ts",
+        "src/lib/crypto/keys.test.ts",
+        # Stores
+        "src/lib/stores/members.ts",
+        "src/lib/stores/members.test.ts",
+        "src/lib/stores/invites.ts",
+        "src/lib/stores/invites.test.ts",
     ],
     declaration = True,
     declaration_map = True,
     out_dir = "dist-test",
-    root_dir = "src/lib/utils",
+    root_dir = "src/lib",
     source_map = True,
     transpiler = "tsc",
     tsconfig = "tsconfig.test.json",
     deps = [
+        ":node_modules/@noble/ed25519",
+        ":node_modules/@noble/hashes",
         ":node_modules/@types/jest",
         ":node_modules/@types/node",
+        ":node_modules/svelte",
     ],
 )
 

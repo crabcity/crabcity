@@ -593,6 +593,15 @@ pub(crate) async fn dispatch_client_message(
             DispatchResult::Handled
         }
 
+        // Auth messages should not reach the message loop (handled during handshake)
+        msg @ (ClientMessage::ChallengeResponse { .. }
+        | ClientMessage::PasswordAuth { .. }
+        | ClientMessage::Reconnect { .. }) => {
+            warn!("auth/handshake message received after handshake — ignoring");
+            let _ = msg;
+            DispatchResult::Handled
+        }
+
         // Interconnect RPCs — caller handles these
         msg @ (ClientMessage::CreateInvite { .. }
         | ClientMessage::RedeemInvite { .. }

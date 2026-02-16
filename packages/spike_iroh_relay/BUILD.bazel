@@ -1,0 +1,1 @@
+# Placeholder BUILD so Bazel can reference Cargo.toml for crate_universe resolution.

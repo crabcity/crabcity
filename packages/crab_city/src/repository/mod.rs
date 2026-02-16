@@ -6,7 +6,7 @@
 use sqlx::sqlite::SqlitePool;
 
 mod attributions;
-mod auth;
+pub(crate) mod auth;
 mod chat;
 mod conversations;
 mod entries;

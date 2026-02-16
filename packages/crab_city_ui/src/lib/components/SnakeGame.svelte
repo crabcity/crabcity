@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { sendLobbyMessage, onLobbyMessage, isConnected } from '$lib/stores/websocket';
-	import { currentUser } from '$lib/stores/auth';
+	import { currentIdentity } from '$lib/stores/auth';
 
 	interface Props {
 		onexit?: () => void;
@@ -122,8 +122,8 @@
 		gameRunning = true;
 		myId = crypto.randomUUID().slice(0, 8);
 
-		const user = get(currentUser);
-		const name = user?.display_name ?? 'anon';
+		const identity = get(currentIdentity);
+		const name = identity?.displayName ?? 'anon';
 		// Pick next unused color based on how many players are already in
 		const usedColors = new Set([...remoteSnakes.values()].map(s => s.color));
 		const color = PLAYER_COLORS.find(c => !usedColors.has(c)) ?? PLAYER_COLORS[remoteSnakes.size % PLAYER_COLORS.length];

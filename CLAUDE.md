@@ -20,17 +20,16 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 
 ### Build Commands
 
-- `cargo check -p crab_city` — quick compile check
-- `cargo test -p crab_city` — run unit tests for the server
-- `cargo test -p <package>` — run unit tests for any workspace crate
+**All builds and tests MUST go through Bazel.** Do not use `pnpm`, `node`, `npx`, or `cargo test` directly. Cargo is only acceptable for quick `cargo check` compile checks.
+
+- `cargo check -p crab_city` — quick compile check (Cargo OK here)
+- `bazel test //packages/crab_city:crab_city_test` — run Rust unit tests for the server
+- `bazel test //packages/<pkg>:*_test` — run unit tests for any workspace crate
+- `bazel test //packages/crab_city_ui:typecheck_test` — frontend type checking
+- `bazel test //packages/crab_city_ui:unit_tests` — frontend Jest tests
 - `bazel test //...` — full CI-equivalent (includes format check, edition 2024)
-- `CRAB_CITY_UI_PATH=packages/crab_city_ui/build cargo build -p crab_city_ui` — build embedded UI crate
-
-### Frontend (SvelteKit)
-
-- `cd packages/crab_city_ui && pnpm install && pnpm build` — build the web UI
-- `cd packages/crab_city_ui && pnpm dev` — dev server with hot reload
-- `cd packages/crab_city_ui && pnpm test` — run Jest tests
+- `bazel build //packages/crab_city:crab` — build the server binary
+- `bazel build //packages/crab_city_ui:build` — build the web UI
 
 ## TUI Styling
 
