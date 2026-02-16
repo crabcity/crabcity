@@ -49,8 +49,13 @@ impl InstanceIdentity {
         }
     }
 
+    /// The signing key for this instance (used for invite creation, event signing).
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
     /// Generate a fresh identity (not persisted until `save` is called).
-    fn generate() -> Self {
+    pub(crate) fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut rand::rng());
         let public_key = signing_key.public_key();
         Self {

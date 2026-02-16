@@ -2,6 +2,7 @@ pub mod admin;
 pub mod conversations;
 pub mod health;
 pub mod instances;
+pub mod interconnect;
 pub mod notes;
 pub mod tasks;
 pub mod websocket;

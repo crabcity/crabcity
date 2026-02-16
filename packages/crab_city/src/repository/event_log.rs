@@ -652,6 +652,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn genesis_hash_chains_to_first_event() {
+        let repo = test_helpers::test_repository().await;
+        let instance = test_instance_key();
+
+        let id = repo
+            .append_event(
+                EventType::MemberJoined,
+                None,
+                None,
+                &serde_json::json!({"display_name": "Genesis"}),
+                &instance,
+            )
+            .await
+            .unwrap();
+        assert_eq!(id, 1);
+
+        // Fetch the first event and verify genesis prev_hash
+        let events = repo.query_events(None, None, 10, None).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let first = &events[0];
+        assert_eq!(first.prev_hash, Event::genesis_prev_hash(&instance));
+        assert!(first.verify_hash());
+
+        // Append a second event — its prev_hash should be the first event's hash
+        let id2 = repo
+            .append_event(
+                EventType::InviteCreated,
+                None,
+                None,
+                &serde_json::json!({}),
+                &instance,
+            )
+            .await
+            .unwrap();
+        assert_eq!(id2, 2);
+
+        // Verify the full chain from genesis
+        let verification = repo.verify_chain(1, 2, &instance).await.unwrap();
+        assert!(verification.valid);
+        assert_eq!(verification.events_checked, 2);
+    }
+
+    #[tokio::test]
     async fn query_events_pagination() {
         let repo = test_helpers::test_repository().await;
         let instance = test_instance_key();

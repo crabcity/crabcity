@@ -2,6 +2,7 @@
 //!
 //! Message types for client-server communication over the multiplexed WebSocket.
 
+use crab_city_auth::AccessRights;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,6 +14,19 @@ use crate::instance_manager::ClaudeInstance;
 pub struct WsUser {
     pub user_id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessRights>,
+}
+
+impl WsUser {
+    /// Check if this user has the given access right.
+    /// Returns true if access is None (legacy/loopback — full access).
+    pub fn has_access(&self, type_: &str, action: &str) -> bool {
+        match &self.access {
+            Some(rights) => rights.contains(type_, action),
+            None => true,
+        }
+    }
 }
 
 /// User presence information broadcast to clients.
@@ -163,6 +177,55 @@ pub enum ClientMessage {
     },
     /// Request list of topics for a scope
     ChatTopics { scope: String },
+
+    // === Interconnect (membership + invites + event log) ===
+    /// Create an invite token
+    CreateInvite {
+        capability: String,
+        max_uses: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_in_secs: Option<u64>,
+    },
+    /// Redeem an invite token
+    RedeemInvite { token: String, display_name: String },
+    /// Revoke an invite by nonce (hex-encoded)
+    RevokeInvite {
+        nonce: String,
+        #[serde(default)]
+        suspend_derived: bool,
+    },
+    /// List active invites
+    ListInvites,
+    /// List all members
+    ListMembers,
+    /// Update a member's capability or display name
+    UpdateMember {
+        public_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capability: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+    },
+    /// Suspend a member
+    SuspendMember { public_key: String },
+    /// Reinstate a suspended member
+    ReinstateMember { public_key: String },
+    /// Remove a member permanently
+    RemoveMember { public_key: String },
+    /// Query the event log
+    QueryEvents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_type_prefix: Option<String>,
+        limit: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_id: Option<i64>,
+    },
+    /// Verify hash chain integrity over a range
+    VerifyEvents { from_id: i64, to_id: i64 },
+    /// Get an event with its inclusion proof
+    GetEventProof { event_id: i64 },
 }
 
 /// Messages sent FROM the server TO the client
@@ -284,6 +347,63 @@ pub enum ServerMessage {
     TaskUpdate { task: serde_json::Value },
     /// A task was deleted
     TaskDeleted { task_id: i64 },
+
+    // === Interconnect (membership + invites + event log) ===
+    /// Invite was successfully created
+    InviteCreated {
+        token: String,
+        nonce: String,
+        capability: String,
+        max_uses: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expires_at: Option<String>,
+    },
+    /// Invite was redeemed by a new member
+    InviteRedeemed {
+        public_key: String,
+        display_name: String,
+        capability: String,
+    },
+    /// Invite was revoked
+    InviteRevoked { nonce: String },
+    /// List of active invites
+    InviteList { invites: Vec<serde_json::Value> },
+    /// List of members
+    MembersList { members: Vec<serde_json::Value> },
+    /// Broadcast: new member joined
+    MemberJoined { member: serde_json::Value },
+    /// Broadcast: member details updated
+    MemberUpdated { member: serde_json::Value },
+    /// Broadcast: member suspended
+    MemberSuspended {
+        public_key: String,
+        display_name: String,
+    },
+    /// Broadcast: member reinstated
+    MemberReinstated {
+        public_key: String,
+        display_name: String,
+    },
+    /// Broadcast: member removed
+    MemberRemoved {
+        public_key: String,
+        display_name: String,
+    },
+    /// Event log query response
+    EventsResponse { events: Vec<serde_json::Value> },
+    /// Event chain verification result
+    EventVerification {
+        valid: bool,
+        events_checked: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Event with inclusion proof
+    EventProofResponse {
+        event: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        nearest_checkpoint: Option<serde_json::Value>,
+    },
 
     // === Terminal lock ===
     /// Terminal lock state update (idempotent snapshot — covers acquire/release/expire/steal)
@@ -1352,12 +1472,44 @@ mod tests {
         let user = WsUser {
             user_id: "u-1".to_string(),
             display_name: "Alice".to_string(),
+            access: None,
         };
         let json = serde_json::to_value(&user).unwrap();
         assert_eq!(json["user_id"], "u-1");
         assert_eq!(json["display_name"], "Alice");
+        // access: None should be skipped
+        assert!(json.get("access").is_none());
         let rt: WsUser = serde_json::from_value(json).unwrap();
         assert_eq!(rt.user_id, "u-1");
+        assert!(rt.access.is_none());
+    }
+
+    #[test]
+    fn test_ws_user_has_access_with_none() {
+        let user = WsUser {
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+            access: None,
+        };
+        // None means full access (legacy/loopback)
+        assert!(user.has_access("terminals", "input"));
+        assert!(user.has_access("chat", "send"));
+    }
+
+    #[test]
+    fn test_ws_user_has_access_with_rights() {
+        use crab_city_auth::Capability;
+        let user = WsUser {
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+            access: Some(Capability::View.access_rights()),
+        };
+        // View can read content and terminals
+        assert!(user.has_access("content", "read"));
+        assert!(user.has_access("terminals", "read"));
+        // View cannot input or send chat
+        assert!(!user.has_access("terminals", "input"));
+        assert!(!user.has_access("chat", "send"));
     }
 
     #[test]
@@ -1459,5 +1611,489 @@ mod tests {
             }
             _ => panic!("Expected TaskDeleted"),
         }
+    }
+
+    // === Interconnect protocol roundtrip tests ===
+
+    #[test]
+    fn test_client_message_create_invite_roundtrip() {
+        let original = ClientMessage::CreateInvite {
+            capability: "collaborate".to_string(),
+            max_uses: 5,
+            expires_in_secs: Some(3600),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::CreateInvite {
+                capability,
+                max_uses,
+                expires_in_secs,
+            } => {
+                assert_eq!(capability, "collaborate");
+                assert_eq!(max_uses, 5);
+                assert_eq!(expires_in_secs, Some(3600));
+            }
+            _ => panic!("Expected CreateInvite"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_create_invite_no_expiry() {
+        let json = r#"{"type":"CreateInvite","capability":"view","max_uses":0}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::CreateInvite {
+                expires_in_secs, ..
+            } => assert!(expires_in_secs.is_none()),
+            _ => panic!("Expected CreateInvite"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_redeem_invite_roundtrip() {
+        let original = ClientMessage::RedeemInvite {
+            token: "ABCDEF123456".to_string(),
+            display_name: "Alice".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::RedeemInvite {
+                token,
+                display_name,
+            } => {
+                assert_eq!(token, "ABCDEF123456");
+                assert_eq!(display_name, "Alice");
+            }
+            _ => panic!("Expected RedeemInvite"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_revoke_invite_roundtrip() {
+        let original = ClientMessage::RevokeInvite {
+            nonce: "aa".repeat(16),
+            suspend_derived: true,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::RevokeInvite {
+                nonce,
+                suspend_derived,
+            } => {
+                assert_eq!(nonce, "aa".repeat(16));
+                assert!(suspend_derived);
+            }
+            _ => panic!("Expected RevokeInvite"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_list_invites_roundtrip() {
+        let json = r#"{"type":"ListInvites"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::ListInvites));
+    }
+
+    #[test]
+    fn test_client_message_list_members_roundtrip() {
+        let json = r#"{"type":"ListMembers"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::ListMembers));
+    }
+
+    #[test]
+    fn test_client_message_update_member_roundtrip() {
+        let original = ClientMessage::UpdateMember {
+            public_key: "pk-hex".to_string(),
+            capability: Some("admin".to_string()),
+            display_name: Some("New Name".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::UpdateMember {
+                public_key,
+                capability,
+                display_name,
+            } => {
+                assert_eq!(public_key, "pk-hex");
+                assert_eq!(capability, Some("admin".to_string()));
+                assert_eq!(display_name, Some("New Name".to_string()));
+            }
+            _ => panic!("Expected UpdateMember"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_suspend_member_roundtrip() {
+        let original = ClientMessage::SuspendMember {
+            public_key: "deadbeef".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::SuspendMember { public_key } => {
+                assert_eq!(public_key, "deadbeef");
+            }
+            _ => panic!("Expected SuspendMember"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_reinstate_member_roundtrip() {
+        let original = ClientMessage::ReinstateMember {
+            public_key: "cafe".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::ReinstateMember { public_key } => assert_eq!(public_key, "cafe"),
+            _ => panic!("Expected ReinstateMember"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_remove_member_roundtrip() {
+        let original = ClientMessage::RemoveMember {
+            public_key: "babe".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::RemoveMember { public_key } => assert_eq!(public_key, "babe"),
+            _ => panic!("Expected RemoveMember"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_query_events_roundtrip() {
+        let original = ClientMessage::QueryEvents {
+            target: Some("abcd".to_string()),
+            event_type_prefix: Some("member.".to_string()),
+            limit: 50,
+            before_id: Some(100),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::QueryEvents {
+                target,
+                event_type_prefix,
+                limit,
+                before_id,
+            } => {
+                assert_eq!(target, Some("abcd".to_string()));
+                assert_eq!(event_type_prefix, Some("member.".to_string()));
+                assert_eq!(limit, 50);
+                assert_eq!(before_id, Some(100));
+            }
+            _ => panic!("Expected QueryEvents"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_verify_events_roundtrip() {
+        let original = ClientMessage::VerifyEvents {
+            from_id: 1,
+            to_id: 100,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::VerifyEvents { from_id, to_id } => {
+                assert_eq!(from_id, 1);
+                assert_eq!(to_id, 100);
+            }
+            _ => panic!("Expected VerifyEvents"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_get_event_proof_roundtrip() {
+        let original = ClientMessage::GetEventProof { event_id: 42 };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ClientMessage::GetEventProof { event_id } => assert_eq!(event_id, 42),
+            _ => panic!("Expected GetEventProof"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_invite_created_roundtrip() {
+        let original = ServerMessage::InviteCreated {
+            token: "CROCK32TOKEN".to_string(),
+            nonce: "aabbccdd".to_string(),
+            capability: "collaborate".to_string(),
+            max_uses: 5,
+            expires_at: Some("2025-12-31 23:59:59".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InviteCreated {
+                token,
+                nonce,
+                capability,
+                max_uses,
+                expires_at,
+            } => {
+                assert_eq!(token, "CROCK32TOKEN");
+                assert_eq!(nonce, "aabbccdd");
+                assert_eq!(capability, "collaborate");
+                assert_eq!(max_uses, 5);
+                assert!(expires_at.is_some());
+            }
+            _ => panic!("Expected InviteCreated"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_invite_redeemed_roundtrip() {
+        let original = ServerMessage::InviteRedeemed {
+            public_key: "pk123".to_string(),
+            display_name: "Bob".to_string(),
+            capability: "view".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InviteRedeemed {
+                public_key,
+                display_name,
+                capability,
+            } => {
+                assert_eq!(public_key, "pk123");
+                assert_eq!(display_name, "Bob");
+                assert_eq!(capability, "view");
+            }
+            _ => panic!("Expected InviteRedeemed"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_invite_revoked_roundtrip() {
+        let original = ServerMessage::InviteRevoked {
+            nonce: "deadbeef".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InviteRevoked { nonce } => assert_eq!(nonce, "deadbeef"),
+            _ => panic!("Expected InviteRevoked"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_invite_list_roundtrip() {
+        let original = ServerMessage::InviteList {
+            invites: vec![serde_json::json!({"nonce": "aa", "capability": "view"})],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::InviteList { invites } => {
+                assert_eq!(invites.len(), 1);
+                assert_eq!(invites[0]["capability"], "view");
+            }
+            _ => panic!("Expected InviteList"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_members_list_roundtrip() {
+        let original = ServerMessage::MembersList {
+            members: vec![serde_json::json!({"display_name": "Alice", "capability": "admin"})],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MembersList { members } => {
+                assert_eq!(members.len(), 1);
+                assert_eq!(members[0]["display_name"], "Alice");
+            }
+            _ => panic!("Expected MembersList"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_member_joined_roundtrip() {
+        let original = ServerMessage::MemberJoined {
+            member: serde_json::json!({"public_key": "pk", "display_name": "New"}),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MemberJoined { member } => {
+                assert_eq!(member["display_name"], "New");
+            }
+            _ => panic!("Expected MemberJoined"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_member_updated_roundtrip() {
+        let original = ServerMessage::MemberUpdated {
+            member: serde_json::json!({"public_key": "pk", "capability": "admin"}),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MemberUpdated { member } => {
+                assert_eq!(member["capability"], "admin");
+            }
+            _ => panic!("Expected MemberUpdated"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_member_suspended_roundtrip() {
+        let original = ServerMessage::MemberSuspended {
+            public_key: "pk1".to_string(),
+            display_name: "Suspended User".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MemberSuspended {
+                public_key,
+                display_name,
+            } => {
+                assert_eq!(public_key, "pk1");
+                assert_eq!(display_name, "Suspended User");
+            }
+            _ => panic!("Expected MemberSuspended"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_member_reinstated_roundtrip() {
+        let original = ServerMessage::MemberReinstated {
+            public_key: "pk2".to_string(),
+            display_name: "Reinstated User".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MemberReinstated {
+                public_key,
+                display_name,
+            } => {
+                assert_eq!(public_key, "pk2");
+                assert_eq!(display_name, "Reinstated User");
+            }
+            _ => panic!("Expected MemberReinstated"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_member_removed_roundtrip() {
+        let original = ServerMessage::MemberRemoved {
+            public_key: "pk3".to_string(),
+            display_name: "Removed User".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::MemberRemoved {
+                public_key,
+                display_name,
+            } => {
+                assert_eq!(public_key, "pk3");
+                assert_eq!(display_name, "Removed User");
+            }
+            _ => panic!("Expected MemberRemoved"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_events_response_roundtrip() {
+        let original = ServerMessage::EventsResponse {
+            events: vec![serde_json::json!({"id": 1, "event_type": "member.joined"})],
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::EventsResponse { events } => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0]["id"], 1);
+            }
+            _ => panic!("Expected EventsResponse"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_event_verification_roundtrip() {
+        let original = ServerMessage::EventVerification {
+            valid: true,
+            events_checked: 50,
+            error: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(!json.contains("error")); // None should be skipped
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::EventVerification {
+                valid,
+                events_checked,
+                error,
+            } => {
+                assert!(valid);
+                assert_eq!(events_checked, 50);
+                assert!(error.is_none());
+            }
+            _ => panic!("Expected EventVerification"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_event_verification_with_error() {
+        let original = ServerMessage::EventVerification {
+            valid: false,
+            events_checked: 10,
+            error: Some("hash mismatch at event 5".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::EventVerification { valid, error, .. } => {
+                assert!(!valid);
+                assert!(error.is_some());
+            }
+            _ => panic!("Expected EventVerification"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_event_proof_response_roundtrip() {
+        let original = ServerMessage::EventProofResponse {
+            event: serde_json::json!({"id": 42, "event_type": "invite.created"}),
+            nearest_checkpoint: Some(serde_json::json!({"event_id": 50, "signature": "sig"})),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::EventProofResponse {
+                event,
+                nearest_checkpoint,
+            } => {
+                assert_eq!(event["id"], 42);
+                assert!(nearest_checkpoint.is_some());
+            }
+            _ => panic!("Expected EventProofResponse"),
+        }
+    }
+
+    #[test]
+    fn test_server_message_event_proof_no_checkpoint() {
+        let original = ServerMessage::EventProofResponse {
+            event: serde_json::json!({"id": 1}),
+            nearest_checkpoint: None,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(!json.contains("nearest_checkpoint"));
     }
 }

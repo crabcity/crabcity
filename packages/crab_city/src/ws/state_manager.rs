@@ -621,6 +621,12 @@ impl GlobalStateManager {
         self.lifecycle_tx.subscribe()
     }
 
+    /// Get a clone of the lifecycle broadcast sender.
+    /// Used by the iroh transport to send to the same channel as WebSocket clients.
+    pub fn lifecycle_sender(&self) -> broadcast::Sender<ServerMessage> {
+        self.lifecycle_tx.clone()
+    }
+
     /// Broadcast an instance lifecycle event to all connected WebSocket clients
     pub fn broadcast_lifecycle(&self, msg: ServerMessage) {
         let _ = self.lifecycle_tx.send(msg);
@@ -1051,6 +1057,7 @@ mod tests {
         WsUser {
             user_id: user_id.to_string(),
             display_name: display_name.to_string(),
+            access: None,
         }
     }
 
@@ -1146,6 +1153,7 @@ mod tests {
         let user = WsUser {
             user_id: "u-1".into(),
             display_name: "Alice".into(),
+            access: None,
         };
 
         let users = state_mgr.add_presence("inst-1", "conn-1", &user).await;
@@ -1159,6 +1167,7 @@ mod tests {
         let user = WsUser {
             user_id: "u-1".into(),
             display_name: "Alice".into(),
+            access: None,
         };
 
         // Same user, two connections (two tabs)
@@ -1174,10 +1183,12 @@ mod tests {
         let alice = WsUser {
             user_id: "u-1".into(),
             display_name: "Alice".into(),
+            access: None,
         };
         let bob = WsUser {
             user_id: "u-2".into(),
             display_name: "Bob".into(),
+            access: None,
         };
 
         state_mgr.add_presence("inst-1", "conn-1", &alice).await;
@@ -1196,6 +1207,7 @@ mod tests {
         let user = WsUser {
             user_id: "u-1".into(),
             display_name: "Alice".into(),
+            access: None,
         };
 
         state_mgr.add_presence("inst-1", "conn-1", &user).await;

@@ -25,6 +25,16 @@ struct Envelope {
     msg_type: String,
     /// The message payload.
     data: serde_json::Value,
+    /// Optional request correlation ID (echoed back in responses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+}
+
+/// A client message with optional transport-layer correlation.
+#[derive(Debug)]
+pub struct IncomingMessage {
+    pub message: ClientMessage,
+    pub request_id: Option<String>,
 }
 
 /// Write a `ServerMessage` to a QUIC send stream with length-prefixed framing.
@@ -32,6 +42,7 @@ pub async fn write_message(
     stream: &mut SendStream,
     msg: &ServerMessage,
     seq: &mut u64,
+    request_id: Option<&str>,
 ) -> Result<()> {
     let data = serde_json::to_value(msg)?;
     let msg_type = data
@@ -45,6 +56,7 @@ pub async fn write_message(
         seq: *seq,
         msg_type,
         data,
+        request_id: request_id.map(str::to_string),
     };
 
     let bytes = serde_json::to_vec(&envelope)?;
@@ -58,7 +70,7 @@ pub async fn write_message(
 /// Read a `ClientMessage` from a QUIC recv stream with length-prefixed framing.
 ///
 /// Returns `None` if the stream is cleanly closed (peer finished).
-pub async fn read_message(stream: &mut RecvStream) -> Result<Option<ClientMessage>> {
+pub async fn read_message(stream: &mut RecvStream) -> Result<Option<IncomingMessage>> {
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
         Ok(()) => {}
@@ -94,7 +106,10 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<ClientMessag
 
     // Try to deserialize the data as a ClientMessage
     match serde_json::from_value::<ClientMessage>(envelope.data.clone()) {
-        Ok(msg) => Ok(Some(msg)),
+        Ok(message) => Ok(Some(IncomingMessage {
+            message,
+            request_id: envelope.request_id,
+        })),
         Err(e) => {
             tracing::warn!(
                 msg_type = %envelope.msg_type,
@@ -106,47 +121,68 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<ClientMessag
     }
 }
 
-/// Serialize a ServerMessage into the wire envelope bytes (for replay buffer storage).
-pub fn serialize_envelope(msg: &ServerMessage, seq: u64) -> Result<Vec<u8>> {
-    let data = serde_json::to_value(msg)?;
-    let msg_type = data
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let envelope = Envelope {
-        v: 1,
-        seq,
-        msg_type,
-        data,
-    };
-
-    Ok(serde_json::to_vec(&envelope)?)
-}
-
-/// Write raw pre-serialized envelope bytes to a stream with length prefix.
-pub async fn write_raw(stream: &mut SendStream, bytes: &[u8]) -> Result<()> {
-    let len = (bytes.len() as u32).to_be_bytes();
-    stream.write_all(&len).await?;
-    stream.write_all(bytes).await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Serialize a ServerMessage into wire envelope bytes (test helper).
+    fn serialize_envelope(
+        msg: &ServerMessage,
+        seq: u64,
+        request_id: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let data = serde_json::to_value(msg)?;
+        let msg_type = data
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let envelope = Envelope {
+            v: 1,
+            seq,
+            msg_type,
+            data,
+            request_id: request_id.map(str::to_string),
+        };
+
+        Ok(serde_json::to_vec(&envelope)?)
+    }
+
     #[test]
-    fn envelope_roundtrip() {
+    fn envelope_roundtrip_no_request_id() {
         let msg = ServerMessage::InstanceStopped {
             instance_id: "test".to_string(),
         };
-        let bytes = serialize_envelope(&msg, 42).unwrap();
+        let bytes = serialize_envelope(&msg, 42, None).unwrap();
         let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(envelope.v, 1);
         assert_eq!(envelope.seq, 42);
         assert_eq!(envelope.msg_type, "InstanceStopped");
+        assert!(envelope.request_id.is_none());
+        // request_id should not appear in the JSON at all
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(raw.get("request_id").is_none());
+    }
+
+    #[test]
+    fn envelope_roundtrip_with_request_id() {
+        let msg = ServerMessage::InstanceStopped {
+            instance_id: "test".to_string(),
+        };
+        let bytes = serialize_envelope(&msg, 7, Some("req-123")).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(envelope.v, 1);
+        assert_eq!(envelope.seq, 7);
+        assert_eq!(envelope.request_id.as_deref(), Some("req-123"));
+    }
+
+    #[test]
+    fn envelope_deserialize_missing_request_id() {
+        // Simulate an old client that doesn't send request_id
+        let json = r#"{"v":1,"seq":1,"type":"Focus","data":{"type":"Focus","instance_id":"x"}}"#;
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+        assert!(envelope.request_id.is_none());
     }
 
     #[test]

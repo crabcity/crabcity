@@ -52,8 +52,10 @@ use tokio::sync::Mutex;
 
 use crate::auth::AuthState;
 use crate::config::{
-    AuthConfig, CrabCityConfig, FileConfig, Profile, RuntimeOverrides, ServerConfig, load_config,
+    AuthConfig, CrabCityConfig, FileConfig, Profile, RuntimeOverrides, ServerConfig,
+    TransportConfig, load_config,
 };
+use crate::identity::InstanceIdentity;
 
 use crate::db::Database;
 use crate::metrics::ServerMetrics;
@@ -446,6 +448,39 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     // Runtime overrides (ephemeral, from TUI/API)
     let runtime_overrides = Arc::new(tokio::sync::RwLock::new(RuntimeOverrides::default()));
 
+    // Load or generate persistent instance identity (ed25519 keypair)
+    let identity = Arc::new(InstanceIdentity::load_or_generate(&config.data_dir)?);
+    info!("Instance identity: {}", identity.public_key.fingerprint());
+
+    // Conditionally start iroh transport
+    let transport_config = TransportConfig::from_file(&fc_initial.transport);
+    let iroh_transport = if transport_config.enabled {
+        let relay =
+            transport::relay::EmbeddedRelay::start(transport_config.relay_bind_addr).await?;
+        info!(
+            "Embedded relay started on {}",
+            transport_config.relay_bind_addr
+        );
+
+        let iroh = transport::iroh_transport::IrohTransport::start(
+            identity.clone(),
+            relay.url().clone(),
+            repository.as_ref().clone(),
+            global_state_manager.clone(),
+            instance_manager.clone(),
+            Some(Arc::new(ServerConfig::from_file(&fc_initial.server))),
+        )
+        .await?;
+
+        info!(
+            "iroh transport accepting connections at {:?}",
+            iroh.endpoint_addr()
+        );
+        Some((iroh, relay))
+    } else {
+        None
+    };
+
     // CLI --host/--port override everything (applied after figment + runtime overrides)
     let cli_host = args.host.clone();
     let cli_port = args.port;
@@ -771,6 +806,14 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     }
 
     // === Cleanup ===
+
+    // Shut down iroh transport first (stops accepting new connections)
+    if let Some((iroh, relay)) = iroh_transport {
+        iroh.shutdown().await;
+        relay.shutdown().await;
+        info!("iroh transport and relay shut down");
+    }
+
     info!("Flushing persistence buffer...");
     if let Err(e) = persistence_for_shutdown.flush_all().await {
         warn!("Failed to flush persistence buffer during shutdown: {}", e);

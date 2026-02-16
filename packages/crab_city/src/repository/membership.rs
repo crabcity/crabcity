@@ -164,6 +164,54 @@ impl ConversationRepository {
         Ok(row.map(row_to_grant))
     }
 
+    pub async fn get_member(&self, public_key: &[u8]) -> Result<Option<Member>> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                i.public_key, i.display_name, i.handle, i.avatar_url,
+                i.registry_account_id, i.resolved_at,
+                i.created_at as i_created_at, i.updated_at as i_updated_at,
+                g.capability, g.access, g.state, g.org_id,
+                g.invited_by, g.invited_via, g.replaces,
+                g.created_at as g_created_at, g.updated_at as g_updated_at
+            FROM member_identities i
+            JOIN member_grants g ON i.public_key = g.public_key
+            WHERE i.public_key = ?
+            "#,
+        )
+        .bind(public_key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| {
+            let pk: Vec<u8> = r.get("public_key");
+            Member {
+                identity: MemberIdentity {
+                    public_key: pk.clone(),
+                    display_name: r.get("display_name"),
+                    handle: r.get("handle"),
+                    avatar_url: r.get("avatar_url"),
+                    registry_account_id: r.get("registry_account_id"),
+                    resolved_at: r.get("resolved_at"),
+                    created_at: r.get("i_created_at"),
+                    updated_at: r.get("i_updated_at"),
+                },
+                grant: MemberGrant {
+                    public_key: pk,
+                    capability: r.get("capability"),
+                    access: r.get("access"),
+                    state: r.get("state"),
+                    org_id: r.get("org_id"),
+                    invited_by: r.get("invited_by"),
+                    invited_via: r.get("invited_via"),
+                    replaces: r.get("replaces"),
+                    created_at: r.get("g_created_at"),
+                    updated_at: r.get("g_updated_at"),
+                },
+            }
+        }))
+    }
+
     pub async fn list_members(&self) -> Result<Vec<Member>> {
         let rows = sqlx::query(
             r#"
@@ -510,6 +558,29 @@ mod tests {
 
         let grants = repo.list_grants_by_invite(&nonce).await.unwrap();
         assert_eq!(grants.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_member_found() {
+        let repo = test_helpers::test_repository().await;
+        let pk = vec![13u8; 32];
+
+        repo.create_identity(&pk, "GetMe").await.unwrap();
+        repo.create_grant(&pk, "collaborate", "[]", "active", None, None)
+            .await
+            .unwrap();
+
+        let member = repo.get_member(&pk).await.unwrap().unwrap();
+        assert_eq!(member.identity.display_name, "GetMe");
+        assert_eq!(member.grant.capability, "collaborate");
+        assert_eq!(member.grant.state, "active");
+    }
+
+    #[tokio::test]
+    async fn get_member_not_found() {
+        let repo = test_helpers::test_repository().await;
+        let result = repo.get_member(&[99u8; 32]).await.unwrap();
+        assert!(result.is_none());
     }
 
     #[tokio::test]

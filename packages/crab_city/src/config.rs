@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::info;
@@ -38,6 +39,8 @@ pub struct FileConfig {
     pub auth: AuthFileConfig,
     #[serde(default)]
     pub server: ServerFileConfig,
+    #[serde(default)]
+    pub transport: TransportFileConfig,
 }
 
 /// Auth-related tunables (lives under `[auth]` in config.toml).
@@ -87,6 +90,44 @@ impl Default for ServerFileConfig {
             max_buffer_mb: default_max_buffer_mb(),
             max_history_kb: default_max_history_kb(),
             hang_timeout_secs: default_hang_timeout_secs(),
+        }
+    }
+}
+
+/// Transport tunables (lives under `[transport]` in config.toml).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransportFileConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_relay_bind_port")]
+    pub relay_bind_port: u16,
+}
+
+impl Default for TransportFileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            relay_bind_port: default_relay_bind_port(),
+        }
+    }
+}
+
+fn default_relay_bind_port() -> u16 {
+    4434
+}
+
+/// Resolved transport configuration (runtime view).
+#[derive(Clone, Debug)]
+pub struct TransportConfig {
+    pub enabled: bool,
+    pub relay_bind_addr: SocketAddr,
+}
+
+impl TransportConfig {
+    pub fn from_file(fc: &TransportFileConfig) -> Self {
+        Self {
+            enabled: fc.enabled,
+            relay_bind_addr: ([127, 0, 0, 1], fc.relay_bind_port).into(),
         }
     }
 }
@@ -155,6 +196,7 @@ fn profile_to_file_config(profile: Option<&Profile>) -> FileConfig {
                 host: Some("127.0.0.1".to_string()),
                 ..Default::default()
             },
+            transport: Default::default(),
         },
         Some(Profile::Tunnel) => FileConfig {
             profile: Some(Profile::Tunnel),
@@ -167,6 +209,7 @@ fn profile_to_file_config(profile: Option<&Profile>) -> FileConfig {
                 host: Some("127.0.0.1".to_string()),
                 ..Default::default()
             },
+            transport: Default::default(),
         },
         Some(Profile::Server) => FileConfig {
             profile: Some(Profile::Server),
@@ -179,6 +222,7 @@ fn profile_to_file_config(profile: Option<&Profile>) -> FileConfig {
                 host: Some("0.0.0.0".to_string()),
                 ..Default::default()
             },
+            transport: Default::default(),
         },
         None => FileConfig::default(),
     }

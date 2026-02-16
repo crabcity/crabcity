@@ -7,10 +7,11 @@
 use std::collections::HashMap;
 
 /// Type of client connection.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClientType {
     Web,
     Terminal,
+    Iroh,
 }
 
 /// Per-client viewport tracking.
