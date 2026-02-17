@@ -24,8 +24,6 @@ pub struct RpcContext {
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
 }
 
-type RpcResult = Result<ServerMessage, ServerMessage>;
-
 fn rpc_err(msg: impl Into<String>) -> ServerMessage {
     ServerMessage::Error {
         instance_id: None,
@@ -108,21 +106,22 @@ pub async fn handle_create_invite(
     capability: &str,
     max_uses: u32,
     expires_in_secs: Option<u64>,
-) -> RpcResult {
-    caller
-        .require_access("members", "invite")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "invite") else {
+        return rpc_err("insufficient permissions for invite");
+    };
 
-    let cap: Capability = capability
-        .parse()
-        .map_err(|e: String| rpc_err(format!("invalid capability: {e}")))?;
+    let cap: Capability = match capability.parse() {
+        Ok(c) => c,
+        Err(e) => return rpc_err(format!("invalid capability: {e}")),
+    };
 
     // Cannot grant above caller's own capability
     if cap > caller.capability {
-        return Err(rpc_err(format!(
+        return rpc_err(format!(
             "cannot create invite with capability '{}' — yours is '{}'",
             cap, caller.capability
-        )));
+        ));
     }
 
     let expires_at = expires_in_secs.map(|secs| {
@@ -152,7 +151,8 @@ pub async fn handle_create_invite(
             .unwrap_or_default()
     });
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .store_invite(
             &nonce,
             caller.public_key.as_bytes(),
@@ -162,9 +162,12 @@ pub async fn handle_create_invite(
             &chain_blob,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to store invite: {e}")))?;
+    {
+        return rpc_err(format!("failed to store invite: {e}"));
+    }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::InviteCreated,
             Some(&caller.public_key),
@@ -173,7 +176,9 @@ pub async fn handle_create_invite(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+    {
+        return rpc_err(format!("failed to log event: {e}"));
+    }
 
     info!(
         caller = %caller.fingerprint,
@@ -181,13 +186,13 @@ pub async fn handle_create_invite(
         "invite created"
     );
 
-    Ok(ServerMessage::InviteCreated {
+    ServerMessage::InviteCreated {
         token,
         nonce: bytes_to_hex(&nonce),
         capability: capability.to_string(),
         max_uses,
         expires_at: expires_at_str,
-    })
+    }
 }
 
 pub async fn handle_redeem_invite(
@@ -195,68 +200,66 @@ pub async fn handle_redeem_invite(
     redeemer_pk: &PublicKey,
     token: &str,
     display_name: &str,
-) -> RpcResult {
-    let invite =
-        Invite::from_base32(token).map_err(|e| rpc_err(format!("invalid invite token: {e}")))?;
+) -> ServerMessage {
+    let invite = match Invite::from_base32(token) {
+        Ok(i) => i,
+        Err(e) => return rpc_err(format!("invalid invite token: {e}")),
+    };
 
     // Verify the cryptographic chain
-    let claims = invite
-        .verify()
-        .map_err(|e| rpc_err(format!("invite verification failed: {e}")))?;
+    let claims = match invite.verify() {
+        Ok(c) => c,
+        Err(e) => return rpc_err(format!("invite verification failed: {e}")),
+    };
 
     // Must be for this instance
     if claims.instance != ctx.identity.public_key {
-        return Err(rpc_err("invite is for a different instance"));
+        return rpc_err("invite is for a different instance");
     }
 
     // Look up stored invite by nonce
-    let stored = ctx
-        .repo
-        .get_invite(&claims.nonce)
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up invite: {e}")))?
-        .ok_or_else(|| rpc_err("invite not found (nonce not recognized)"))?;
+    let stored = match ctx.repo.get_invite(&claims.nonce).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return rpc_err("invite not found (nonce not recognized)"),
+        Err(e) => return rpc_err(format!("failed to look up invite: {e}")),
+    };
 
     if !stored.is_valid() {
-        return Err(rpc_err(
-            "invite is no longer valid (revoked, expired, or exhausted)",
-        ));
+        return rpc_err("invite is no longer valid (revoked, expired, or exhausted)");
     }
 
     // Verify the root issuer has an active grant on this instance
     let root_pk_bytes = claims.root_issuer.as_bytes();
-    let root_grant = ctx
-        .repo
-        .get_active_grant(root_pk_bytes)
-        .await
-        .map_err(|e| rpc_err(format!("failed to check root issuer grant: {e}")))?;
-
-    if root_grant.is_none() {
-        return Err(rpc_err("invite root issuer no longer has an active grant"));
+    match ctx.repo.get_active_grant(root_pk_bytes).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return rpc_err("invite root issuer no longer has an active grant"),
+        Err(e) => return rpc_err(format!("failed to check root issuer grant: {e}")),
     }
 
     // Check redeemer doesn't already have a grant
-    let existing = ctx
-        .repo
-        .get_grant(redeemer_pk.as_bytes())
-        .await
-        .map_err(|e| rpc_err(format!("failed to check existing grant: {e}")))?;
-
-    if existing.is_some() {
-        return Err(rpc_err("you already have a grant on this instance"));
+    match ctx.repo.get_grant(redeemer_pk.as_bytes()).await {
+        Ok(Some(_)) => return rpc_err("you already have a grant on this instance"),
+        Ok(None) => {}
+        Err(e) => return rpc_err(format!("failed to check existing grant: {e}")),
     }
 
     let cap_str = claims.capability.to_string();
-    let access_json = serde_json::to_string(&claims.capability.access_rights())
-        .map_err(|e| rpc_err(format!("failed to serialize access rights: {e}")))?;
+    let access_json = match serde_json::to_string(&claims.capability.access_rights()) {
+        Ok(j) => j,
+        Err(e) => return rpc_err(format!("failed to serialize access rights: {e}")),
+    };
 
     // Create identity + grant
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .create_identity(redeemer_pk.as_bytes(), display_name)
         .await
-        .map_err(|e| rpc_err(format!("failed to create identity: {e}")))?;
+    {
+        return rpc_err(format!("failed to create identity: {e}"));
+    }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .create_grant(
             redeemer_pk.as_bytes(),
             &cap_str,
@@ -266,18 +269,20 @@ pub async fn handle_redeem_invite(
             Some(&claims.nonce),
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to create grant: {e}")))?;
+    {
+        return rpc_err(format!("failed to create grant: {e}"));
+    }
 
     // Increment use count
-    ctx.repo
-        .increment_use_count(&claims.nonce)
-        .await
-        .map_err(|e| rpc_err(format!("failed to increment invite use count: {e}")))?;
+    if let Err(e) = ctx.repo.increment_use_count(&claims.nonce).await {
+        return rpc_err(format!("failed to increment invite use count: {e}"));
+    }
 
     // Log events
     let pk_hex = bytes_to_hex(redeemer_pk.as_bytes());
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::InviteRedeemed,
             Some(redeemer_pk),
@@ -286,9 +291,12 @@ pub async fn handle_redeem_invite(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log invite redeemed event: {e}")))?;
+    {
+        return rpc_err(format!("failed to log invite redeemed event: {e}"));
+    }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::MemberJoined,
             Some(redeemer_pk),
@@ -297,7 +305,9 @@ pub async fn handle_redeem_invite(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log member joined event: {e}")))?;
+    {
+        return rpc_err(format!("failed to log member joined event: {e}"));
+    }
 
     // Broadcast MemberJoined
     let member_json = json!({
@@ -318,12 +328,12 @@ pub async fn handle_redeem_invite(
         "invite redeemed"
     );
 
-    Ok(ServerMessage::InviteRedeemed {
+    ServerMessage::InviteRedeemed {
         public_key: pk_hex,
         fingerprint: redeemer_pk.fingerprint(),
         display_name: display_name.to_string(),
         capability: cap_str,
-    })
+    }
 }
 
 pub async fn handle_revoke_invite(
@@ -331,31 +341,33 @@ pub async fn handle_revoke_invite(
     caller: &AuthUser,
     nonce_hex: &str,
     suspend_derived: bool,
-) -> RpcResult {
-    caller
-        .require_access("members", "invite")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "invite") else {
+        return rpc_err("insufficient permissions for invite");
+    };
 
-    let nonce_bytes = parse_nonce(nonce_hex)?;
+    let nonce_bytes = match parse_nonce(nonce_hex) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
 
     // Verify invite exists
-    let stored = ctx
-        .repo
-        .get_invite(&nonce_bytes)
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up invite: {e}")))?
-        .ok_or_else(|| rpc_err("invite not found"))?;
+    let stored = match ctx.repo.get_invite(&nonce_bytes).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return rpc_err("invite not found"),
+        Err(e) => return rpc_err(format!("failed to look up invite: {e}")),
+    };
 
     if stored.revoked_at.is_some() {
-        return Err(rpc_err("invite is already revoked"));
+        return rpc_err("invite is already revoked");
     }
 
-    ctx.repo
-        .revoke_invite(&nonce_bytes)
-        .await
-        .map_err(|e| rpc_err(format!("failed to revoke invite: {e}")))?;
+    if let Err(e) = ctx.repo.revoke_invite(&nonce_bytes).await {
+        return rpc_err(format!("failed to revoke invite: {e}"));
+    }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::InviteRevoked,
             Some(&caller.public_key),
@@ -364,15 +376,16 @@ pub async fn handle_revoke_invite(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+    {
+        return rpc_err(format!("failed to log event: {e}"));
+    }
 
     // Optionally suspend members who joined via this invite
     if suspend_derived {
-        let grants = ctx
-            .repo
-            .list_grants_by_invite(&nonce_bytes)
-            .await
-            .map_err(|e| rpc_err(format!("failed to list derived grants: {e}")))?;
+        let grants = match ctx.repo.list_grants_by_invite(&nonce_bytes).await {
+            Ok(g) => g,
+            Err(e) => return rpc_err(format!("failed to list derived grants: {e}")),
+        };
 
         for grant in &grants {
             if grant.state == "active" {
@@ -388,10 +401,13 @@ pub async fn handle_revoke_invite(
                     }
                 };
 
-                ctx.repo
+                if let Err(e) = ctx
+                    .repo
                     .update_grant_state(&grant.public_key, "suspended")
                     .await
-                    .map_err(|e| rpc_err(format!("failed to suspend derived member: {e}")))?;
+                {
+                    return rpc_err(format!("failed to suspend derived member: {e}"));
+                }
 
                 let target_pk = PublicKey::from_bytes(pk_arr);
                 let identity = ctx
@@ -429,45 +445,43 @@ pub async fn handle_revoke_invite(
 
     info!(caller = %caller.fingerprint, nonce = nonce_hex, "invite revoked");
 
-    Ok(ServerMessage::InviteRevoked {
+    ServerMessage::InviteRevoked {
         nonce: nonce_hex.to_string(),
-    })
+    }
 }
 
-pub async fn handle_list_invites(ctx: &RpcContext, caller: &AuthUser) -> RpcResult {
-    caller
-        .require_access("members", "invite")
-        .map_err(|e| rpc_err(e.to_string()))?;
+pub async fn handle_list_invites(ctx: &RpcContext, caller: &AuthUser) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "invite") else {
+        return rpc_err("insufficient permissions for invite");
+    };
 
-    let invites = ctx
-        .repo
-        .list_active_invites()
-        .await
-        .map_err(|e| rpc_err(format!("failed to list invites: {e}")))?;
+    let invites = match ctx.repo.list_active_invites().await {
+        Ok(i) => i,
+        Err(e) => return rpc_err(format!("failed to list invites: {e}")),
+    };
 
-    Ok(ServerMessage::InviteList {
+    ServerMessage::InviteList {
         invites: invites.iter().map(invite_to_json).collect(),
-    })
+    }
 }
 
 // =============================================================================
 // Member handlers
 // =============================================================================
 
-pub async fn handle_list_members(ctx: &RpcContext, caller: &AuthUser) -> RpcResult {
-    caller
-        .require_access("content", "read")
-        .map_err(|e| rpc_err(e.to_string()))?;
+pub async fn handle_list_members(ctx: &RpcContext, caller: &AuthUser) -> ServerMessage {
+    let Ok(()) = caller.require_access("content", "read") else {
+        return rpc_err("insufficient permissions to list members");
+    };
 
-    let members = ctx
-        .repo
-        .list_members()
-        .await
-        .map_err(|e| rpc_err(format!("failed to list members: {e}")))?;
+    let members = match ctx.repo.list_members().await {
+        Ok(m) => m,
+        Err(e) => return rpc_err(format!("failed to list members: {e}")),
+    };
 
-    Ok(ServerMessage::MembersList {
+    ServerMessage::MembersList {
         members: members.iter().map(member_to_json).collect(),
-    })
+    }
 }
 
 pub async fn handle_update_member(
@@ -476,61 +490,69 @@ pub async fn handle_update_member(
     public_key_hex: &str,
     new_capability: Option<&str>,
     new_display_name: Option<&str>,
-) -> RpcResult {
-    caller
-        .require_access("members", "update")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "update") else {
+        return rpc_err("insufficient permissions to update member");
+    };
 
-    let target_pk = parse_public_key(public_key_hex)?;
+    let target_pk = match parse_public_key(public_key_hex) {
+        Ok(pk) => pk,
+        Err(e) => return e,
+    };
 
     // Cannot update owner
-    let grant = ctx
-        .repo
-        .get_grant(target_pk.as_bytes())
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up member: {e}")))?
-        .ok_or_else(|| rpc_err("member not found"))?;
+    let grant = match ctx.repo.get_grant(target_pk.as_bytes()).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return rpc_err("member not found"),
+        Err(e) => return rpc_err(format!("failed to look up member: {e}")),
+    };
 
     if grant.capability == "owner" {
-        return Err(rpc_err("cannot update the owner"));
+        return rpc_err("cannot update the owner");
     }
 
     // No-op guard: if nothing to change, return current state without broadcast
     if new_capability.is_none() && new_display_name.is_none() {
-        let member = ctx
-            .repo
-            .get_member(target_pk.as_bytes())
-            .await
-            .map_err(|e| rpc_err(format!("failed to look up member: {e}")))?
-            .ok_or_else(|| rpc_err("member not found"))?;
+        let member = match ctx.repo.get_member(target_pk.as_bytes()).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return rpc_err("member not found"),
+            Err(e) => return rpc_err(format!("failed to look up member: {e}")),
+        };
 
-        return Ok(ServerMessage::MemberUpdated {
+        return ServerMessage::MemberUpdated {
             member: member_to_json(&member),
-        });
+        };
     }
 
     if let Some(cap_str) = new_capability {
-        let cap: Capability = cap_str
-            .parse()
-            .map_err(|e: String| rpc_err(format!("invalid capability: {e}")))?;
+        let cap: Capability = match cap_str.parse() {
+            Ok(c) => c,
+            Err(e) => return rpc_err(format!("invalid capability: {e}")),
+        };
 
         // No escalation beyond caller's own capability
         if cap > caller.capability {
-            return Err(rpc_err(format!(
+            return rpc_err(format!(
                 "cannot set capability '{}' — yours is '{}'",
                 cap, caller.capability
-            )));
+            ));
         }
 
-        let access_json = serde_json::to_string(&cap.access_rights())
-            .map_err(|e| rpc_err(format!("failed to serialize access: {e}")))?;
+        let access_json = match serde_json::to_string(&cap.access_rights()) {
+            Ok(j) => j,
+            Err(e) => return rpc_err(format!("failed to serialize access: {e}")),
+        };
 
-        ctx.repo
+        if let Err(e) = ctx
+            .repo
             .update_grant_capability(target_pk.as_bytes(), cap_str, &access_json)
             .await
-            .map_err(|e| rpc_err(format!("failed to update capability: {e}")))?;
+        {
+            return rpc_err(format!("failed to update capability: {e}"));
+        }
 
-        ctx.repo
+        if let Err(e) = ctx
+            .repo
             .append_event(
                 EventType::GrantCapabilityChanged,
                 Some(&caller.public_key),
@@ -539,16 +561,22 @@ pub async fn handle_update_member(
                 &ctx.identity.public_key,
             )
             .await
-            .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+        {
+            return rpc_err(format!("failed to log event: {e}"));
+        }
     }
 
     if let Some(dn) = new_display_name {
-        ctx.repo
+        if let Err(e) = ctx
+            .repo
             .update_identity(target_pk.as_bytes(), dn, None, None)
             .await
-            .map_err(|e| rpc_err(format!("failed to update display name: {e}")))?;
+        {
+            return rpc_err(format!("failed to update display name: {e}"));
+        }
 
-        ctx.repo
+        if let Err(e) = ctx
+            .repo
             .append_event(
                 EventType::IdentityUpdated,
                 Some(&caller.public_key),
@@ -557,7 +585,9 @@ pub async fn handle_update_member(
                 &ctx.identity.public_key,
             )
             .await
-            .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+        {
+            return rpc_err(format!("failed to log event: {e}"));
+        }
     }
 
     // Fetch updated member for broadcast
@@ -578,45 +608,53 @@ pub async fn handle_update_member(
 
     info!(caller = %caller.fingerprint, target = public_key_hex, "member updated");
 
-    Ok(ServerMessage::MemberUpdated {
+    ServerMessage::MemberUpdated {
         member: member_json,
-    })
+    }
 }
 
-/// Returns `Ok((response, Option<target_pk>))` — caller should disconnect target_pk if Some.
+/// Returns `(response, Option<target_pk>)` — caller should disconnect target_pk if Some.
 pub async fn handle_suspend_member(
     ctx: &RpcContext,
     caller: &AuthUser,
     public_key_hex: &str,
-) -> Result<(ServerMessage, Option<PublicKey>), ServerMessage> {
-    caller
-        .require_access("members", "suspend")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> (ServerMessage, Option<PublicKey>) {
+    let Ok(()) = caller.require_access("members", "suspend") else {
+        return (rpc_err("insufficient permissions to suspend member"), None);
+    };
 
-    let target_pk = parse_public_key(public_key_hex)?;
+    let target_pk = match parse_public_key(public_key_hex) {
+        Ok(pk) => pk,
+        Err(e) => return (e, None),
+    };
 
-    let grant = ctx
-        .repo
-        .get_grant(target_pk.as_bytes())
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up member: {e}")))?
-        .ok_or_else(|| rpc_err("member not found"))?;
+    let grant = match ctx.repo.get_grant(target_pk.as_bytes()).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return (rpc_err("member not found"), None),
+        Err(e) => return (rpc_err(format!("failed to look up member: {e}")), None),
+    };
 
     if grant.capability == "owner" {
-        return Err(rpc_err("cannot suspend the owner"));
+        return (rpc_err("cannot suspend the owner"), None);
     }
 
     if grant.state != "active" {
-        return Err(rpc_err(format!(
-            "member is not active (current state: {})",
-            grant.state
-        )));
+        return (
+            rpc_err(format!(
+                "member is not active (current state: {})",
+                grant.state
+            )),
+            None,
+        );
     }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .update_grant_state(target_pk.as_bytes(), "suspended")
         .await
-        .map_err(|e| rpc_err(format!("failed to suspend member: {e}")))?;
+    {
+        return (rpc_err(format!("failed to suspend member: {e}")), None);
+    }
 
     let identity = ctx
         .repo
@@ -628,7 +666,8 @@ pub async fn handle_suspend_member(
         .map(|i| i.display_name)
         .unwrap_or_else(|| "unknown".into());
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::MemberSuspended,
             Some(&caller.public_key),
@@ -637,7 +676,9 @@ pub async fn handle_suspend_member(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+    {
+        return (rpc_err(format!("failed to log event: {e}")), None);
+    }
 
     let msg = ServerMessage::MemberSuspended {
         public_key: public_key_hex.to_string(),
@@ -648,38 +689,43 @@ pub async fn handle_suspend_member(
 
     info!(caller = %caller.fingerprint, target = public_key_hex, "member suspended");
 
-    Ok((msg, Some(target_pk)))
+    (msg, Some(target_pk))
 }
 
 pub async fn handle_reinstate_member(
     ctx: &RpcContext,
     caller: &AuthUser,
     public_key_hex: &str,
-) -> RpcResult {
-    caller
-        .require_access("members", "reinstate")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "reinstate") else {
+        return rpc_err("insufficient permissions to reinstate member");
+    };
 
-    let target_pk = parse_public_key(public_key_hex)?;
+    let target_pk = match parse_public_key(public_key_hex) {
+        Ok(pk) => pk,
+        Err(e) => return e,
+    };
 
-    let grant = ctx
-        .repo
-        .get_grant(target_pk.as_bytes())
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up member: {e}")))?
-        .ok_or_else(|| rpc_err("member not found"))?;
+    let grant = match ctx.repo.get_grant(target_pk.as_bytes()).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return rpc_err("member not found"),
+        Err(e) => return rpc_err(format!("failed to look up member: {e}")),
+    };
 
     if grant.state != "suspended" {
-        return Err(rpc_err(format!(
+        return rpc_err(format!(
             "member is not suspended (current state: {})",
             grant.state
-        )));
+        ));
     }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .update_grant_state(target_pk.as_bytes(), "active")
         .await
-        .map_err(|e| rpc_err(format!("failed to reinstate member: {e}")))?;
+    {
+        return rpc_err(format!("failed to reinstate member: {e}"));
+    }
 
     let identity = ctx
         .repo
@@ -691,7 +737,8 @@ pub async fn handle_reinstate_member(
         .map(|i| i.display_name)
         .unwrap_or_else(|| "unknown".into());
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::MemberReinstated,
             Some(&caller.public_key),
@@ -700,7 +747,9 @@ pub async fn handle_reinstate_member(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+    {
+        return rpc_err(format!("failed to log event: {e}"));
+    }
 
     let msg = ServerMessage::MemberReinstated {
         public_key: public_key_hex.to_string(),
@@ -711,36 +760,41 @@ pub async fn handle_reinstate_member(
 
     info!(caller = %caller.fingerprint, target = public_key_hex, "member reinstated");
 
-    Ok(msg)
+    msg
 }
 
-/// Returns `Ok((response, Option<target_pk>))` — caller should disconnect target_pk if Some.
+/// Returns `(response, Option<target_pk>)` — caller should disconnect target_pk if Some.
 pub async fn handle_remove_member(
     ctx: &RpcContext,
     caller: &AuthUser,
     public_key_hex: &str,
-) -> Result<(ServerMessage, Option<PublicKey>), ServerMessage> {
-    caller
-        .require_access("members", "remove")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> (ServerMessage, Option<PublicKey>) {
+    let Ok(()) = caller.require_access("members", "remove") else {
+        return (rpc_err("insufficient permissions to remove member"), None);
+    };
 
-    let target_pk = parse_public_key(public_key_hex)?;
+    let target_pk = match parse_public_key(public_key_hex) {
+        Ok(pk) => pk,
+        Err(e) => return (e, None),
+    };
 
-    let grant = ctx
-        .repo
-        .get_grant(target_pk.as_bytes())
-        .await
-        .map_err(|e| rpc_err(format!("failed to look up member: {e}")))?
-        .ok_or_else(|| rpc_err("member not found"))?;
+    let grant = match ctx.repo.get_grant(target_pk.as_bytes()).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return (rpc_err("member not found"), None),
+        Err(e) => return (rpc_err(format!("failed to look up member: {e}")), None),
+    };
 
     if grant.capability == "owner" {
-        return Err(rpc_err("cannot remove the owner"));
+        return (rpc_err("cannot remove the owner"), None);
     }
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .update_grant_state(target_pk.as_bytes(), "removed")
         .await
-        .map_err(|e| rpc_err(format!("failed to remove member: {e}")))?;
+    {
+        return (rpc_err(format!("failed to remove member: {e}")), None);
+    }
 
     let identity = ctx
         .repo
@@ -752,7 +806,8 @@ pub async fn handle_remove_member(
         .map(|i| i.display_name)
         .unwrap_or_else(|| "unknown".into());
 
-    ctx.repo
+    if let Err(e) = ctx
+        .repo
         .append_event(
             EventType::MemberRemoved,
             Some(&caller.public_key),
@@ -761,7 +816,9 @@ pub async fn handle_remove_member(
             &ctx.identity.public_key,
         )
         .await
-        .map_err(|e| rpc_err(format!("failed to log event: {e}")))?;
+    {
+        return (rpc_err(format!("failed to log event: {e}")), None);
+    }
 
     let msg = ServerMessage::MemberRemoved {
         public_key: public_key_hex.to_string(),
@@ -772,7 +829,7 @@ pub async fn handle_remove_member(
 
     info!(caller = %caller.fingerprint, target = public_key_hex, "member removed");
 
-    Ok((msg, Some(target_pk)))
+    (msg, Some(target_pk))
 }
 
 // =============================================================================
@@ -786,25 +843,27 @@ pub async fn handle_query_events(
     event_type_prefix: Option<&str>,
     limit: u32,
     before_id: Option<i64>,
-) -> RpcResult {
-    caller
-        .require_access("members", "read")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "read") else {
+        return rpc_err("insufficient permissions to query events");
+    };
 
     let target_bytes = match target_hex {
-        Some(hex) => {
-            let bytes =
-                hex_to_bytes(hex).map_err(|e| rpc_err(format!("invalid target hex: {e}")))?;
-            Some(bytes)
-        }
+        Some(hex) => match hex_to_bytes(hex) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => return rpc_err(format!("invalid target hex: {e}")),
+        },
         None => None,
     };
 
-    let events = ctx
+    let events = match ctx
         .repo
         .query_events(target_bytes.as_deref(), event_type_prefix, limit, before_id)
         .await
-        .map_err(|e| rpc_err(format!("failed to query events: {e}")))?;
+    {
+        Ok(e) => e,
+        Err(e) => return rpc_err(format!("failed to query events: {e}")),
+    };
 
     let event_values: Vec<serde_json::Value> = events
         .iter()
@@ -820,9 +879,9 @@ pub async fn handle_query_events(
         })
         .collect();
 
-    Ok(ServerMessage::EventsResponse {
+    ServerMessage::EventsResponse {
         events: event_values,
-    })
+    }
 }
 
 pub async fn handle_verify_events(
@@ -830,38 +889,40 @@ pub async fn handle_verify_events(
     caller: &AuthUser,
     from_id: i64,
     to_id: i64,
-) -> RpcResult {
-    caller
-        .require_access("members", "read")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("members", "read") else {
+        return rpc_err("insufficient permissions to verify events");
+    };
 
-    let verification = ctx
+    let verification = match ctx
         .repo
         .verify_chain(from_id, to_id, &ctx.identity.public_key)
         .await
-        .map_err(|e| rpc_err(format!("failed to verify chain: {e}")))?;
+    {
+        Ok(v) => v,
+        Err(e) => return rpc_err(format!("failed to verify chain: {e}")),
+    };
 
-    Ok(ServerMessage::EventVerification {
+    ServerMessage::EventVerification {
         valid: verification.valid,
         events_checked: verification.events_checked,
         error: verification.error,
-    })
+    }
 }
 
 pub async fn handle_get_event_proof(
     ctx: &RpcContext,
     caller: &AuthUser,
     event_id: i64,
-) -> RpcResult {
-    caller
-        .require_access("content", "read")
-        .map_err(|e| rpc_err(e.to_string()))?;
+) -> ServerMessage {
+    let Ok(()) = caller.require_access("content", "read") else {
+        return rpc_err("insufficient permissions to get event proof");
+    };
 
-    let proof = ctx
-        .repo
-        .get_event_proof(event_id)
-        .await
-        .map_err(|e| rpc_err(format!("failed to get event proof: {e}")))?;
+    let proof = match ctx.repo.get_event_proof(event_id).await {
+        Ok(p) => p,
+        Err(e) => return rpc_err(format!("failed to get event proof: {e}")),
+    };
 
     let event_json = json!({
         "id": proof.event.id,
@@ -883,10 +944,10 @@ pub async fn handle_get_event_proof(
         })
     });
 
-    Ok(ServerMessage::EventProofResponse {
+    ServerMessage::EventProofResponse {
         event: event_json,
         nearest_checkpoint: checkpoint_json,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -927,13 +988,26 @@ mod tests {
         (ctx, caller)
     }
 
+    fn assert_not_error(msg: &ServerMessage) {
+        assert!(
+            !matches!(msg, ServerMessage::Error { .. }),
+            "expected success but got: {msg:?}"
+        );
+    }
+
+    fn assert_is_error(msg: &ServerMessage) {
+        assert!(
+            matches!(msg, ServerMessage::Error { .. }),
+            "expected error but got: {msg:?}"
+        );
+    }
+
     #[tokio::test]
     async fn create_and_list_invites() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 5, None)
-            .await
-            .unwrap();
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 5, None).await;
+        assert_not_error(&result);
 
         match &result {
             ServerMessage::InviteCreated {
@@ -952,7 +1026,8 @@ mod tests {
         }
 
         // List should return the invite
-        let list = handle_list_invites(&ctx, &caller).await.unwrap();
+        let list = handle_list_invites(&ctx, &caller).await;
+        assert_not_error(&list);
         match list {
             ServerMessage::InviteList { invites } => {
                 assert_eq!(invites.len(), 1);
@@ -989,7 +1064,7 @@ mod tests {
 
         // Collaborator cannot invite with Admin capability
         let result = handle_create_invite(&ctx, &collab_user, "admin", 1, None).await;
-        assert!(result.is_err());
+        assert_is_error(&result);
     }
 
     #[tokio::test]
@@ -997,9 +1072,8 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
 
         // Create invite
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 1, None)
-            .await
-            .unwrap();
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 1, None).await;
+        assert_not_error(&result);
         let token = match &result {
             ServerMessage::InviteCreated { token, .. } => token.clone(),
             _ => panic!("Expected InviteCreated"),
@@ -1007,9 +1081,8 @@ mod tests {
 
         // Redeem with a new key
         let new_pk = PublicKey::from_bytes([88u8; 32]);
-        let redeem = handle_redeem_invite(&ctx, &new_pk, &token, "New User")
-            .await
-            .unwrap();
+        let redeem = handle_redeem_invite(&ctx, &new_pk, &token, "New User").await;
+        assert_not_error(&redeem);
 
         match &redeem {
             ServerMessage::InviteRedeemed {
@@ -1045,9 +1118,8 @@ mod tests {
     async fn redeem_invite_exhausted() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "view", 1, None)
-            .await
-            .unwrap();
+        let result = handle_create_invite(&ctx, &caller, "view", 1, None).await;
+        assert_not_error(&result);
         let token = match &result {
             ServerMessage::InviteCreated { token, .. } => token.clone(),
             _ => panic!("Expected InviteCreated"),
@@ -1055,37 +1127,34 @@ mod tests {
 
         // First redemption succeeds
         let pk1 = PublicKey::from_bytes([91u8; 32]);
-        handle_redeem_invite(&ctx, &pk1, &token, "User1")
-            .await
-            .unwrap();
+        let r = handle_redeem_invite(&ctx, &pk1, &token, "User1").await;
+        assert_not_error(&r);
 
         // Second redemption fails (max_uses = 1)
         let pk2 = PublicKey::from_bytes([92u8; 32]);
         let result = handle_redeem_invite(&ctx, &pk2, &token, "User2").await;
-        assert!(result.is_err());
+        assert_is_error(&result);
     }
 
     #[tokio::test]
     async fn revoke_then_redeem_fails() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 0, None)
-            .await
-            .unwrap();
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 0, None).await;
+        assert_not_error(&result);
         let (token, nonce) = match &result {
             ServerMessage::InviteCreated { token, nonce, .. } => (token.clone(), nonce.clone()),
             _ => panic!("Expected InviteCreated"),
         };
 
         // Revoke
-        handle_revoke_invite(&ctx, &caller, &nonce, false)
-            .await
-            .unwrap();
+        let r = handle_revoke_invite(&ctx, &caller, &nonce, false).await;
+        assert_not_error(&r);
 
         // Attempt redeem
         let new_pk = PublicKey::from_bytes([99u8; 32]);
         let result = handle_redeem_invite(&ctx, &new_pk, &token, "Rejected").await;
-        assert!(result.is_err());
+        assert_is_error(&result);
     }
 
     #[tokio::test]
@@ -1113,7 +1182,8 @@ mod tests {
         let pk_hex = bytes_to_hex(member_pk.as_bytes());
 
         // Suspend
-        let (msg, disconnect_pk) = handle_suspend_member(&ctx, &caller, &pk_hex).await.unwrap();
+        let (msg, disconnect_pk) = handle_suspend_member(&ctx, &caller, &pk_hex).await;
+        assert_not_error(&msg);
         assert!(matches!(msg, ServerMessage::MemberSuspended { .. }));
         assert!(disconnect_pk.is_some());
 
@@ -1127,9 +1197,8 @@ mod tests {
         assert_eq!(grant.state, "suspended");
 
         // Reinstate
-        let msg = handle_reinstate_member(&ctx, &caller, &pk_hex)
-            .await
-            .unwrap();
+        let msg = handle_reinstate_member(&ctx, &caller, &pk_hex).await;
+        assert_not_error(&msg);
         assert!(matches!(msg, ServerMessage::MemberReinstated { .. }));
 
         // Verify active
@@ -1156,7 +1225,8 @@ mod tests {
             .unwrap();
 
         let pk_hex = bytes_to_hex(member_pk.as_bytes());
-        let (msg, disconnect_pk) = handle_remove_member(&ctx, &caller, &pk_hex).await.unwrap();
+        let (msg, disconnect_pk) = handle_remove_member(&ctx, &caller, &pk_hex).await;
+        assert_not_error(&msg);
         assert!(matches!(msg, ServerMessage::MemberRemoved { .. }));
         assert!(disconnect_pk.is_some());
 
@@ -1174,8 +1244,8 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
         let owner_hex = bytes_to_hex(ctx.identity.public_key.as_bytes());
 
-        let result = handle_suspend_member(&ctx, &caller, &owner_hex).await;
-        assert!(result.is_err());
+        let (msg, _) = handle_suspend_member(&ctx, &caller, &owner_hex).await;
+        assert_is_error(&msg);
     }
 
     #[tokio::test]
@@ -1183,8 +1253,8 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
         let owner_hex = bytes_to_hex(ctx.identity.public_key.as_bytes());
 
-        let result = handle_remove_member(&ctx, &caller, &owner_hex).await;
-        assert!(result.is_err());
+        let (msg, _) = handle_remove_member(&ctx, &caller, &owner_hex).await;
+        assert_is_error(&msg);
     }
 
     #[tokio::test]
@@ -1202,9 +1272,8 @@ mod tests {
             .unwrap();
 
         let pk_hex = bytes_to_hex(member_pk.as_bytes());
-        let msg = handle_update_member(&ctx, &caller, &pk_hex, Some("collaborate"), None)
-            .await
-            .unwrap();
+        let msg = handle_update_member(&ctx, &caller, &pk_hex, Some("collaborate"), None).await;
+        assert_not_error(&msg);
 
         match msg {
             ServerMessage::MemberUpdated { member } => {
@@ -1246,7 +1315,7 @@ mod tests {
 
         // Admin cannot promote to Owner
         let result = handle_update_member(&ctx, &admin_user, &pk_hex, Some("owner"), None).await;
-        assert!(result.is_err());
+        assert_is_error(&result);
     }
 
     #[tokio::test]
@@ -1269,9 +1338,8 @@ mod tests {
         let mut rx = ctx.broadcast_tx.subscribe();
 
         // Both fields None → should return current state without broadcasting
-        let msg = handle_update_member(&ctx, &caller, &pk_hex, None, None)
-            .await
-            .unwrap();
+        let msg = handle_update_member(&ctx, &caller, &pk_hex, None, None).await;
+        assert_not_error(&msg);
 
         match msg {
             ServerMessage::MemberUpdated { member } => {
@@ -1290,16 +1358,13 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
 
         // Create some events via invite flow
-        handle_create_invite(&ctx, &caller, "view", 0, None)
-            .await
-            .unwrap();
-        handle_create_invite(&ctx, &caller, "collaborate", 0, None)
-            .await
-            .unwrap();
+        let r = handle_create_invite(&ctx, &caller, "view", 0, None).await;
+        assert_not_error(&r);
+        let r = handle_create_invite(&ctx, &caller, "collaborate", 0, None).await;
+        assert_not_error(&r);
 
-        let events = handle_query_events(&ctx, &caller, None, Some("invite."), 10, None)
-            .await
-            .unwrap();
+        let events = handle_query_events(&ctx, &caller, None, Some("invite."), 10, None).await;
+        assert_not_error(&events);
         match events {
             ServerMessage::EventsResponse { events } => {
                 assert_eq!(events.len(), 2);
@@ -1308,7 +1373,8 @@ mod tests {
         }
 
         // Verify chain
-        let verify = handle_verify_events(&ctx, &caller, 1, 2).await.unwrap();
+        let verify = handle_verify_events(&ctx, &caller, 1, 2).await;
+        assert_not_error(&verify);
         match verify {
             ServerMessage::EventVerification {
                 valid,
@@ -1326,11 +1392,11 @@ mod tests {
     async fn event_proof() {
         let (ctx, caller) = test_ctx().await;
 
-        handle_create_invite(&ctx, &caller, "view", 0, None)
-            .await
-            .unwrap();
+        let r = handle_create_invite(&ctx, &caller, "view", 0, None).await;
+        assert_not_error(&r);
 
-        let proof = handle_get_event_proof(&ctx, &caller, 1).await.unwrap();
+        let proof = handle_get_event_proof(&ctx, &caller, 1).await;
+        assert_not_error(&proof);
         match proof {
             ServerMessage::EventProofResponse { event, .. } => {
                 assert_eq!(event["id"], 1);
@@ -1355,7 +1421,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = handle_list_members(&ctx, &caller).await.unwrap();
+        let result = handle_list_members(&ctx, &caller).await;
+        assert_not_error(&result);
         match result {
             ServerMessage::MembersList { members } => {
                 // Owner + loopback (seeded) + Extra = at least 2 from our ctx

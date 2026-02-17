@@ -2,33 +2,18 @@
 //!
 //! Wire format: `[4-byte big-endian length][JSON payload]`
 //!
-//! Envelope: `{ "v": 1, "seq": N, "type": "...", "data": {...} }`
+//! The payload is a flat JSON object with transport fields (`v`, `seq`,
+//! `request_id`) alongside the message body (which includes a `type` tag
+//! from serde's internally-tagged enum).
 
 use anyhow::{Result, bail};
-use iroh::endpoint::{RecvStream, SendStream};
-use serde::{Deserialize, Serialize};
+use iroh::endpoint::{ReadError, ReadExactError, RecvStream, SendStream};
+use serde_json::Value;
 
 use crate::ws::{ClientMessage, ServerMessage};
 
 /// Maximum message size (1 MiB). Rejects messages larger than this.
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
-
-/// Wire envelope wrapping every message.
-#[derive(Debug, Serialize, Deserialize)]
-struct Envelope {
-    /// Protocol version (currently 1).
-    v: u32,
-    /// Monotonically increasing sequence number.
-    seq: u64,
-    /// Message type tag (matches serde `type` field).
-    #[serde(rename = "type")]
-    msg_type: String,
-    /// The message payload.
-    data: serde_json::Value,
-    /// Optional request correlation ID (echoed back in responses).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    request_id: Option<String>,
-}
 
 /// A client message with optional transport-layer correlation.
 #[derive(Debug)]
@@ -38,28 +23,27 @@ pub struct IncomingMessage {
 }
 
 /// Write a `ServerMessage` to a QUIC send stream with length-prefixed framing.
+///
+/// The message is serialized as a flat JSON object: the `ServerMessage` fields
+/// (including its `type` tag) are merged with transport fields `v` and `seq`.
 pub async fn write_message(
     stream: &mut SendStream,
     msg: &ServerMessage,
     seq: &mut u64,
     request_id: Option<&str>,
 ) -> Result<()> {
-    let data = serde_json::to_value(msg)?;
-    let msg_type = data
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let mut obj = serde_json::to_value(msg)?;
 
-    let envelope = Envelope {
-        v: 1,
-        seq: *seq,
-        msg_type,
-        data,
-        request_id: request_id.map(str::to_string),
-    };
+    // Inject transport fields into the flat object
+    if let Value::Object(ref mut map) = obj {
+        map.insert("v".into(), Value::from(1u32));
+        map.insert("seq".into(), Value::from(*seq));
+        if let Some(rid) = request_id {
+            map.insert("request_id".into(), Value::from(rid));
+        }
+    }
 
-    let bytes = serde_json::to_vec(&envelope)?;
+    let bytes = serde_json::to_vec(&obj)?;
     let len = (bytes.len() as u32).to_be_bytes();
     stream.write_all(&len).await?;
     stream.write_all(&bytes).await?;
@@ -74,14 +58,14 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<IncomingMess
     let mut len_buf = [0u8; 4];
     match stream.read_exact(&mut len_buf).await {
         Ok(()) => {}
-        Err(e) => {
-            // quinn ReadExactError wraps ReadError; check if it's a clean finish
-            let msg = e.to_string();
-            if msg.contains("closed") || msg.contains("finished") || msg.contains("reset") {
-                return Ok(None);
-            }
-            return Err(e.into());
-        }
+        // Stream finished before we got 4 bytes — clean close
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        // Peer reset the stream or connection was lost — treat as close
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        // Genuine error (e.g. 0-RTT rejected)
+        Err(e) => return Err(e.into()),
     }
 
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -94,25 +78,46 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<IncomingMess
     }
 
     let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
+    match stream.read_exact(&mut buf).await {
+        Ok(()) => {}
+        // Stream died mid-message — still a clean close from our perspective
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
 
-    let envelope: Envelope = serde_json::from_slice(&buf)?;
+    let mut obj: Value = serde_json::from_slice(&buf)?;
+
+    // Extract transport fields
+    let v = obj.get("v").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let request_id = obj
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // Forward compatibility: ignore unknown versions
-    if envelope.v != 1 {
-        tracing::warn!(version = envelope.v, "unknown envelope version, skipping");
+    if v != 1 {
+        tracing::warn!(version = v, "unknown envelope version, skipping");
         return Ok(None);
     }
 
-    // Try to deserialize the data as a ClientMessage
-    match serde_json::from_value::<ClientMessage>(envelope.data.clone()) {
+    // Remove transport fields before deserializing as ClientMessage
+    if let Value::Object(ref mut map) = obj {
+        map.remove("v");
+        map.remove("seq");
+        map.remove("request_id");
+    }
+
+    // Try to deserialize as a ClientMessage
+    match serde_json::from_value::<ClientMessage>(obj) {
         Ok(message) => Ok(Some(IncomingMessage {
             message,
-            request_id: envelope.request_id,
+            request_id,
         })),
         Err(e) => {
             tracing::warn!(
-                msg_type = %envelope.msg_type,
                 error = %e,
                 "unknown or malformed client message type, skipping"
             );
@@ -126,63 +131,62 @@ mod tests {
     use super::*;
 
     /// Serialize a ServerMessage into wire envelope bytes (test helper).
-    fn serialize_envelope(
-        msg: &ServerMessage,
-        seq: u64,
-        request_id: Option<&str>,
-    ) -> Result<Vec<u8>> {
-        let data = serde_json::to_value(msg)?;
-        let msg_type = data
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let envelope = Envelope {
-            v: 1,
-            seq,
-            msg_type,
-            data,
-            request_id: request_id.map(str::to_string),
-        };
-
-        Ok(serde_json::to_vec(&envelope)?)
+    fn serialize_flat(msg: &ServerMessage, seq: u64, request_id: Option<&str>) -> Result<Vec<u8>> {
+        let mut obj = serde_json::to_value(msg)?;
+        if let Value::Object(ref mut map) = obj {
+            map.insert("v".into(), Value::from(1u32));
+            map.insert("seq".into(), Value::from(seq));
+            if let Some(rid) = request_id {
+                map.insert("request_id".into(), Value::from(rid));
+            }
+        }
+        Ok(serde_json::to_vec(&obj)?)
     }
 
     #[test]
-    fn envelope_roundtrip_no_request_id() {
+    fn flat_envelope_roundtrip_no_request_id() {
         let msg = ServerMessage::InstanceStopped {
             instance_id: "test".to_string(),
         };
-        let bytes = serialize_envelope(&msg, 42, None).unwrap();
-        let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(envelope.v, 1);
-        assert_eq!(envelope.seq, 42);
-        assert_eq!(envelope.msg_type, "InstanceStopped");
-        assert!(envelope.request_id.is_none());
-        // request_id should not appear in the JSON at all
+        let bytes = serialize_flat(&msg, 42, None).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Transport fields are siblings of the message type
+        assert_eq!(raw["v"], 1);
+        assert_eq!(raw["seq"], 42);
+        assert_eq!(raw["type"], "InstanceStopped");
+        assert_eq!(raw["instance_id"], "test");
+        // request_id should not appear
         assert!(raw.get("request_id").is_none());
+        // No nested "data" object
+        assert!(raw.get("data").is_none());
     }
 
     #[test]
-    fn envelope_roundtrip_with_request_id() {
+    fn flat_envelope_roundtrip_with_request_id() {
         let msg = ServerMessage::InstanceStopped {
             instance_id: "test".to_string(),
         };
-        let bytes = serialize_envelope(&msg, 7, Some("req-123")).unwrap();
-        let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(envelope.v, 1);
-        assert_eq!(envelope.seq, 7);
-        assert_eq!(envelope.request_id.as_deref(), Some("req-123"));
+        let bytes = serialize_flat(&msg, 7, Some("req-123")).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(raw["v"], 1);
+        assert_eq!(raw["seq"], 7);
+        assert_eq!(raw["request_id"], "req-123");
     }
 
     #[test]
-    fn envelope_deserialize_missing_request_id() {
-        // Simulate an old client that doesn't send request_id
-        let json = r#"{"v":1,"seq":1,"type":"Focus","data":{"type":"Focus","instance_id":"x"}}"#;
-        let envelope: Envelope = serde_json::from_str(json).unwrap();
-        assert!(envelope.request_id.is_none());
+    fn flat_envelope_no_double_serialize() {
+        // Ensure there's no nested "data" or "msg_type" field
+        let msg = ServerMessage::Error {
+            instance_id: Some("x".into()),
+            message: "test error".into(),
+        };
+        let bytes = serialize_flat(&msg, 0, None).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(raw.get("data").is_none());
+        assert!(raw.get("msg_type").is_none());
+        assert_eq!(raw["type"], "Error");
+        assert_eq!(raw["message"], "test error");
     }
 
     #[test]

@@ -128,7 +128,11 @@ pub enum ClientMessage {
     },
 
     /// Reconnect with replay: client sends last seen sequence number
-    Reconnect { last_seq: u64 },
+    /// and the connection_id of the previous session to replay from.
+    Reconnect {
+        last_seq: u64,
+        connection_id: String,
+    },
 
     /// Switch focus to a different instance (triggers history replay)
     /// If `since_uuid` is provided, only returns entries after that UUID.
@@ -284,6 +288,10 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recovery: Option<String>,
     },
+
+    /// Connection established — sent as the first message to inform the client
+    /// of its connection_id (needed for reconnect replay).
+    ConnectionEstablished { connection_id: String },
 
     // === High-resolution messages (focused instance only) ===
     // All content messages include instance_id for proper client-side routing

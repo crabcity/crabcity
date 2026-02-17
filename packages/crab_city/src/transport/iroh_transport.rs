@@ -23,6 +23,7 @@ use crate::identity::InstanceIdentity;
 use crate::instance_manager::InstanceManager;
 use crate::repository::ConversationRepository;
 use crate::transport::framing;
+use crate::transport::replay_buffer::ReplayBuffer;
 use crate::virtual_terminal::ClientType;
 use crate::ws::DEFAULT_MAX_HISTORY_BYTES;
 use crate::ws::dispatch::{
@@ -31,25 +32,17 @@ use crate::ws::dispatch::{
 };
 use crate::ws::{ClientMessage, GlobalStateManager, ServerMessage};
 
-/// Collapse `Result<ServerMessage, ServerMessage>` into a single response.
-fn collapse(r: Result<ServerMessage, ServerMessage>) -> ServerMessage {
-    r.unwrap_or_else(|e| e)
-}
-
-/// Collapse a handler result that may also request a disconnect.
-async fn collapse_with_disconnect(
-    r: Result<(ServerMessage, Option<PublicKey>), ServerMessage>,
+/// Send a disconnect request if the handler indicated one is needed.
+async fn maybe_disconnect(
+    resp: ServerMessage,
+    disconnect_pk: Option<PublicKey>,
     disconnect_tx: &mpsc::Sender<(PublicKey, String)>,
     reason: &str,
 ) -> ServerMessage {
-    match r {
-        Ok((resp, Some(pk))) => {
-            let _ = disconnect_tx.send((pk, reason.into())).await;
-            resp
-        }
-        Ok((resp, None)) => resp,
-        Err(err) => err,
+    if let Some(pk) = disconnect_pk {
+        let _ = disconnect_tx.send((pk, reason.into())).await;
     }
+    resp
 }
 
 /// ALPN protocol identifier for Crab City connections.
@@ -61,13 +54,103 @@ struct ConnectionHandle {
     _conn: iroh::endpoint::Connection,
     /// Token to cancel this connection's handler task.
     cancel: CancellationToken,
+    /// The identity (public key) of the connected client.
+    public_key: PublicKey,
+}
+
+/// Multi-connection registry: supports multiple connections per identity.
+///
+/// Primary index: `connection_id → ConnectionHandle`
+/// Secondary index: `PublicKey → [connection_id, ...]`
+struct ConnectionRegistry {
+    by_id: HashMap<String, ConnectionHandle>,
+    by_key: HashMap<PublicKey, Vec<String>>,
+}
+
+impl ConnectionRegistry {
+    fn new() -> Self {
+        Self {
+            by_id: HashMap::new(),
+            by_key: HashMap::new(),
+        }
+    }
+
+    /// Register a connection. Multiple connections per identity are allowed.
+    fn insert(&mut self, connection_id: String, handle: ConnectionHandle) {
+        let pk = handle.public_key;
+        self.by_key
+            .entry(pk)
+            .or_default()
+            .push(connection_id.clone());
+        self.by_id.insert(connection_id, handle);
+    }
+
+    /// Remove a single connection by its ID.
+    fn remove(&mut self, connection_id: &str) -> Option<ConnectionHandle> {
+        if let Some(handle) = self.by_id.remove(connection_id) {
+            if let Some(ids) = self.by_key.get_mut(&handle.public_key) {
+                ids.retain(|id| id != connection_id);
+                if ids.is_empty() {
+                    self.by_key.remove(&handle.public_key);
+                }
+            }
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
+    /// Cancel and remove all connections for a given identity.
+    fn disconnect_all(&mut self, public_key: &PublicKey) -> usize {
+        let ids = match self.by_key.remove(public_key) {
+            Some(ids) => ids,
+            None => return 0,
+        };
+        let count = ids.len();
+        for id in ids {
+            if let Some(handle) = self.by_id.remove(&id) {
+                handle.cancel.cancel();
+            }
+        }
+        count
+    }
+
+    /// Total number of active connections.
+    fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    /// Drain all connections (for shutdown).
+    fn drain(&mut self) -> impl Iterator<Item = (String, ConnectionHandle)> + '_ {
+        self.by_key.clear();
+        self.by_id.drain()
+    }
+}
+
+/// Shared per-transport state passed to connection handlers.
+///
+/// Bundles the common arguments that `accept_loop`, `connection_handler`,
+/// and `invite_handler` all need, eliminating 8-11 argument functions.
+struct TransportContext {
+    rpc_ctx: Arc<RpcContext>,
+    disconnect_tx: mpsc::Sender<(PublicKey, String)>,
+    state_manager: Arc<GlobalStateManager>,
+    instance_manager: Arc<InstanceManager>,
+    connections: Arc<Mutex<ConnectionRegistry>>,
+    /// Per-connection replay buffers for reconnection support.
+    /// Keyed by `connection_id` so that multi-device users don't get
+    /// cross-connection duplicates. Each buffer is independently locked so
+    /// the sender hot path never contends on the global map. Buffers outlive
+    /// their connection handler and are cleaned up by the periodic eviction sweep.
+    replay_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<ReplayBuffer>>>>>,
+    max_history_bytes: usize,
 }
 
 /// The iroh-based P2P transport layer.
 pub struct IrohTransport {
     endpoint: Endpoint,
     relay_url: RelayUrl,
-    connections: Arc<Mutex<HashMap<PublicKey, ConnectionHandle>>>,
+    connections: Arc<Mutex<ConnectionRegistry>>,
     cancel: CancellationToken,
 }
 
@@ -101,8 +184,8 @@ impl IrohTransport {
             .context("failed to bind iroh endpoint")?;
 
         let cancel = CancellationToken::new();
-        let connections: Arc<Mutex<HashMap<PublicKey, ConnectionHandle>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let connections: Arc<Mutex<ConnectionRegistry>> =
+            Arc::new(Mutex::new(ConnectionRegistry::new()));
 
         let broadcast_tx = state_manager.lifecycle_sender();
 
@@ -120,27 +203,58 @@ impl IrohTransport {
         // Disconnect channel: handlers send (public_key, reason) to request disconnection
         let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<(PublicKey, String)>(32);
 
+        let transport_ctx = Arc::new(TransportContext {
+            rpc_ctx,
+            disconnect_tx,
+            state_manager,
+            instance_manager,
+            connections: connections.clone(),
+            replay_buffers: Arc::new(Mutex::new(HashMap::new())),
+            max_history_bytes,
+        });
+
         // Spawn the accept loop
         let ep_clone = endpoint.clone();
         let cancel_clone = cancel.clone();
-        let connections_clone = connections.clone();
+        let ctx_clone = transport_ctx.clone();
 
         tokio::spawn(async move {
-            Self::accept_loop(
-                ep_clone,
-                cancel_clone,
-                connections_clone,
-                rpc_ctx,
-                disconnect_tx,
-                state_manager,
-                instance_manager,
-                max_history_bytes,
-            )
-            .await;
+            Self::accept_loop(ep_clone, cancel_clone, ctx_clone).await;
+        });
+
+        // Spawn replay buffer eviction sweep (every 60s)
+        let replay_buffers_evict = transport_ctx.replay_buffers.clone();
+        let cancel_evict = cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = cancel_evict.cancelled() => break,
+                    _ = interval.tick() => {
+                        let mut buffers = replay_buffers_evict.lock().await;
+                        for buf in buffers.values() {
+                            buf.lock().await.evict_expired();
+                        }
+                        // Collect keys to remove while holding the outer lock briefly
+                        let empty_keys: Vec<String> = {
+                            let mut keys = Vec::new();
+                            for (k, buf) in buffers.iter() {
+                                if buf.lock().await.len() == 0 {
+                                    keys.push(k.clone());
+                                }
+                            }
+                            keys
+                        };
+                        for k in empty_keys {
+                            buffers.remove(&k);
+                        }
+                    }
+                }
+            }
         });
 
         // Spawn disconnect processor
-        let connections_for_disconnect = connections.clone();
+        let connections_for_disconnect = transport_ctx.connections.clone();
         let cancel_for_disconnect = cancel.clone();
         tokio::spawn(async move {
             loop {
@@ -150,11 +264,12 @@ impl IrohTransport {
                         match msg {
                             Some((pk, reason)) => {
                                 let mut conns = connections_for_disconnect.lock().await;
-                                if let Some(handle) = conns.remove(&pk) {
-                                    handle.cancel.cancel();
+                                let count = conns.disconnect_all(&pk);
+                                if count > 0 {
                                     info!(
                                         peer = %pk.fingerprint(),
                                         reason = %reason,
+                                        count = count,
                                         "disconnected client via handler request"
                                     );
                                 }
@@ -184,20 +299,21 @@ impl IrohTransport {
         EndpointAddr::new(self.endpoint.id()).with_relay_url(self.relay_url.clone())
     }
 
-    /// Close a specific client's connection.
+    /// Close all connections for a specific identity.
     pub async fn disconnect(&self, public_key: &PublicKey, reason: &str) {
         let mut conns = self.connections.lock().await;
-        if let Some(handle) = conns.remove(public_key) {
-            handle.cancel.cancel();
+        let count = conns.disconnect_all(public_key);
+        if count > 0 {
             info!(
                 peer = %public_key.fingerprint(),
                 reason = reason,
+                count = count,
                 "disconnected client"
             );
         }
     }
 
-    /// Number of connected clients.
+    /// Number of active connections.
     pub async fn connection_count(&self) -> usize {
         self.connections.lock().await.len()
     }
@@ -209,9 +325,9 @@ impl IrohTransport {
 
         // Close all active connections
         let mut conns = self.connections.lock().await;
-        for (pk, handle) in conns.drain() {
+        for (id, handle) in conns.drain() {
             handle.cancel.cancel();
-            info!(peer = %pk.fingerprint(), "closing connection");
+            info!(peer = %handle.public_key.fingerprint(), conn_id = %id, "closing connection");
         }
 
         self.endpoint.close().await;
@@ -220,16 +336,10 @@ impl IrohTransport {
 
     /// The accept loop runs as a background task, accepting incoming connections
     /// and spawning per-connection handler tasks.
-    #[allow(clippy::too_many_arguments)]
     async fn accept_loop(
         endpoint: Endpoint,
         cancel: CancellationToken,
-        connections: Arc<Mutex<HashMap<PublicKey, ConnectionHandle>>>,
-        rpc_ctx: Arc<RpcContext>,
-        disconnect_tx: mpsc::Sender<(PublicKey, String)>,
-        state_manager: Arc<GlobalStateManager>,
-        instance_manager: Arc<InstanceManager>,
-        max_history_bytes: usize,
+        ctx: Arc<TransportContext>,
     ) {
         loop {
             tokio::select! {
@@ -274,7 +384,7 @@ impl IrohTransport {
                     );
 
                     // Look up the member's grant
-                    let grant = match rpc_ctx.repo.get_active_grant(public_key.as_bytes()).await {
+                    let grant = match ctx.rpc_ctx.repo.get_active_grant(public_key.as_bytes()).await {
                         Ok(g) => g,
                         Err(e) => {
                             error!(
@@ -286,52 +396,42 @@ impl IrohTransport {
                         }
                     };
 
+                    let conn_id = uuid::Uuid::new_v4().to_string();
                     let conn_cancel = CancellationToken::new();
                     let handle = ConnectionHandle {
                         _conn: conn.clone(),
                         cancel: conn_cancel.clone(),
+                        public_key,
                     };
 
-                    // Register the connection
-                    connections.lock().await.insert(public_key, handle);
-
-                    // Spawn per-connection handler
-                    let connections_clone = connections.clone();
-                    let rpc_clone = rpc_ctx.clone();
-                    let disconnect_clone = disconnect_tx.clone();
+                    // Register the connection (multi-device: keeps all alive)
+                    ctx.connections.lock().await.insert(conn_id.clone(), handle);
 
                     if let Some(ref g) = grant {
                         // Build AuthUser from grant
                         let cap: Capability = g.capability.parse().unwrap_or(Capability::View);
-                        let identity = rpc_ctx.repo.get_identity(public_key.as_bytes()).await.ok().flatten();
+                        let identity = ctx.rpc_ctx.repo.get_identity(public_key.as_bytes()).await.ok().flatten();
                         let display_name = identity
                             .map(|i| i.display_name)
                             .unwrap_or_else(|| public_key.fingerprint());
                         let auth_user = AuthUser::from_grant(public_key, display_name, cap);
 
-                        let repo_arc = Some(Arc::new(rpc_ctx.repo.clone()));
-
                         tokio::spawn(Self::connection_handler(
                             conn,
                             public_key,
                             auth_user,
+                            conn_id,
                             conn_cancel,
-                            connections_clone,
-                            rpc_clone,
-                            disconnect_clone,
-                            state_manager.clone(),
-                            instance_manager.clone(),
-                            repo_arc,
-                            max_history_bytes,
+                            ctx.clone(),
                         ));
                     } else {
                         // No grant — client must redeem an invite as first message
                         tokio::spawn(Self::invite_handler(
                             conn,
                             public_key,
+                            conn_id,
                             conn_cancel,
-                            connections_clone,
-                            rpc_clone,
+                            ctx.clone(),
                         ));
                     }
                 }
@@ -340,22 +440,15 @@ impl IrohTransport {
     }
 
     /// Handle an authenticated connection: bidirectional message streaming.
-    #[allow(clippy::too_many_arguments)]
     async fn connection_handler(
         conn: iroh::endpoint::Connection,
         public_key: PublicKey,
         auth_user: AuthUser,
+        connection_id: String,
         cancel: CancellationToken,
-        connections: Arc<Mutex<HashMap<PublicKey, ConnectionHandle>>>,
-        rpc_ctx: Arc<RpcContext>,
-        disconnect_tx: mpsc::Sender<(PublicKey, String)>,
-        state_manager: Arc<GlobalStateManager>,
-        instance_manager: Arc<InstanceManager>,
-        repository: Option<Arc<ConversationRepository>>,
-        max_history_bytes: usize,
+        transport: Arc<TransportContext>,
     ) {
         let peer = public_key.fingerprint();
-        let connection_id = uuid::Uuid::new_v4().to_string();
 
         // Per-connection channel (same pattern as WS handler)
         let (tx, mut rx) = mpsc::channel::<ServerMessage>(100);
@@ -365,52 +458,194 @@ impl IrohTransport {
             Ok(streams) => streams,
             Err(e) => {
                 error!(peer = %peer, "failed to accept bidi stream: {}", e);
-                connections.lock().await.remove(&public_key);
+                transport.connections.lock().await.remove(&connection_id);
                 return;
             }
         };
 
+        // Reconnect handshake: read the first message to check for Reconnect.
+        // If the client sends Reconnect { last_seq, connection_id }, replay
+        // missed messages from that connection's buffer directly on the send
+        // stream before starting the normal message loop.
+        let mut seq = 0u64;
+        let mut first_message = None;
+        match framing::read_message(&mut recv).await {
+            Ok(Some(framing::IncomingMessage {
+                message:
+                    ClientMessage::Reconnect {
+                        last_seq,
+                        connection_id: old_conn_id,
+                    },
+                ..
+            })) => {
+                // Collect replay data into owned bytes. We take the global map
+                // lock briefly to look up the per-connection buffer, then lock
+                // the buffer itself to collect entries, then drop both before
+                // doing async writes.
+                let replay_data = {
+                    let buffers = transport.replay_buffers.lock().await;
+                    if let Some(buf_arc) = buffers.get(&old_conn_id) {
+                        let buf = buf_arc.lock().await;
+                        match buf.replay_since(last_seq) {
+                            Some(entries) => {
+                                let owned: Vec<Vec<u8>> = entries
+                                    .into_iter()
+                                    .map(|(_seq, data)| data.to_vec())
+                                    .collect();
+                                Some(Ok(owned))
+                            }
+                            None => Some(Err(())), // gap too large
+                        }
+                    } else {
+                        None // no buffer for this connection
+                    }
+                };
+                // Both locks are dropped here
+
+                match replay_data {
+                    Some(Ok(entries)) => {
+                        info!(
+                            peer = %peer,
+                            old_conn_id = %old_conn_id,
+                            last_seq = last_seq,
+                            replay_count = entries.len(),
+                            "replaying missed messages for reconnecting client"
+                        );
+                        for data in &entries {
+                            // Write each replayed message with length-prefixed framing
+                            let len = (data.len() as u32).to_be_bytes();
+                            if let Err(e) = send.write_all(&len).await {
+                                error!(peer = %peer, "replay write error (len): {}", e);
+                                transport.connections.lock().await.remove(&connection_id);
+                                return;
+                            }
+                            if let Err(e) = send.write_all(&data).await {
+                                error!(peer = %peer, "replay write error (data): {}", e);
+                                transport.connections.lock().await.remove(&connection_id);
+                                return;
+                            }
+                            seq += 1;
+                        }
+                        // Clean up the old connection's buffer now that replay is done
+                        transport.replay_buffers.lock().await.remove(&old_conn_id);
+                    }
+                    Some(Err(())) => {
+                        // Gap too large — client must do a full resync
+                        warn!(
+                            peer = %peer,
+                            old_conn_id = %old_conn_id,
+                            last_seq = last_seq,
+                            "replay buffer gap: client must full-resync"
+                        );
+                        let err = ServerMessage::Error {
+                            instance_id: None,
+                            message: "replay gap: full resync required".into(),
+                        };
+                        let _ = framing::write_message(&mut send, &err, &mut seq, None).await;
+                        // Clean up the stale buffer
+                        transport.replay_buffers.lock().await.remove(&old_conn_id);
+                    }
+                    None => {
+                        // No replay buffer for this connection (expired or unknown)
+                        debug!(
+                            peer = %peer,
+                            old_conn_id = %old_conn_id,
+                            "no replay buffer found, proceeding normally"
+                        );
+                    }
+                }
+            }
+            Ok(Some(msg)) => {
+                // Not a Reconnect — stash it for dispatch in the main loop
+                first_message = Some(msg);
+            }
+            Ok(None) => {
+                info!(peer = %peer, "client stream closed before first message");
+                transport.connections.lock().await.remove(&connection_id);
+                return;
+            }
+            Err(e) => {
+                error!(peer = %peer, "read error on first message: {}", e);
+                transport.connections.lock().await.remove(&connection_id);
+                return;
+            }
+        }
+
+        // Tell the client its connection_id so it can reconnect later
+        if tx
+            .send(ServerMessage::ConnectionEstablished {
+                connection_id: connection_id.clone(),
+            })
+            .await
+            .is_err()
+        {
+            warn!(peer = %peer, "failed to send ConnectionEstablished");
+            transport.connections.lock().await.remove(&connection_id);
+            return;
+        }
+
         // Send initial instance list (same as WS handler)
-        let instances = instance_manager.list().await;
+        let instances = transport.instance_manager.list().await;
         if tx
             .send(ServerMessage::InstanceList { instances })
             .await
             .is_err()
         {
             warn!(peer = %peer, "failed to send initial instance list");
-            connections.lock().await.remove(&public_key);
+            transport.connections.lock().await.remove(&connection_id);
             return;
         }
 
         // Build shared connection context
         let ws_user = auth_user_to_ws_user(&auth_user);
-        let ctx = Arc::new(ConnectionContext::new(
+        let repository = Some(Arc::new(transport.rpc_ctx.repo.clone()));
+        let conn_ctx = Arc::new(ConnectionContext::new(
             connection_id.clone(),
             Some(ws_user),
             tx.clone(),
-            state_manager.clone(),
-            instance_manager.clone(),
+            transport.state_manager.clone(),
+            transport.instance_manager.clone(),
             repository,
-            max_history_bytes,
+            transport.max_history_bytes,
             ClientType::Iroh,
         ));
 
-        // Sender task: drain mpsc rx → write to QUIC send stream
+        // Create this connection's replay buffer and register it in the global
+        // map. The sender task holds a direct Arc to the buffer so the hot path
+        // (every outgoing message) only locks the per-connection mutex, never the
+        // global map. The global map is only touched on reconnect lookup and
+        // eviction sweep — both cold paths.
+        let my_replay_buffer = Arc::new(Mutex::new(ReplayBuffer::new()));
+        transport
+            .replay_buffers
+            .lock()
+            .await
+            .insert(connection_id.clone(), my_replay_buffer.clone());
+
+        // Sender task: drain mpsc rx → write to QUIC send stream, pushing
+        // serialized bytes into the per-connection replay buffer.
+        // `seq` continues from where the replay handshake left off.
         let sender_task = {
             let peer = peer.clone();
+            let replay_buf = my_replay_buffer;
             async move {
-                let mut seq = 0u64;
+                let mut seq = seq;
                 while let Some(msg) = rx.recv().await {
+                    // Serialize once for both the wire and the replay buffer
                     if let Err(e) = framing::write_message(&mut send, &msg, &mut seq, None).await {
                         error!(peer = %peer, "write error: {}", e);
                         break;
+                    }
+                    // Push raw JSON into this connection's replay buffer (no global lock)
+                    if let Ok(bytes) = serde_json::to_vec(&msg) {
+                        replay_buf.lock().await.push(&bytes);
                     }
                 }
             }
         };
 
         // State broadcast task: forward state changes to this client
-        let mut state_rx = state_manager.subscribe();
+        let mut state_rx = transport.state_manager.subscribe();
         let tx_state = tx.clone();
         let state_broadcast_task = async move {
             loop {
@@ -435,7 +670,7 @@ impl IrohTransport {
         };
 
         // Lifecycle broadcast task: forward lifecycle events to this client
-        let mut lifecycle_rx = state_manager.subscribe_lifecycle();
+        let mut lifecycle_rx = transport.state_manager.subscribe_lifecycle();
         let tx_lifecycle = tx.clone();
         let lifecycle_task = async move {
             loop {
@@ -451,10 +686,35 @@ impl IrohTransport {
             }
         };
 
-        // Main input loop: read client messages and dispatch
-        let ctx_input = ctx.clone();
+        // Main input loop: read client messages and dispatch.
+        // If the first message wasn't Reconnect, it's stashed in `first_message`
+        // and dispatched here before entering the read loop.
+        let conn_ctx_input = conn_ctx.clone();
         let peer_input = peer.clone();
+        let rpc_ctx = transport.rpc_ctx.clone();
+        let disconnect_tx = transport.disconnect_tx.clone();
         let input_task = async move {
+            // Dispatch stashed first message (non-Reconnect)
+            if let Some(framing::IncomingMessage {
+                message,
+                request_id: _,
+            }) = first_message
+            {
+                match dispatch_client_message(&conn_ctx_input, message).await {
+                    DispatchResult::Handled => {}
+                    DispatchResult::Unhandled(msg) => {
+                        Self::dispatch_rpc(
+                            &rpc_ctx,
+                            &auth_user,
+                            &conn_ctx_input.tx,
+                            &disconnect_tx,
+                            msg,
+                        )
+                        .await;
+                    }
+                }
+            }
+
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -468,13 +728,13 @@ impl IrohTransport {
                     client_msg = framing::read_message(&mut recv) => {
                         match client_msg {
                             Ok(Some(framing::IncomingMessage { message, request_id: _ })) => {
-                                match dispatch_client_message(&ctx_input, message).await {
+                                match dispatch_client_message(&conn_ctx_input, message).await {
                                     DispatchResult::Handled => {}
                                     DispatchResult::Unhandled(msg) => {
                                         Self::dispatch_rpc(
                                             &rpc_ctx,
                                             &auth_user,
-                                            &ctx_input.tx,
+                                            &conn_ctx_input.tx,
                                             &disconnect_tx,
                                             msg,
                                         ).await;
@@ -504,11 +764,11 @@ impl IrohTransport {
         }
 
         // Shared disconnect cleanup (viewports, presence, terminal locks)
-        disconnect_cleanup(&ctx).await;
+        disconnect_cleanup(&conn_ctx).await;
 
-        // Remove from connections map
-        connections.lock().await.remove(&public_key);
-        info!(peer = %peer, "connection handler exited");
+        // Remove this connection from the registry
+        transport.connections.lock().await.remove(&connection_id);
+        info!(peer = %peer, conn_id = %connection_id, "connection handler exited");
     }
 
     /// Dispatch interconnect RPC messages (membership, invites, event log).
@@ -522,98 +782,73 @@ impl IrohTransport {
         disconnect_tx: &mpsc::Sender<(PublicKey, String)>,
         msg: ClientMessage,
     ) {
-        match msg {
+        let resp = match msg {
             ClientMessage::CreateInvite {
                 capability,
                 max_uses,
                 expires_in_secs,
             } => {
-                let resp = collapse(
-                    interconnect::handle_create_invite(
-                        rpc_ctx,
-                        auth_user,
-                        &capability,
-                        max_uses,
-                        expires_in_secs,
-                    )
-                    .await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_create_invite(
+                    rpc_ctx,
+                    auth_user,
+                    &capability,
+                    max_uses,
+                    expires_in_secs,
+                )
+                .await
             }
             ClientMessage::RedeemInvite {
                 token,
                 display_name,
                 ..
             } => {
-                let resp = collapse(
-                    interconnect::handle_redeem_invite(
-                        rpc_ctx,
-                        &auth_user.public_key,
-                        &token,
-                        &display_name,
-                    )
-                    .await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_redeem_invite(
+                    rpc_ctx,
+                    &auth_user.public_key,
+                    &token,
+                    &display_name,
+                )
+                .await
             }
             ClientMessage::RevokeInvite {
                 nonce,
                 suspend_derived,
             } => {
-                let resp = collapse(
-                    interconnect::handle_revoke_invite(rpc_ctx, auth_user, &nonce, suspend_derived)
-                        .await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_revoke_invite(rpc_ctx, auth_user, &nonce, suspend_derived)
+                    .await
             }
             ClientMessage::ListInvites => {
-                let resp = collapse(interconnect::handle_list_invites(rpc_ctx, auth_user).await);
-                let _ = tx.send(resp).await;
+                interconnect::handle_list_invites(rpc_ctx, auth_user).await
             }
             ClientMessage::ListMembers => {
-                let resp = collapse(interconnect::handle_list_members(rpc_ctx, auth_user).await);
-                let _ = tx.send(resp).await;
+                interconnect::handle_list_members(rpc_ctx, auth_user).await
             }
             ClientMessage::UpdateMember {
                 public_key,
                 capability,
                 display_name,
             } => {
-                let resp = collapse(
-                    interconnect::handle_update_member(
-                        rpc_ctx,
-                        auth_user,
-                        &public_key,
-                        capability.as_deref(),
-                        display_name.as_deref(),
-                    )
-                    .await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_update_member(
+                    rpc_ctx,
+                    auth_user,
+                    &public_key,
+                    capability.as_deref(),
+                    display_name.as_deref(),
+                )
+                .await
             }
             ClientMessage::SuspendMember { public_key } => {
-                let resp = collapse_with_disconnect(
-                    interconnect::handle_suspend_member(rpc_ctx, auth_user, &public_key).await,
-                    disconnect_tx,
-                    "suspended",
-                )
-                .await;
-                let _ = tx.send(resp).await;
+                let (resp, pk) =
+                    interconnect::handle_suspend_member(rpc_ctx, auth_user, &public_key).await;
+                maybe_disconnect(resp, pk, disconnect_tx, "suspended").await
             }
             ClientMessage::ReinstateMember { public_key } => {
-                let resp = collapse(
-                    interconnect::handle_reinstate_member(rpc_ctx, auth_user, &public_key).await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_reinstate_member(rpc_ctx, auth_user, &public_key).await
             }
             ClientMessage::RemoveMember { public_key } => {
-                let resp = collapse_with_disconnect(
-                    interconnect::handle_remove_member(rpc_ctx, auth_user, &public_key).await,
-                    disconnect_tx,
-                    "removed",
-                )
-                .await;
-                let _ = tx.send(resp).await;
+                let (resp, pk) =
+                    interconnect::handle_remove_member(rpc_ctx, auth_user, &public_key).await;
+                maybe_disconnect(resp, pk, disconnect_tx, "removed").await
             }
             ClientMessage::QueryEvents {
                 target,
@@ -621,45 +856,38 @@ impl IrohTransport {
                 limit,
                 before_id,
             } => {
-                let resp = collapse(
-                    interconnect::handle_query_events(
-                        rpc_ctx,
-                        auth_user,
-                        target.as_deref(),
-                        event_type_prefix.as_deref(),
-                        limit,
-                        before_id,
-                    )
-                    .await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_query_events(
+                    rpc_ctx,
+                    auth_user,
+                    target.as_deref(),
+                    event_type_prefix.as_deref(),
+                    limit,
+                    before_id,
+                )
+                .await
             }
             ClientMessage::VerifyEvents { from_id, to_id } => {
-                let resp = collapse(
-                    interconnect::handle_verify_events(rpc_ctx, auth_user, from_id, to_id).await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_verify_events(rpc_ctx, auth_user, from_id, to_id).await
             }
             ClientMessage::GetEventProof { event_id } => {
-                let resp = collapse(
-                    interconnect::handle_get_event_proof(rpc_ctx, auth_user, event_id).await,
-                );
-                let _ = tx.send(resp).await;
+                interconnect::handle_get_event_proof(rpc_ctx, auth_user, event_id).await
             }
             // Non-RPC messages should never reach here
             _ => {
                 warn!("unexpected non-RPC message in dispatch_rpc");
+                return;
             }
-        }
+        };
+        let _ = tx.send(resp).await;
     }
 
     /// Handle an unauthenticated connection: expect invite redemption as first message.
     async fn invite_handler(
         conn: iroh::endpoint::Connection,
         public_key: PublicKey,
+        connection_id: String,
         cancel: CancellationToken,
-        connections: Arc<Mutex<HashMap<PublicKey, ConnectionHandle>>>,
-        rpc_ctx: Arc<RpcContext>,
+        transport: Arc<TransportContext>,
     ) {
         let peer = public_key.fingerprint();
 
@@ -667,10 +895,11 @@ impl IrohTransport {
             Ok(streams) => streams,
             Err(e) => {
                 error!(peer = %peer, "failed to accept bidi stream for invite: {}", e);
-                connections.lock().await.remove(&public_key);
+                transport.connections.lock().await.remove(&connection_id);
                 return;
             }
         };
+        let rpc_ctx = &transport.rpc_ctx;
 
         // Wait for the invite redemption message
         let mut seq = 0u64;
@@ -679,18 +908,22 @@ impl IrohTransport {
             msg = framing::read_message(&mut recv) => {
                 match msg {
                     Ok(Some(framing::IncomingMessage { message: ClientMessage::RedeemInvite { token, display_name, .. }, request_id })) => {
-                        match interconnect::handle_redeem_invite(&rpc_ctx, &public_key, &token, &display_name).await {
-                            Ok(resp) => {
-                                // Send success response, then close
-                                if let Err(e) = framing::write_message(&mut send, &resp, &mut seq, request_id.as_deref()).await {
-                                    error!(peer = %peer, "failed to send redeem response: {}", e);
-                                }
-                                conn.close(0u32.into(), b"invite redeemed, please reconnect");
-                            }
-                            Err(err) => {
-                                let _ = framing::write_message(&mut send, &err, &mut seq, request_id.as_deref()).await;
-                                conn.close(3u32.into(), b"invite redemption failed");
-                            }
+                        let resp = interconnect::handle_redeem_invite(rpc_ctx, &public_key, &token, &display_name).await;
+                        let is_error = matches!(resp, ServerMessage::Error { .. });
+                        if let Err(e) = framing::write_message(&mut send, &resp, &mut seq, request_id.as_deref()).await {
+                            error!(peer = %peer, "failed to send redeem response: {}", e);
+                        }
+                        // Finish the send stream to flush the response before closing.
+                        // Without this, conn.close() may race the frame delivery.
+                        if let Err(e) = send.finish() {
+                            debug!(peer = %peer, "send.finish error (non-fatal): {}", e);
+                        }
+                        // Brief yield to allow the QUIC stack to flush
+                        tokio::task::yield_now().await;
+                        if is_error {
+                            conn.close(3u32.into(), b"invite redemption failed");
+                        } else {
+                            conn.close(0u32.into(), b"invite redeemed, please reconnect");
                         }
                     }
                     Ok(Some(framing::IncomingMessage { request_id, .. })) => {
@@ -711,7 +944,7 @@ impl IrohTransport {
             }
         }
 
-        connections.lock().await.remove(&public_key);
+        transport.connections.lock().await.remove(&connection_id);
     }
 }
 

@@ -94,6 +94,8 @@ export type MuxServerMessage =
 	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] }
 	| { type: 'TaskUpdate'; task: Task }
 	| { type: 'TaskDeleted'; task_id: number }
+	// Connection lifecycle
+	| { type: 'ConnectionEstablished'; connection_id: string }
 	// Auth handshake
 	| { type: 'Challenge'; nonce: string }
 	| { type: 'Authenticated'; fingerprint: string; capability: string }

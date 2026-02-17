@@ -569,41 +569,40 @@ async fn handle_invite_redeem(
         broadcast_tx: state_manager.lifecycle_sender(),
     };
 
-    match interconnect::handle_redeem_invite(&rpc_ctx, public_key, token, display_name).await {
-        Ok(resp) => {
-            // Send the InviteRedeemed response
-            let json = serde_json::to_string(&resp).ok()?;
-            ws_sender.send(Message::Text(json.into())).await.ok()?;
+    let resp = interconnect::handle_redeem_invite(&rpc_ctx, public_key, token, display_name).await;
 
-            // Look up the grant we just created
-            let grant = repository
-                .get_active_grant(public_key.as_bytes())
-                .await
-                .ok()
-                .flatten()?;
-            let cap: Capability = grant.capability.parse().unwrap_or_else(|_| {
-                warn!(raw = %grant.capability, "corrupted capability string, falling back to View");
-                Capability::View
-            });
-            let auth_user = AuthUser::from_grant(public_key.clone(), display_name.to_string(), cap);
-
-            // Send Authenticated
-            let msg = ServerMessage::Authenticated {
-                fingerprint: auth_user.fingerprint.clone(),
-                capability: format!("{}", auth_user.capability),
-            };
-            let json = serde_json::to_string(&msg).ok()?;
-            ws_sender.send(Message::Text(json.into())).await.ok()?;
-
-            let ws_user = auth_user_to_ws_user(&auth_user);
-            Some((auth_user, ws_user))
-        }
-        Err(err) => {
-            let json = serde_json::to_string(&err).ok()?;
-            ws_sender.send(Message::Text(json.into())).await.ok()?;
-            None
-        }
+    if matches!(resp, ServerMessage::Error { .. }) {
+        let json = serde_json::to_string(&resp).ok()?;
+        ws_sender.send(Message::Text(json.into())).await.ok()?;
+        return None;
     }
+
+    // Send the InviteRedeemed response
+    let json = serde_json::to_string(&resp).ok()?;
+    ws_sender.send(Message::Text(json.into())).await.ok()?;
+
+    // Look up the grant we just created
+    let grant = repository
+        .get_active_grant(public_key.as_bytes())
+        .await
+        .ok()
+        .flatten()?;
+    let cap: Capability = grant.capability.parse().unwrap_or_else(|_| {
+        warn!(raw = %grant.capability, "corrupted capability string, falling back to View");
+        Capability::View
+    });
+    let auth_user = AuthUser::from_grant(public_key.clone(), display_name.to_string(), cap);
+
+    // Send Authenticated
+    let msg = ServerMessage::Authenticated {
+        fingerprint: auth_user.fingerprint.clone(),
+        capability: format!("{}", auth_user.capability),
+    };
+    let json = serde_json::to_string(&msg).ok()?;
+    ws_sender.send(Message::Text(json.into())).await.ok()?;
+
+    let ws_user = auth_user_to_ws_user(&auth_user);
+    Some((auth_user, ws_user))
 }
 
 // =============================================================================
@@ -627,7 +626,7 @@ async fn dispatch_ws_rpc(
             capability,
             max_uses,
             expires_in_secs,
-        } => collapse(
+        } => {
             interconnect::handle_create_invite(
                 rpc_ctx,
                 auth_user,
@@ -635,38 +634,32 @@ async fn dispatch_ws_rpc(
                 max_uses,
                 expires_in_secs,
             )
-            .await,
-        ),
+            .await
+        }
         ClientMessage::RedeemInvite {
             token,
             display_name,
             ..
-        } => collapse(
+        } => {
             interconnect::handle_redeem_invite(
                 rpc_ctx,
                 &auth_user.public_key,
                 &token,
                 &display_name,
             )
-            .await,
-        ),
+            .await
+        }
         ClientMessage::RevokeInvite {
             nonce,
             suspend_derived,
-        } => collapse(
-            interconnect::handle_revoke_invite(rpc_ctx, auth_user, &nonce, suspend_derived).await,
-        ),
-        ClientMessage::ListInvites => {
-            collapse(interconnect::handle_list_invites(rpc_ctx, auth_user).await)
-        }
-        ClientMessage::ListMembers => {
-            collapse(interconnect::handle_list_members(rpc_ctx, auth_user).await)
-        }
+        } => interconnect::handle_revoke_invite(rpc_ctx, auth_user, &nonce, suspend_derived).await,
+        ClientMessage::ListInvites => interconnect::handle_list_invites(rpc_ctx, auth_user).await,
+        ClientMessage::ListMembers => interconnect::handle_list_members(rpc_ctx, auth_user).await,
         ClientMessage::UpdateMember {
             public_key,
             capability,
             display_name,
-        } => collapse(
+        } => {
             interconnect::handle_update_member(
                 rpc_ctx,
                 auth_user,
@@ -674,29 +667,27 @@ async fn dispatch_ws_rpc(
                 capability.as_deref(),
                 display_name.as_deref(),
             )
-            .await,
-        ),
+            .await
+        }
         ClientMessage::SuspendMember { public_key } => {
-            match interconnect::handle_suspend_member(rpc_ctx, auth_user, &public_key).await {
-                Ok((resp, _)) => resp,
-                Err(err) => err,
-            }
+            let (resp, _) =
+                interconnect::handle_suspend_member(rpc_ctx, auth_user, &public_key).await;
+            resp
         }
         ClientMessage::ReinstateMember { public_key } => {
-            collapse(interconnect::handle_reinstate_member(rpc_ctx, auth_user, &public_key).await)
+            interconnect::handle_reinstate_member(rpc_ctx, auth_user, &public_key).await
         }
         ClientMessage::RemoveMember { public_key } => {
-            match interconnect::handle_remove_member(rpc_ctx, auth_user, &public_key).await {
-                Ok((resp, _)) => resp,
-                Err(err) => err,
-            }
+            let (resp, _) =
+                interconnect::handle_remove_member(rpc_ctx, auth_user, &public_key).await;
+            resp
         }
         ClientMessage::QueryEvents {
             target,
             event_type_prefix,
             limit,
             before_id,
-        } => collapse(
+        } => {
             interconnect::handle_query_events(
                 rpc_ctx,
                 auth_user,
@@ -705,13 +696,13 @@ async fn dispatch_ws_rpc(
                 limit,
                 before_id,
             )
-            .await,
-        ),
+            .await
+        }
         ClientMessage::VerifyEvents { from_id, to_id } => {
-            collapse(interconnect::handle_verify_events(rpc_ctx, auth_user, from_id, to_id).await)
+            interconnect::handle_verify_events(rpc_ctx, auth_user, from_id, to_id).await
         }
         ClientMessage::GetEventProof { event_id } => {
-            collapse(interconnect::handle_get_event_proof(rpc_ctx, auth_user, event_id).await)
+            interconnect::handle_get_event_proof(rpc_ctx, auth_user, event_id).await
         }
         _ => {
             warn!("unexpected non-RPC message in dispatch_ws_rpc");
@@ -719,11 +710,6 @@ async fn dispatch_ws_rpc(
         }
     };
     let _ = tx.send(resp).await;
-}
-
-/// Collapse `Result<ServerMessage, ServerMessage>` into a single response.
-fn collapse(r: Result<ServerMessage, ServerMessage>) -> ServerMessage {
-    r.unwrap_or_else(|e| e)
 }
 
 // =============================================================================
@@ -904,42 +890,41 @@ async fn handle_password_auth(
                 broadcast_tx: state_manager.lifecycle_sender(),
             };
 
-            match interconnect::handle_redeem_invite(&rpc_ctx, &public_key, token, dn).await {
-                Ok(resp) => {
-                    // Send InviteRedeemed
-                    let json = serde_json::to_string(&resp).ok()?;
-                    ws_sender.send(Message::Text(json.into())).await.ok()?;
+            let resp = interconnect::handle_redeem_invite(&rpc_ctx, &public_key, token, dn).await;
 
-                    // Look up the grant we just created
-                    let grant = repository
-                        .get_active_grant(public_key.as_bytes())
-                        .await
-                        .ok()
-                        .flatten()?;
-                    let cap: Capability = grant.capability.parse().unwrap_or_else(|_| {
-                        warn!(raw = %grant.capability, "corrupted capability, falling back to View");
-                        Capability::View
-                    });
-
-                    let auth_user = AuthUser::from_grant(public_key, dn.to_string(), cap);
-
-                    // Send Authenticated
-                    let msg = ServerMessage::Authenticated {
-                        fingerprint: auth_user.fingerprint.clone(),
-                        capability: format!("{}", auth_user.capability),
-                    };
-                    let json = serde_json::to_string(&msg).ok()?;
-                    ws_sender.send(Message::Text(json.into())).await.ok()?;
-
-                    let ws_user = auth_user_to_ws_user(&auth_user);
-                    Some((auth_user, ws_user))
-                }
-                Err(err) => {
-                    let json = serde_json::to_string(&err).ok()?;
-                    ws_sender.send(Message::Text(json.into())).await.ok()?;
-                    None
-                }
+            if matches!(resp, ServerMessage::Error { .. }) {
+                let json = serde_json::to_string(&resp).ok()?;
+                ws_sender.send(Message::Text(json.into())).await.ok()?;
+                return None;
             }
+
+            // Send InviteRedeemed
+            let json = serde_json::to_string(&resp).ok()?;
+            ws_sender.send(Message::Text(json.into())).await.ok()?;
+
+            // Look up the grant we just created
+            let grant = repository
+                .get_active_grant(public_key.as_bytes())
+                .await
+                .ok()
+                .flatten()?;
+            let cap: Capability = grant.capability.parse().unwrap_or_else(|_| {
+                warn!(raw = %grant.capability, "corrupted capability, falling back to View");
+                Capability::View
+            });
+
+            let auth_user = AuthUser::from_grant(public_key, dn.to_string(), cap);
+
+            // Send Authenticated
+            let msg = ServerMessage::Authenticated {
+                fingerprint: auth_user.fingerprint.clone(),
+                capability: format!("{}", auth_user.capability),
+            };
+            let json = serde_json::to_string(&msg).ok()?;
+            ws_sender.send(Message::Text(json.into())).await.ok()?;
+
+            let ws_user = auth_user_to_ws_user(&auth_user);
+            Some((auth_user, ws_user))
         }
     }
 }
