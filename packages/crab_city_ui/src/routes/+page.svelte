@@ -5,12 +5,14 @@
 	import FileExplorer from '$lib/components/FileExplorer.svelte';
 	import ChatPanel from '$lib/components/ChatPanel.svelte';
 	import TaskPanel from '$lib/components/TaskPanel.svelte';
+	import MemberPanel from '$lib/components/MemberPanel.svelte';
 	import BootSequence from '$lib/components/BootSequence.svelte';
 	import ChannelChange from '$lib/components/ChannelChange.svelte';
 	import { sidebarOpen, closeSidebar, isDesktop } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen, closeExplorer } from '$lib/stores/files';
 	import { isChatOpen, closeChat, toggleChat, composeOpen, closeCompose, selectionMode, exitSelectionMode } from '$lib/stores/chat';
 	import { isTaskPanelOpen, closeTaskPanel, toggleTaskPanel } from '$lib/stores/tasks';
+	import { isMemberPanelOpen, closeMemberPanel, toggleMemberPanel } from '$lib/stores/members';
 	import { isFileViewerOpen, closeFileViewer } from '$lib/stores/files';
 	import { claudeState } from '$lib/stores/claude';
 	import { connectionStatus } from '$lib/stores/websocket';
@@ -51,7 +53,7 @@
 			return;
 		}
 
-		// Escape closes fileViewer → compose → selection → chat → tasks → explorer → sidebar (priority order)
+		// Escape closes fileViewer → compose → selection → members → chat → tasks → explorer → sidebar (priority order)
 		if (e.key === 'Escape') {
 			if ($isFileViewerOpen) {
 				closeFileViewer();
@@ -59,6 +61,8 @@
 				closeCompose();
 			} else if ($selectionMode) {
 				exitSelectionMode();
+			} else if ($isMemberPanelOpen) {
+				closeMemberPanel();
 			} else if ($isChatOpen) {
 				closeChat();
 			} else if ($isTaskPanelOpen) {
@@ -96,15 +100,22 @@
 			e.preventDefault();
 			setTerminalMode(!$showTerminal);
 		}
-		// c to toggle chat
+		// c to toggle chat (closes members — same right-side slot)
 		if (e.key === 'c') {
 			e.preventDefault();
+			if ($isMemberPanelOpen) closeMemberPanel();
 			toggleChat();
 		}
 		// q to toggle task panel
 		if (e.key === 'q') {
 			e.preventDefault();
 			toggleTaskPanel();
+		}
+		// m to toggle members panel (closes chat — same right-side slot)
+		if (e.key === 'm') {
+			e.preventDefault();
+			if ($isChatOpen) closeChat();
+			toggleMemberPanel();
 		}
 		// 1-9 to switch instances
 		const num = parseInt(e.key);
@@ -143,6 +154,9 @@
 
 	<!-- Task panel (left slide-out) -->
 	<TaskPanel />
+
+	<!-- Members panel (right slide-out) -->
+	<MemberPanel visible={$isMemberPanelOpen} />
 
 	<!-- Global file viewer overlay -->
 	<FileViewer />

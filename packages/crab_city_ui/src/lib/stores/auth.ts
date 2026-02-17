@@ -148,16 +148,31 @@ export function clearAuthentication(): void {
 // Legacy compat stubs
 // =============================================================================
 
+/** Detect loopback — matches the server's loopback bypass for local connections. */
+function isLoopback(): boolean {
+	if (typeof window === 'undefined') return false;
+	const host = window.location.hostname;
+	return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 /** Legacy checkAuth — returns auth state for routing. */
 export async function checkAuth(): Promise<{
 	authenticated: boolean;
 	needsSetup: boolean;
 	authEnabled: boolean;
 }> {
+	// Loopback connections get Owner access via WS bypass — no frontend
+	// auth gate needed.  This mirrors the server's is_loopback check.
+	// Must be set BEFORE initAuth() which sets authChecked=true and
+	// triggers the layout $effect.
+	const loopback = isLoopback();
+	const enabled = !loopback;
+	authEnabled.set(enabled);
+
 	const kp = await initAuth();
 	return {
 		authenticated: kp !== null,
 		needsSetup: false,
-		authEnabled: true,
+		authEnabled: enabled,
 	};
 }

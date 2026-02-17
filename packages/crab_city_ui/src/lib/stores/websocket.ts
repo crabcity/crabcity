@@ -336,6 +336,12 @@ export function forwardChatMessage(messageId: number, targetScope: string): void
 	);
 }
 
+/** Send an arbitrary JSON message on the multiplexed socket (for interconnect RPCs etc.). */
+export function sendMuxMessage(msg: Record<string, unknown>): void {
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	socket.send(JSON.stringify(msg));
+}
+
 /** Check if currently connected. */
 export function isConnected(): boolean {
 	return socket?.readyState === WebSocket.OPEN;

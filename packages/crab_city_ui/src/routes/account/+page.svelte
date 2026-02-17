@@ -4,18 +4,34 @@
 	import {
 		currentIdentity,
 		localKeypair,
+		authEnabled,
 		isAuthenticated,
+		createIdentity,
 		exportIdentity,
 		downloadIdentity,
 		importIdentity,
 		clearIdentity,
 	} from '$lib/stores/auth';
+	import KeyBackupModal from '$lib/components/KeyBackupModal.svelte';
+	import { generateKeypair, saveKeypair, type KeyIdentity } from '$lib/crypto/keys';
+
+	const isLoopback = $derived(!$authEnabled);
 
 	let showImport = $state(false);
 	let importKeyValue = $state('');
 	let importError = $state('');
 	let importSuccess = $state('');
 	let copied = $state(false);
+	let newKeypair = $state<KeyIdentity | null>(null);
+
+	async function handleGenerate() {
+		const kp = await createIdentity();
+		newKeypair = kp;
+	}
+
+	function handleBackupConfirm() {
+		newKeypair = null;
+	}
 
 	const exportedKey = $derived(
 		$localKeypair ? exportIdentity($localKeypair) : null
@@ -64,7 +80,51 @@
 		<a class="back-link" href="{base}/">&larr; Dashboard</a>
 		<h1>IDENTITY</h1>
 
-		{#if $currentIdentity}
+		{#if isLoopback && !$localKeypair && !$currentIdentity}
+			<div class="info-row">
+				<span class="label">CONNECTION</span>
+				<span class="value cap-badge">LOOPBACK</span>
+			</div>
+			<div class="info-row">
+				<span class="label">ACCESS</span>
+				<span class="value">Owner (automatic)</span>
+			</div>
+
+			<hr />
+
+			<h2>COLLABORATION</h2>
+			<p class="setup-hint">
+				Generate a keypair to enable collaboration. This gives you a persistent
+				identity that others can recognize, and lets you create invite links.
+			</p>
+
+			<div class="key-actions">
+				<button class="action-btn primary" onclick={handleGenerate}>
+					GENERATE KEYPAIR
+				</button>
+				<button class="action-btn" onclick={() => { showImport = true; }}>
+					IMPORT KEY
+				</button>
+			</div>
+
+			{#if showImport}
+				{#if importError}
+					<div class="error">{importError}</div>
+				{/if}
+
+				<form onsubmit={handleImport}>
+					<label>
+						<span>BASE64 PRIVATE KEY</span>
+						<textarea
+							bind:value={importKeyValue}
+							placeholder="Paste base64 key..."
+							rows="3"
+						></textarea>
+					</label>
+					<button type="submit" class="submit-btn">IMPORT KEY</button>
+				</form>
+			{/if}
+		{:else if $currentIdentity}
 			<div class="info-row">
 				<span class="label">FINGERPRINT</span>
 				<code class="value fingerprint">{$currentIdentity.fingerprint}</code>
@@ -87,7 +147,7 @@
 				<span class="value dim">Not connected</span>
 			</div>
 		{:else}
-			<p class="empty-state">No keypair loaded. Import or generate one via the join flow.</p>
+			<p class="empty-state">No keypair loaded. <a href="{base}/join">Join</a> or generate one to get started.</p>
 		{/if}
 
 		{#if $localKeypair}
@@ -150,6 +210,10 @@
 		</p>
 	</div>
 </div>
+
+{#if newKeypair}
+	<KeyBackupModal identity={newKeypair} onconfirm={handleBackupConfirm} />
+{/if}
 
 <style>
 	.auth-page {
@@ -245,6 +309,35 @@
 		font-size: 0.8em;
 		color: var(--text-muted);
 		padding: 16px 0;
+	}
+
+	.empty-state a {
+		color: var(--amber-400);
+		text-decoration: none;
+	}
+
+	.empty-state a:hover {
+		text-decoration: underline;
+	}
+
+	.setup-hint {
+		margin: 0 0 16px;
+		font-size: 0.78em;
+		line-height: 1.5;
+		color: var(--text-secondary);
+	}
+
+	.action-btn.primary {
+		background: var(--amber-600);
+		border-color: var(--amber-600);
+		color: var(--surface-900);
+	}
+
+	.action-btn.primary:hover {
+		background: var(--amber-500);
+		border-color: var(--amber-500);
+		color: var(--surface-900);
+		box-shadow: 0 0 16px rgba(217, 119, 6, 0.25);
 	}
 
 	hr {

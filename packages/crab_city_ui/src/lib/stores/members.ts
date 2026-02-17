@@ -4,7 +4,27 @@
  * Tracks the membership list received from interconnect RPCs.
  */
 
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
+
+// =============================================================================
+// Member Panel UI State
+// =============================================================================
+
+export const isMemberPanelOpen = writable<boolean>(false);
+
+export function openMemberPanel(): void { isMemberPanelOpen.set(true); }
+export function closeMemberPanel(): void { isMemberPanelOpen.set(false); }
+export function toggleMemberPanel(): void {
+	if (get(isMemberPanelOpen)) {
+		closeMemberPanel();
+	} else {
+		openMemberPanel();
+	}
+}
+
+// =============================================================================
+// Member Data
+// =============================================================================
 
 export interface Member {
 	fingerprint: string;

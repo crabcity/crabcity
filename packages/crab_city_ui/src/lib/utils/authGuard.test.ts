@@ -161,6 +161,13 @@ describe('not authenticated', () => {
 		}))).toEqual({ kind: 'noop' });
 	});
 
+	it('stays on /join (noop)', () => {
+		expect(resolveAuthGuard(input({
+			isAuthenticated: false,
+			pathname: '/join',
+		}))).toEqual({ kind: 'noop' });
+	});
+
 	it('redirects from deep app path', () => {
 		expect(resolveAuthGuard(input({
 			isAuthenticated: false,

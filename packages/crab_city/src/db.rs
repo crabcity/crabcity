@@ -88,6 +88,12 @@ const SCHEMA_VERSION: i64 = 11;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+    // Acquire a single connection for the entire migration.
+    // Using the pool directly would dispatch statements to different connections,
+    // which breaks PRAGMA settings (connection-scoped) and can cause DDL visibility
+    // issues (e.g. DROP TABLE on conn A not visible to RENAME on conn B).
+    let mut conn = pool.acquire().await?;
+
     // Create schema_version table first (if not exists)
     sqlx::query(
         r#"
@@ -98,13 +104,13 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Check current schema version
     let current_version: i64 =
         sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM schema_version")
-            .fetch_one(pool)
+            .fetch_one(&mut *conn)
             .await
             .unwrap_or(0);
 
@@ -145,21 +151,21 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Create indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_conv_session_id ON conversations(session_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_conv_instance_id ON conversations(instance_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_conv_created_at ON conversations(created_at DESC)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_conv_deleted ON conversations(is_deleted)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Conversation entries table
@@ -180,20 +186,20 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Indexes for conversation_entries
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_entry_conversation ON conversation_entries(conversation_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_entry_timestamp ON conversation_entries(timestamp)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_entry_uuid ON conversation_entries(entry_uuid)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Comments table
@@ -210,15 +216,15 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Indexes for comments
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_comment_conversation ON comments(conversation_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_comment_entry ON comments(entry_uuid)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Shares table
@@ -238,15 +244,15 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Indexes for shares
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_share_token ON conversation_shares(share_token)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_share_expires ON conversation_shares(expires_at)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Tags tables
@@ -259,7 +265,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -271,24 +277,24 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Insert default tags
     sqlx::query("INSERT OR IGNORE INTO tags (name, color) VALUES ('bug', '#ff4444')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("INSERT OR IGNORE INTO tags (name, color) VALUES ('feature', '#44ff44')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("INSERT OR IGNORE INTO tags (name, color) VALUES ('refactor', '#4444ff')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("INSERT OR IGNORE INTO tags (name, color) VALUES ('question', '#ffaa44')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("INSERT OR IGNORE INTO tags (name, color) VALUES ('documentation', '#aa44ff')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // FTS5 full-text search index on conversation_entries
@@ -305,7 +311,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Triggers to keep FTS index in sync with conversation_entries
@@ -317,7 +323,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -328,7 +334,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -341,12 +347,12 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Rebuild FTS index to backfill any existing data
     sqlx::query("INSERT INTO conversation_entries_fts(conversation_entries_fts) VALUES('rebuild')")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // === Auth tables ===
@@ -366,11 +372,11 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Sessions table
@@ -387,14 +393,14 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Instance permissions table
@@ -410,18 +416,18 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_instance_perms_user ON instance_permissions(user_id)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_instance_perms_instance ON instance_permissions(instance_id)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Instance invitations table
@@ -439,13 +445,13 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_invitations_instance ON instance_invitations(instance_id)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Input attributions table
@@ -462,18 +468,18 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_attributions_instance ON input_attributions(instance_id, timestamp)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_attributions_entry ON input_attributions(entry_uuid)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Server invites table (server-level invitation codes for registration)
@@ -491,20 +497,20 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_server_invites_created_by ON server_invites(created_by)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Track which server invite a user registered with
     sqlx::query(
         "ALTER TABLE users ADD COLUMN server_invite_token TEXT REFERENCES server_invites(token)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await
     .ok(); // .ok() swallows "duplicate column" on re-run
 
@@ -518,21 +524,21 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Add file_hash and file_mtime columns for import staleness detection
     sqlx::query("ALTER TABLE conversations ADD COLUMN file_hash TEXT")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok();
     sqlx::query("ALTER TABLE conversations ADD COLUMN file_mtime INTEGER")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok();
     // Add import_version to trigger re-import when import logic changes
     sqlx::query("ALTER TABLE conversations ADD COLUMN import_version INTEGER")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok();
 
@@ -551,23 +557,23 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_messages(scope, created_at)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // v5: Add topic column to chat_messages
     sqlx::query("ALTER TABLE chat_messages ADD COLUMN topic TEXT")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok(); // .ok() swallows "duplicate column" on re-run
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_scope_topic ON chat_messages(scope, topic, created_at)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // v6: Tasks table
@@ -591,7 +597,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -603,44 +609,44 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_status_deleted ON tasks(status, is_deleted)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_tasks_instance_status ON tasks(instance_id, status)",
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_sort_order ON tasks(sort_order)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON task_tags(tag_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // v7: Add sent_text and conversation_id to tasks
     sqlx::query("ALTER TABLE tasks ADD COLUMN sent_text TEXT")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok(); // .ok() swallows "duplicate column" on re-run
     sqlx::query("ALTER TABLE tasks ADD COLUMN conversation_id TEXT")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok();
 
     // v8: Add task_id to input_attributions (structural task references)
     sqlx::query("ALTER TABLE input_attributions ADD COLUMN task_id INTEGER")
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .ok(); // .ok() swallows "duplicate column" on re-run
 
@@ -657,11 +663,11 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_task_dispatches_task ON task_dispatches(task_id)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Migrate existing sent tasks → dispatch records
@@ -673,12 +679,12 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         FROM tasks WHERE status = 'sent' AND is_deleted = 0
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Transition sent → in_progress
     sqlx::query("UPDATE tasks SET status = 'in_progress' WHERE status = 'sent' AND is_deleted = 0")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // v10: Interconnect auth tables — keypair-based identity replaces sessions/passwords
@@ -698,7 +704,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // WHAT you can do (authorization, instance-local)
@@ -719,14 +725,14 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_grants_state ON member_grants(state)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_grants_invited_via ON member_grants(invited_via)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Invite tokens created by this instance
@@ -746,11 +752,11 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites(expires_at)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Instance-local blocklist
@@ -766,7 +772,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Cached registry blocklist
@@ -781,7 +787,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Append-only, hash-chained audit trail
@@ -799,20 +805,20 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_target ON event_log(target)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_created ON event_log(created_at)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_log_hash ON event_log(hash)")
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // Signed checkpoints for tamper evidence
@@ -827,7 +833,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // Seed loopback identity (all-zeros pubkey = local CLI/TUI)
@@ -837,7 +843,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         VALUES (X'0000000000000000000000000000000000000000000000000000000000000000', 'Local')
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -851,7 +857,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     // v11: Drop old password/session auth tables.
@@ -862,7 +868,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     // transaction with foreign_keys OFF to avoid constraint violations mid-migration.
     if current_version < 11 {
         sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         // Recreate input_attributions without FK to users(id)
@@ -880,28 +886,28 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             )
             "#,
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "INSERT INTO input_attributions_new SELECT id, instance_id, user_id, display_name, timestamp, entry_uuid, content_preview, task_id FROM input_attributions",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query("DROP TABLE input_attributions")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("ALTER TABLE input_attributions_new RENAME TO input_attributions")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_attributions_instance ON input_attributions(instance_id, timestamp)",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_attributions_entry ON input_attributions(entry_uuid)",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Recreate chat_messages without FK to users(id)
@@ -920,28 +926,28 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             )
             "#,
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "INSERT INTO chat_messages_new SELECT id, uuid, scope, user_id, display_name, content, created_at, forwarded_from, topic FROM chat_messages",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query("DROP TABLE chat_messages")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("ALTER TABLE chat_messages_new RENAME TO chat_messages")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_messages(scope, created_at)",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_chat_scope_topic ON chat_messages(scope, topic, created_at)",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
         // Recreate tasks without FK to users(id)
@@ -967,19 +973,19 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             )
             "#,
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "INSERT INTO tasks_new SELECT id, uuid, title, body, status, priority, instance_id, creator_id, creator_name, sort_order, created_at, updated_at, completed_at, is_deleted, sent_text, conversation_id FROM tasks",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
-        sqlx::query("DROP TABLE tasks").execute(pool).await?;
+        sqlx::query("DROP TABLE tasks").execute(&mut *conn).await?;
         sqlx::query("ALTER TABLE tasks_new RENAME TO tasks")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_uuid ON tasks(uuid)")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         // Recreate users table: drop server_invite_token FK, add public_key column
@@ -996,37 +1002,37 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             )
             "#,
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "INSERT INTO users_new (id, username, display_name, password_hash, created_at, updated_at) SELECT id, username, display_name, password_hash, created_at, updated_at FROM users",
         )
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
-        sqlx::query("DROP TABLE users").execute(pool).await?;
+        sqlx::query("DROP TABLE users").execute(&mut *conn).await?;
         sqlx::query("ALTER TABLE users_new RENAME TO users")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         // Drop the old session/permission/invite tables
         sqlx::query("DROP TABLE IF EXISTS sessions")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("DROP TABLE IF EXISTS instance_permissions")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("DROP TABLE IF EXISTS instance_invitations")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("DROP TABLE IF EXISTS server_invites")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
 
         info!("v11: Migrated users table, dropped old session/permission tables");
@@ -1037,7 +1043,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         sqlx::query("INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)")
             .bind(SCHEMA_VERSION)
             .bind("Interconnect auth: member_identities, member_grants, invites, event_log, blocklist")
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         info!("Schema upgraded to version {}", SCHEMA_VERSION);
     }

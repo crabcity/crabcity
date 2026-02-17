@@ -36,7 +36,8 @@ function stripBase(pathname: string, basePath: string): string {
 
 function isStandalone(path: string): boolean {
 	return path === '/login' || path === '/register'
-		|| path.startsWith('/invite') || path === '/account';
+		|| path.startsWith('/invite') || path === '/account'
+		|| path === '/join';
 }
 
 // =============================================================================

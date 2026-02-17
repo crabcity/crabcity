@@ -2,11 +2,14 @@
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
 	import { onDestroy } from 'svelte';
-	import { currentIdentity, authError } from '$lib/stores/auth';
+	import { currentIdentity, authEnabled, authError } from '$lib/stores/auth';
 	import {
 		initMultiplexedConnection,
 		setPendingPasswordAuth,
 	} from '$lib/stores/websocket';
+
+	const isLoggedIn = $derived($currentIdentity !== null);
+	const isLoopback = $derived(!$authEnabled);
 
 	let username = $state('');
 	let password = $state('');
@@ -86,47 +89,63 @@
 			<p class="subtitle">LOG IN</p>
 		</div>
 
-		{#if error}
-			<div class="error">{error}</div>
+		{#if isLoggedIn}
+			<div class="already-authed">
+				<p class="authed-text">Authenticated as <strong>{$currentIdentity?.displayName ?? $currentIdentity?.fingerprint}</strong></p>
+				<button class="login-btn" onclick={() => goto(`${base}/`, { replaceState: true })}>
+					CONTINUE
+				</button>
+			</div>
+		{:else if isLoopback}
+			<div class="already-authed">
+				<p class="authed-text">Local connection detected — no login required.</p>
+				<button class="login-btn" onclick={() => goto(`${base}/`, { replaceState: true })}>
+					CONTINUE
+				</button>
+			</div>
+		{:else}
+			{#if error}
+				<div class="error">{error}</div>
+			{/if}
+
+			<form onsubmit={handleLogin}>
+				<label>
+					<span class="field-label">USERNAME</span>
+					<input
+						type="text"
+						bind:value={username}
+						placeholder="Your username"
+						required
+						autocomplete="username"
+						disabled={loggingIn}
+					/>
+				</label>
+
+				<label>
+					<span class="field-label">PASSWORD</span>
+					<input
+						type="password"
+						bind:value={password}
+						placeholder="Your password"
+						required
+						autocomplete="current-password"
+						disabled={loggingIn}
+					/>
+				</label>
+
+				<button type="submit" class="login-btn" disabled={loggingIn}>
+					{#if loggingIn}
+						LOGGING IN...
+					{:else}
+						LOG IN
+					{/if}
+				</button>
+			</form>
+
+			<p class="footer-link">
+				New here? <a href="{base}/join">Join with an invite</a>
+			</p>
 		{/if}
-
-		<form onsubmit={handleLogin}>
-			<label>
-				<span class="field-label">USERNAME</span>
-				<input
-					type="text"
-					bind:value={username}
-					placeholder="Your username"
-					required
-					autocomplete="username"
-					disabled={loggingIn}
-				/>
-			</label>
-
-			<label>
-				<span class="field-label">PASSWORD</span>
-				<input
-					type="password"
-					bind:value={password}
-					placeholder="Your password"
-					required
-					autocomplete="current-password"
-					disabled={loggingIn}
-				/>
-			</label>
-
-			<button type="submit" class="login-btn" disabled={loggingIn}>
-				{#if loggingIn}
-					LOGGING IN...
-				{:else}
-					LOG IN
-				{/if}
-			</button>
-		</form>
-
-		<p class="footer-link">
-			New here? <a href="{base}/join">Join with an invite</a>
-		</p>
 	</div>
 </div>
 
@@ -178,6 +197,26 @@
 		font-weight: 700;
 		letter-spacing: 0.15em;
 		color: var(--text-muted);
+	}
+
+	.already-authed {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 16px;
+		padding: 20px 0;
+	}
+
+	.authed-text {
+		margin: 0;
+		font-size: 0.8em;
+		color: var(--text-secondary);
+		text-align: center;
+		line-height: 1.5;
+	}
+
+	.authed-text strong {
+		color: var(--amber-400);
 	}
 
 	.error {

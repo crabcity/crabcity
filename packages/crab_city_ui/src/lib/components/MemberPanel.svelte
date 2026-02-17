@@ -1,18 +1,15 @@
 <script lang="ts">
 	import { get } from 'svelte/store';
-	import { members, type Member } from '$lib/stores/members';
+	import { members, type Member, closeMemberPanel } from '$lib/stores/members';
 	import { invites, lastCreatedInvite, type InviteInfo } from '$lib/stores/invites';
 	import { currentIdentity } from '$lib/stores/auth';
-	import { isConnected } from '$lib/stores/websocket';
-	import type { MuxClientMessage } from '$lib/stores/ws-handlers';
+	import { isConnected, sendMuxMessage } from '$lib/stores/websocket';
 
 	interface Props {
 		visible: boolean;
-		onclose: () => void;
-		sendWsMessage: (msg: MuxClientMessage) => void;
 	}
 
-	let { visible, onclose, sendWsMessage }: Props = $props();
+	let { visible }: Props = $props();
 
 	// Invite creation form
 	let inviteCapability = $state('Collaborate');
@@ -38,32 +35,48 @@
 	const myCapability = $derived($currentIdentity?.capability ?? '');
 	const isAdmin = $derived(myCapability === 'Owner' || myCapability === 'Admin');
 
+	// Snapshot the nonce before sending so we can detect when a *new* invite arrives
+	let nonceBeforeCreate = $state<string | undefined>(undefined);
+
 	function createInvite() {
+		nonceBeforeCreate = get(lastCreatedInvite)?.nonce;
 		creatingInvite = true;
-		sendWsMessage({
+		sendMuxMessage({
 			type: 'CreateInvite',
 			capability: inviteCapability,
 			max_uses: inviteMaxUses,
 			expires_in_secs: inviteExpiry,
 		});
-		// Reset after a tick — the store will get the InviteCreated message
-		setTimeout(() => { creatingInvite = false; }, 500);
 	}
+
+	// Reset button when a new invite arrives (nonce differs from snapshot)
+	$effect(() => {
+		if (creatingInvite && $lastCreatedInvite && $lastCreatedInvite.nonce !== nonceBeforeCreate) {
+			creatingInvite = false;
+		}
+	});
+	// Fallback timeout in case server response is lost
+	$effect(() => {
+		if (creatingInvite) {
+			const timeout = setTimeout(() => { creatingInvite = false; }, 5000);
+			return () => clearTimeout(timeout);
+		}
+	});
 
 	function revokeInvite(nonce: string) {
-		sendWsMessage({ type: 'RevokeInvite', nonce });
+		sendMuxMessage({ type: 'RevokeInvite', nonce });
 	}
 
-	function suspendMember(fingerprint: string) {
-		sendWsMessage({ type: 'SuspendMember', nonce: fingerprint });
+	function suspendMember(pk: string) {
+		sendMuxMessage({ type: 'SuspendMember', public_key: pk });
 	}
 
-	function reinstateMember(fingerprint: string) {
-		sendWsMessage({ type: 'ReinstateMember', nonce: fingerprint });
+	function reinstateMember(pk: string) {
+		sendMuxMessage({ type: 'ReinstateMember', public_key: pk });
 	}
 
-	function removeMember(fingerprint: string) {
-		sendWsMessage({ type: 'RemoveMember', nonce: fingerprint });
+	function removeMember(pk: string) {
+		sendMuxMessage({ type: 'RemoveMember', public_key: pk });
 	}
 
 	function copyInviteToken() {
@@ -86,8 +99,8 @@
 	}
 
 	function requestMembers() {
-		sendWsMessage({ type: 'ListMembers' });
-		sendWsMessage({ type: 'ListInvites' });
+		sendMuxMessage({ type: 'ListMembers' });
+		sendMuxMessage({ type: 'ListInvites' });
 	}
 
 	$effect(() => {
@@ -100,12 +113,12 @@
 {#if visible}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="panel-backdrop" onclick={onclose}></div>
+	<div class="panel-backdrop" onclick={closeMemberPanel}></div>
 
 	<aside class="panel">
 		<header class="panel-header">
 			<h2>MEMBERS</h2>
-			<button class="close-btn" onclick={onclose} aria-label="Close">
+			<button class="close-btn" onclick={closeMemberPanel} aria-label="Close">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 				</svg>
@@ -132,20 +145,23 @@
 							</div>
 
 							{#if isAdmin && member.fingerprint !== myFingerprint && member.capability !== 'Owner'}
-								<div class="member-actions">
-									{#if member.state === 'suspended'}
-										<button class="action-sm" onclick={() => reinstateMember(member.fingerprint)}>
-											REINSTATE
+								{@const pk = member.public_key}
+								{#if pk}
+									<div class="member-actions">
+										{#if member.state === 'suspended'}
+											<button class="action-sm" onclick={() => reinstateMember(pk)}>
+												REINSTATE
+											</button>
+										{:else}
+											<button class="action-sm action-warn" onclick={() => suspendMember(pk)}>
+												SUSPEND
+											</button>
+										{/if}
+										<button class="action-sm action-danger" onclick={() => removeMember(pk)}>
+											REMOVE
 										</button>
-									{:else}
-										<button class="action-sm action-warn" onclick={() => suspendMember(member.fingerprint)}>
-											SUSPEND
-										</button>
-									{/if}
-									<button class="action-sm action-danger" onclick={() => removeMember(member.fingerprint)}>
-										REMOVE
-									</button>
-								</div>
+									</div>
+								{/if}
 							{/if}
 						</div>
 					{:else}

@@ -6,8 +6,19 @@
 	import { currentVerb, baudRate, activityLevel } from '$lib/stores/activity';
 	import { openSidebar, isDesktop, isMobile } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
-	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
+	import { toggleChat, isChatOpen, totalUnread, closeChat } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
+	import { isMemberPanelOpen, toggleMemberPanel, closeMemberPanel } from '$lib/stores/members';
+
+	function toggleChatExclusive() {
+		if ($isMemberPanelOpen) closeMemberPanel();
+		toggleChat();
+	}
+
+	function toggleMembersExclusive() {
+		if ($isChatOpen) closeChat();
+		toggleMemberPanel();
+	}
 
 	let editingName = $state(false);
 	let editNameValue = $state('');
@@ -207,7 +218,7 @@
 		<button
 			class="action-btn icon-only-mobile chat-btn"
 			class:active={$isChatOpen}
-			onclick={toggleChat}
+			onclick={toggleChatExclusive}
 			title="Chat (C)"
 			aria-label="Toggle chat panel"
 			aria-pressed={$isChatOpen}
@@ -219,6 +230,24 @@
 				<span class="chat-badge">{$totalUnread > 99 ? '99+' : $totalUnread}</span>
 			{/if}
 			<span class="btn-label">Chat</span>
+		</button>
+		<button
+			class="action-btn icon-only-mobile members-btn"
+			class:active={$isMemberPanelOpen}
+			onclick={toggleMembersExclusive}
+			title="Members (M)"
+			aria-label="Toggle members panel"
+			aria-pressed={$isMemberPanelOpen}
+		>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
+				<circle cx="9" cy="7" r="4" />
+				<path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
+			</svg>
+			{#if presence.length > 1}
+				<span class="members-badge">{presence.length}</span>
+			{/if}
+			<span class="btn-label">Members</span>
 		</button>
 	</div>
 </header>
@@ -417,6 +446,27 @@
 	}
 
 	.tasks-badge {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		min-width: 16px;
+		height: 16px;
+		padding: 0 4px;
+		font-size: 9px;
+		font-weight: 700;
+		line-height: 16px;
+		text-align: center;
+		border-radius: 8px;
+		background: var(--amber-500);
+		color: var(--surface-900);
+		box-shadow: var(--elevation-low);
+	}
+
+	.members-btn {
+		position: relative;
+	}
+
+	.members-badge {
 		position: absolute;
 		top: 2px;
 		right: 2px;
