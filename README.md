@@ -1,5 +1,8 @@
 # Crab City
 
+**WARNING: EXPERIMENTAL -- if you have fewer than 40 unique chromosomes, this
+isn't for you.  Not safe for humans (yet).  Star to learn more.**
+
 A terminal multiplexer and web-based manager for Claude Code instances with real-time collaboration.
 
 Run multiple Claude Code sessions simultaneously, manage them from a web interface or TUI, share terminals with collaborators, and persist your entire conversation history in a searchable database.
