@@ -3,10 +3,10 @@
 //! Functions for watching Claude conversation files and sending updates to clients.
 
 use chrono::{DateTime, Utc};
-use claude_convo::{ClaudeConvo, ConversationWatcher};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use toolpath_claude::{ClaudeConvo, ConversationWatcher};
 use tracing::{debug, info, warn};
 
 use crate::inference::StateSignal;
@@ -153,12 +153,12 @@ pub async fn run_conversation_watcher(
                             .and_then(|convo| {
                                 convo.user_messages().first().and_then(|entry| {
                                     entry.message.as_ref().and_then(|msg| match &msg.content {
-                                        Some(claude_convo::MessageContent::Text(t)) => {
+                                        Some(toolpath_claude::MessageContent::Text(t)) => {
                                             Some(t.chars().take(100).collect())
                                         }
-                                        Some(claude_convo::MessageContent::Parts(parts)) => {
+                                        Some(toolpath_claude::MessageContent::Parts(parts)) => {
                                             parts.iter().find_map(|p| match p {
-                                                claude_convo::ContentPart::Text { text } => {
+                                                toolpath_claude::ContentPart::Text { text } => {
                                                     Some(text.chars().take(100).collect())
                                                 }
                                                 _ => None,
@@ -500,7 +500,7 @@ pub async fn run_background_conversation_watcher(
 
 #[cfg(test)]
 mod tests {
-    use claude_convo::ConversationEntry;
+    use toolpath_claude::ConversationEntry;
 
     #[test]
     fn test_filter_entries_since_uuid() {

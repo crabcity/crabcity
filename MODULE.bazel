@@ -353,6 +353,13 @@ crate_index.spec(
     version = "2",
 )
 
+# Toolpath - provenance
+crate_index.spec(
+    features = ["watcher"],
+    package = "toolpath-claude",
+    version = "0.1",
+)
+
 # Toolpath - git integration
 crate_index.spec(
     package = "git2",

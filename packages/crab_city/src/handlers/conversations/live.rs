@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use claude_convo::{ClaudeConvo, ConversationWatcher};
+use toolpath_claude::{ClaudeConvo, ConversationWatcher};
 use tracing::{debug, info, warn};
 
 use super::format::format_entry_with_attribution;

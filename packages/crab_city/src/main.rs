@@ -198,7 +198,7 @@ enum AuthCommands {
 pub(crate) struct AppState {
     pub instance_manager: Arc<InstanceManager>,
     /// Conversation watchers per instance (keyed by instance ID)
-    pub conversation_watchers: Arc<Mutex<HashMap<String, claude_convo::ConversationWatcher>>>,
+    pub conversation_watchers: Arc<Mutex<HashMap<String, toolpath_claude::ConversationWatcher>>>,
     pub config: Arc<CrabCityConfig>,
     /// Server runtime configuration
     pub server_config: Arc<ServerConfig>,
