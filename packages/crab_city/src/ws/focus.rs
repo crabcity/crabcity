@@ -2,10 +2,10 @@
 //!
 //! Functions for handling focus switches between instances and sending conversation data.
 
-use claude_convo::ClaudeConvo;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+use toolpath_claude::ClaudeConvo;
 use tracing::{debug, error, info, warn};
 
 use crate::instance_manager::InstanceManager;

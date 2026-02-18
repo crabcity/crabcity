@@ -15,7 +15,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 
 # Local libraries
-claude_convo = { path = "../claude_convo" }
+toolpath-claude = "0.1"
 compositor = { path = "../compositor" }
 pty_manager = { path = "../pty_manager" }
 virtual_terminal = { path = "../virtual_terminal" }

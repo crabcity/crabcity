@@ -1,7 +1,7 @@
 use anyhow::Result;
-use claude_convo::ClaudeConvo;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use toolpath_claude::ClaudeConvo;
 use tracing::{debug, error, info, warn};
 
 use crate::models::{Conversation, ConversationEntry};
@@ -318,18 +318,20 @@ impl ConversationImporter {
     }
 
     /// Extract a title from a conversation entry (first user message text, truncated to 100 chars)
-    fn extract_title(entry: &claude_convo::ConversationEntry) -> Option<String> {
+    fn extract_title(entry: &toolpath_claude::ConversationEntry) -> Option<String> {
         let msg = entry.message.as_ref()?;
-        if !matches!(msg.role, claude_convo::MessageRole::User) {
+        if !matches!(msg.role, toolpath_claude::MessageRole::User) {
             return None;
         }
         let content = msg.content.as_ref()?;
         let title = match content {
-            claude_convo::MessageContent::Text(text) => text.chars().take(100).collect::<String>(),
-            claude_convo::MessageContent::Parts(parts) => parts
+            toolpath_claude::MessageContent::Text(text) => {
+                text.chars().take(100).collect::<String>()
+            }
+            toolpath_claude::MessageContent::Parts(parts) => parts
                 .iter()
                 .find_map(|p| match p {
-                    claude_convo::ContentPart::Text { text } => Some(text),
+                    toolpath_claude::ContentPart::Text { text } => Some(text),
                     _ => None,
                 })
                 .map(|t| t.chars().take(100).collect::<String>())
@@ -363,8 +365,8 @@ impl ImportStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claude_convo::{ConversationEntry, Message, MessageContent, MessageRole};
     use std::collections::HashMap;
+    use toolpath_claude::{ConversationEntry, Message, MessageContent, MessageRole};
 
     /// Helper to create a minimal conversation entry for testing
     fn make_entry(uuid: &str, entry_type: &str, message: Option<Message>) -> ConversationEntry {
@@ -498,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_extract_title_from_parts_content() {
-        use claude_convo::ContentPart;
+        use toolpath_claude::ContentPart;
 
         let entry = make_entry(
             "123",
@@ -517,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_extract_title_from_parts_no_text() {
-        use claude_convo::ContentPart;
+        use toolpath_claude::ContentPart;
 
         let entry = make_entry(
             "123",
@@ -538,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_extract_title_parts_truncates() {
-        use claude_convo::ContentPart;
+        use toolpath_claude::ContentPart;
         let long = "z".repeat(200);
 
         let entry = make_entry(

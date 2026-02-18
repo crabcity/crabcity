@@ -2,9 +2,9 @@ use axum::{
     extract::{Path, State},
     response::{Html, IntoResponse},
 };
-use claude_convo::{ClaudeConvo, ContentPart, MessageContent, MessageRole};
 use maud::{DOCTYPE, PreEscaped, html};
 use std::path::PathBuf;
+use toolpath_claude::{ClaudeConvo, ContentPart, MessageContent, MessageRole};
 use tracing::error;
 
 use super::CSS;

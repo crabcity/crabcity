@@ -13,7 +13,6 @@ rust_binary(
     compile_data = ["src/terminal.js"],
     edition = "2024",
     deps = [
-        "//packages/claude_convo",
         "//packages/compositor",
         "//packages/pty_manager",
         "//packages/virtual_terminal",
@@ -44,6 +43,7 @@ rust_binary(
         "@crate_index//:tokio-tungstenite",
         "@crate_index//:tokio-util",
         "@crate_index//:toml",
+        "@crate_index//:toolpath-claude",
         "@crate_index//:tower",
         "@crate_index//:tower-http",
         "@crate_index//:tracing",
@@ -74,7 +74,6 @@ rust_binary(
     crate_features = ["embedded-ui"],
     edition = "2024",
     deps = [
-        "//packages/claude_convo",
         "//packages/compositor",
         "//packages/crab_city_ui/crate:crab_city_ui_crate",
         "//packages/pty_manager",
@@ -108,6 +107,7 @@ rust_binary(
         "@crate_index//:tokio-tungstenite",
         "@crate_index//:tokio-util",
         "@crate_index//:toml",
+        "@crate_index//:toolpath-claude",
         "@crate_index//:tower",
         "@crate_index//:tower-http",
         "@crate_index//:tracing",

@@ -2,10 +2,10 @@ use axum::{
     extract::{Query, State},
     response::{Html, IntoResponse},
 };
-use claude_convo::ClaudeConvo;
 use maud::{DOCTYPE, PreEscaped, html};
 use serde::Deserialize;
 use std::path::PathBuf;
+use toolpath_claude::ClaudeConvo;
 use tracing::{debug, error, info};
 
 use super::CSS;
@@ -74,20 +74,26 @@ pub async fn history_page(
                             .iter()
                             .find_map(|e| {
                                 e.message.as_ref().and_then(|msg| {
-                                    if matches!(msg.role, claude_convo::MessageRole::User) {
+                                    if matches!(msg.role, toolpath_claude::MessageRole::User) {
                                         msg.content.as_ref().map(|content| {
                                             let text = match content {
-                                                claude_convo::MessageContent::Text(t) => t.clone(),
-                                                claude_convo::MessageContent::Parts(parts) => parts
-                                                    .iter()
-                                                    .filter_map(|p| match p {
-                                                        claude_convo::ContentPart::Text {
+                                                toolpath_claude::MessageContent::Text(t) => {
+                                                    t.clone()
+                                                }
+                                                toolpath_claude::MessageContent::Parts(parts) => {
+                                                    parts
+                                                        .iter()
+                                                        .filter_map(|p| {
+                                                            match p {
+                                                        toolpath_claude::ContentPart::Text {
                                                             text,
                                                         } => Some(text.clone()),
                                                         _ => None,
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                                    .join(" "),
+                                                    }
+                                                        })
+                                                        .collect::<Vec<_>>()
+                                                        .join(" ")
+                                                }
                                             };
                                             // Clean up and truncate for title
                                             let clean_text = text

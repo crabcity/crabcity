@@ -1,10 +1,10 @@
 use axum::extract::ws::{Message, WebSocket};
 use chrono::{DateTime, Utc};
-use claude_convo::{ClaudeConvo, ConversationWatcher};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use toolpath_claude::{ClaudeConvo, ConversationWatcher};
 use tracing::{debug, error, warn};
 
 use crate::inference::{
@@ -72,7 +72,7 @@ pub struct ConversationConfig {
 fn find_candidate_sessions(
     working_dir: &str,
     created_at: DateTime<Utc>,
-) -> Vec<claude_convo::ConversationMetadata> {
+) -> Vec<toolpath_claude::ConversationMetadata> {
     let manager = ClaudeConvo::new();
 
     match manager.list_conversation_metadata(working_dir) {
@@ -405,19 +405,23 @@ pub async fn handle_proxy(
                                                 entry.message.as_ref().and_then(|msg| {
                                                     match &msg.content {
                                                         Some(
-                                                            claude_convo::MessageContent::Text(t),
+                                                            toolpath_claude::MessageContent::Text(
+                                                                t,
+                                                            ),
                                                         ) => Some(t.chars().take(100).collect()),
                                                         Some(
-                                                            claude_convo::MessageContent::Parts(
+                                                            toolpath_claude::MessageContent::Parts(
                                                                 parts,
                                                             ),
-                                                        ) => parts.iter().find_map(|p| match p {
-                                                            claude_convo::ContentPart::Text {
+                                                        ) => parts.iter().find_map(|p| {
+                                                            match p {
+                                                            toolpath_claude::ContentPart::Text {
                                                                 text,
                                                             } => Some(
                                                                 text.chars().take(100).collect(),
                                                             ),
                                                             _ => None,
+                                                        }
                                                         }),
                                                         None => None,
                                                     }

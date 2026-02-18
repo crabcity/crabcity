@@ -1,4 +1,4 @@
-use claude_convo::{ContentPart, MessageContent, MessageRole};
+use toolpath_claude::{ContentPart, MessageContent, MessageRole};
 use tracing::warn;
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use crate::ws;
 /// Format a conversation entry for the frontend.
 /// Returns a formatted JSON value for ALL entries - no filtering.
 /// Unknown or unrecognized entries are included with type "unknown".
-pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Value {
+pub fn format_entry(entry: &toolpath_claude::ConversationEntry) -> serde_json::Value {
     // Helper to normalize whitespace (preserves indentation)
     fn normalize_whitespace(s: &str) -> String {
         let lines: Vec<&str> = s.lines().collect();
@@ -304,7 +304,7 @@ pub fn format_entry(entry: &claude_convo::ConversationEntry) -> serde_json::Valu
 ///
 /// If no auth/repository configured, leaves unattributed (frontend shows "You").
 pub async fn format_entry_with_attribution(
-    entry: &claude_convo::ConversationEntry,
+    entry: &toolpath_claude::ConversationEntry,
     instance_id: &str,
     repo: Option<&Arc<repository::ConversationRepository>>,
     state_manager: Option<&Arc<ws::GlobalStateManager>>,
@@ -419,9 +419,9 @@ pub async fn format_entry_with_attribution(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claude_convo::{ContentPart, ConversationEntry, Message, MessageContent, MessageRole};
     use serde_json::json;
     use std::collections::HashMap;
+    use toolpath_claude::{ContentPart, ConversationEntry, Message, MessageContent, MessageRole};
 
     fn make_entry(uuid: &str, entry_type: &str, message: Option<Message>) -> ConversationEntry {
         ConversationEntry {
@@ -959,9 +959,9 @@ mod tests {
 #[cfg(test)]
 mod attribution_integration_tests {
     use super::*;
-    use claude_convo::{ConversationEntry, Message, MessageContent, MessageRole};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use toolpath_claude::{ConversationEntry, Message, MessageContent, MessageRole};
 
     use crate::models::{InputAttribution, User};
     use crate::repository::test_helpers::test_repository;
@@ -1394,9 +1394,9 @@ mod attribution_integration_tests {
 #[cfg(test)]
 mod attribution_pipeline_diagnostic_tests {
     use super::*;
-    use claude_convo::{ConversationEntry, Message, MessageContent, MessageRole};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use toolpath_claude::{ConversationEntry, Message, MessageContent, MessageRole};
 
     use crate::models::{
         InputAttribution, User, attribution_content_matches, normalize_attribution_content,

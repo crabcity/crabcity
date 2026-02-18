@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use claude_convo::{ClaudeConvo, ConversationWatcher};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use toolpath_claude::{ClaudeConvo, ConversationWatcher};
 use tracing::{debug, error, info, warn};
 
 use crate::models::{Conversation, ConversationEntry};
@@ -90,25 +90,31 @@ impl PersistenceService {
                             // Extract title from first user message
                             if first_user_message {
                                 if let Some(msg) = &entry.message {
-                                    if matches!(msg.role, claude_convo::MessageRole::User) {
+                                    if matches!(msg.role, toolpath_claude::MessageRole::User) {
                                         first_user_message = false;
                                         if let Some(content) = &msg.content {
                                             let title = match content {
-                                                claude_convo::MessageContent::Text(text) => {
+                                                toolpath_claude::MessageContent::Text(text) => {
                                                     text.chars().take(100).collect::<String>()
                                                 }
-                                                claude_convo::MessageContent::Parts(parts) => parts
-                                                    .iter()
-                                                    .find_map(|p| match p {
-                                                        claude_convo::ContentPart::Text {
+                                                toolpath_claude::MessageContent::Parts(parts) => {
+                                                    parts
+                                                        .iter()
+                                                        .find_map(|p| {
+                                                            match p {
+                                                        toolpath_claude::ContentPart::Text {
                                                             text,
                                                         } => Some(text),
                                                         _ => None,
-                                                    })
-                                                    .map(|t| {
-                                                        t.chars().take(100).collect::<String>()
-                                                    })
-                                                    .unwrap_or_else(|| "Conversation".to_string()),
+                                                    }
+                                                        })
+                                                        .map(|t| {
+                                                            t.chars().take(100).collect::<String>()
+                                                        })
+                                                        .unwrap_or_else(|| {
+                                                            "Conversation".to_string()
+                                                        })
+                                                }
                                             };
 
                                             if let Err(e) = service

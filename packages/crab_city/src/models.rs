@@ -62,24 +62,24 @@ pub struct ConversationEntry {
 impl ConversationEntry {
     pub fn from_claude_entry(
         conversation_id: String,
-        entry: &claude_convo::ConversationEntry,
+        entry: &toolpath_claude::ConversationEntry,
     ) -> Self {
         // Extract role and content from the message if present
         let (role, content, model) = if let Some(msg) = &entry.message {
             let role = match msg.role {
-                claude_convo::MessageRole::User => Some("user".to_string()),
-                claude_convo::MessageRole::Assistant => Some("assistant".to_string()),
-                claude_convo::MessageRole::System => Some("system".to_string()),
+                toolpath_claude::MessageRole::User => Some("user".to_string()),
+                toolpath_claude::MessageRole::Assistant => Some("assistant".to_string()),
+                toolpath_claude::MessageRole::System => Some("system".to_string()),
             };
 
             let content = match &msg.content {
-                Some(claude_convo::MessageContent::Text(text)) => Some(text.clone()),
-                Some(claude_convo::MessageContent::Parts(parts)) => {
+                Some(toolpath_claude::MessageContent::Text(text)) => Some(text.clone()),
+                Some(toolpath_claude::MessageContent::Parts(parts)) => {
                     // Extract text content from parts
                     let texts: Vec<String> = parts
                         .iter()
                         .filter_map(|part| match part {
-                            claude_convo::ContentPart::Text { text } => Some(text.clone()),
+                            toolpath_claude::ContentPart::Text { text } => Some(text.clone()),
                             _ => None,
                         })
                         .collect();
@@ -1459,11 +1459,11 @@ mod serde_tests {
 #[cfg(test)]
 mod from_claude_entry_tests {
     use super::*;
-    use claude_convo::{ContentPart, Message, MessageContent, MessageRole};
     use std::collections::HashMap;
+    use toolpath_claude::{ContentPart, Message, MessageContent, MessageRole};
 
-    fn make_claude_entry(message: Option<Message>) -> claude_convo::ConversationEntry {
-        claude_convo::ConversationEntry {
+    fn make_claude_entry(message: Option<Message>) -> toolpath_claude::ConversationEntry {
+        toolpath_claude::ConversationEntry {
             parent_uuid: Some("parent-1".to_string()),
             is_sidechain: false,
             entry_type: "human".to_string(),
