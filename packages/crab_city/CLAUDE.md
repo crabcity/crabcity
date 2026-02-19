@@ -33,7 +33,6 @@ src/
 ├── views/               Maud HTML templates (fallback when no embedded UI)
 ├── instance_actor.rs    Per-instance tokio task (PTY + virtual terminal + clients)
 ├── instance_manager.rs  Create/list/stop instances
-├── websocket_proxy.rs   Fan-out from 1 PTY to N WebSocket clients
 ├── import.rs            Claude conversation JSONL → SQLite importer
 ├── persistence.rs       Instance state snapshots (periodic + on-demand)
 ├── metrics.rs           Prometheus-style counters/gauges

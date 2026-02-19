@@ -189,7 +189,7 @@
 					{/if}
 				</a>
 				<a href="{base}/history" class="footer-link">History</a>
-				<a href="{base}/account" class="footer-link">Settings</a>
+				<a href="{base}/settings" class="footer-link">Settings</a>
 			</div>
 			<button
 				class="theme-toggle"

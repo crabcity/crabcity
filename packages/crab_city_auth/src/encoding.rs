@@ -6,7 +6,7 @@ use data_encoding::BASE32_NOPAD;
 const CROCKFORD_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// Encode bytes as Crockford base32 (uppercase).
-pub(crate) fn crockford_encode(bytes: &[u8]) -> String {
+pub fn crockford_encode(bytes: &[u8]) -> String {
     let standard = BASE32_NOPAD.encode(bytes);
     standard
         .bytes()
@@ -22,7 +22,7 @@ pub(crate) fn crockford_encode(bytes: &[u8]) -> String {
 }
 
 /// Decode a Crockford base32 string back to bytes.
-pub(crate) fn crockford_decode(s: &str) -> Result<Vec<u8>, String> {
+pub fn crockford_decode(s: &str) -> Result<Vec<u8>, String> {
     let standard: String = s
         .to_uppercase()
         .chars()

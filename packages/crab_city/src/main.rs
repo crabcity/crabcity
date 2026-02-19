@@ -39,7 +39,6 @@ mod terminal;
 mod transport;
 mod views;
 mod virtual_terminal;
-pub mod websocket_proxy;
 mod ws;
 
 #[cfg(test)]
@@ -106,6 +105,12 @@ enum Commands {
 
     /// Stop the daemon and all sessions
     KillServer(KillServerArgs),
+
+    /// Manage invite tokens
+    Invite(InviteArgs),
+
+    /// Connect to a remote crab instance
+    Connect(ConnectArgs),
 }
 
 #[derive(Parser)]
@@ -173,6 +178,62 @@ struct KillServerArgs {
     force: bool,
 }
 
+#[derive(Parser)]
+struct InviteArgs {
+    #[command(subcommand)]
+    command: InviteCommands,
+}
+
+#[derive(Subcommand)]
+enum InviteCommands {
+    /// Create an invite token
+    Create(InviteCreateArgs),
+    /// List active invites
+    List,
+    /// Revoke an invite
+    Revoke(InviteRevokeArgs),
+}
+
+#[derive(Parser)]
+struct InviteCreateArgs {
+    /// Capability level for the invite
+    #[arg(short, long, default_value = "collaborate")]
+    capability: String,
+    /// Maximum number of uses (0 = unlimited)
+    #[arg(short, long, default_value = "1")]
+    max_uses: u32,
+    /// Expiration in seconds (default: 1 hour)
+    #[arg(short, long, default_value = "3600")]
+    expires: u64,
+    /// Human-readable label
+    #[arg(short, long)]
+    label: Option<String>,
+}
+
+#[derive(Parser)]
+struct InviteRevokeArgs {
+    /// Invite nonce (hex) to revoke
+    nonce: String,
+}
+
+#[derive(Parser)]
+struct ConnectArgs {
+    /// Connection token (base32)
+    token: Option<String>,
+    /// Node public key (hex, 64 chars)
+    #[arg(long)]
+    node: Option<String>,
+    /// Invite nonce (hex, 32 chars)
+    #[arg(long)]
+    invite: Option<String>,
+    /// Relay URL hint (for private relays)
+    #[arg(long)]
+    relay: Option<String>,
+    /// Display name
+    #[arg(long)]
+    name: Option<String>,
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AppState {
@@ -197,6 +258,8 @@ pub(crate) struct AppState {
     pub runtime_overrides: Arc<tokio::sync::RwLock<RuntimeOverrides>>,
     /// Instance identity (ed25519 keypair) for interconnect auth
     pub identity: Option<Arc<InstanceIdentity>>,
+    /// The iroh node ID (ed25519 public key) when transport is active
+    pub iroh_node_id: Option<[u8; 32]>,
     /// Send to trigger an HTTP server restart (config reload)
     pub restart_tx: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -224,6 +287,41 @@ async fn main() -> Result<()> {
         Some(Commands::List(args)) => cli::list_command(&config, args.json).await,
         Some(Commands::Kill(args)) => cli::kill_command(&config, &args.target).await,
         Some(Commands::KillServer(args)) => cli::kill_server_command(&config, args.force).await,
+        Some(Commands::Invite(args)) => {
+            let daemon = cli::daemon::require_running_daemon(&config).await?;
+            match args.command {
+                InviteCommands::Create(create_args) => {
+                    cli::invite::invite_create_command(
+                        &daemon,
+                        &create_args.capability,
+                        create_args.max_uses,
+                        Some(create_args.expires),
+                        create_args.label.as_deref(),
+                    )
+                    .await?;
+                    Ok(())
+                }
+                InviteCommands::List => {
+                    cli::invite::invite_list_command(&daemon).await?;
+                    Ok(())
+                }
+                InviteCommands::Revoke(revoke_args) => {
+                    cli::invite::invite_revoke_command(&daemon, &revoke_args.nonce).await?;
+                    Ok(())
+                }
+            }
+        }
+        Some(Commands::Connect(args)) => {
+            cli::connect::connect_command(
+                &config,
+                args.token,
+                args.node,
+                args.invite,
+                args.relay,
+                args.name,
+            )
+            .await
+        }
         Some(Commands::Server(args)) => run_server(args, config).await,
     }
 }
@@ -429,6 +527,18 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     let identity = Arc::new(InstanceIdentity::load_or_generate(&config.data_dir)?);
     info!("Instance identity: {}", identity.public_key.fingerprint());
 
+    // Ensure the instance's own identity exists in member_identities.
+    // This is required before any invite operations (the issuer FK).
+    if repository
+        .get_identity(identity.public_key.as_bytes())
+        .await?
+        .is_none()
+    {
+        repository
+            .create_identity(identity.public_key.as_bytes(), "Instance Owner")
+            .await?;
+    }
+
     // First-run detection: if no active grants exist, generate an owner invite
     first_run_bootstrap(&identity, &repository).await;
 
@@ -442,9 +552,16 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             transport_config.relay_bind_addr
         );
 
+        // Decide relay mode: public relays (default) or private embedded relay only
+        let relay_url = if transport_config.use_public_relays {
+            None // RelayMode::Default — iroh's public relay network
+        } else {
+            Some(relay.url().clone()) // RelayMode::Custom — airgapped/private
+        };
+
         let iroh = transport::iroh_transport::IrohTransport::start(
             identity.clone(),
-            relay.url().clone(),
+            relay_url,
             repository.as_ref().clone(),
             global_state_manager.clone(),
             instance_manager.clone(),
@@ -530,6 +647,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             notes_storage: notes_storage.clone(),
             global_state_manager: global_state_manager.clone(),
             identity: Some(identity.clone()),
+            iroh_node_id: iroh_transport.as_ref().map(|(iroh, _)| iroh.node_id()),
             runtime_overrides: runtime_overrides.clone(),
             restart_tx: restart_tx.clone(),
         };
@@ -558,7 +676,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/api/instances/{id}", get(handlers::get_instance))
             .route("/api/instances/{id}", delete(handlers::delete_instance))
             .route("/api/instances/{id}/name", patch(handlers::set_custom_name))
-            .route("/api/instances/{id}/ws", get(handlers::websocket_handler))
             .route("/api/ws", get(handlers::multiplexed_websocket_handler))
             .route("/api/preview", get(handlers::preview_websocket_handler))
             .route(
@@ -650,6 +767,15 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/admin/config",
                 get(handlers::get_config_handler).patch(handlers::patch_config_handler),
             )
+            // Invite endpoints
+            .route(
+                "/api/invites",
+                get(handlers::list_invites_handler).post(handlers::create_invite_handler),
+            )
+            .route(
+                "/api/invites/{nonce}",
+                delete(handlers::revoke_invite_handler),
+            )
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))
@@ -697,7 +823,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             info!("  POST   /api/instances       - Create new instance");
             info!("  GET    /api/instances/:id   - Get instance details");
             info!("  DELETE /api/instances/:id   - Stop instance");
-            info!("  GET    /api/instances/:id/ws - WebSocket connection to instance");
+            info!("  GET    /api/ws              - Multiplexed WebSocket");
         } else {
             info!("Server restarted on http://{}", actual_addr);
         }
@@ -818,6 +944,7 @@ async fn first_run_bootstrap(
             1,
             expires_str.as_deref(),
             &chain_blob,
+            Some("First-run owner invite"),
         )
         .await
     {

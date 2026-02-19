@@ -101,6 +101,10 @@ pub struct TransportFileConfig {
     pub enabled: bool,
     #[serde(default = "default_relay_bind_port")]
     pub relay_bind_port: u16,
+    /// Use iroh's public relay network for NAT traversal (default: true).
+    /// When false, only the embedded relay is used (airgapped/private mode).
+    #[serde(default = "default_use_public_relays")]
+    pub use_public_relays: bool,
 }
 
 impl Default for TransportFileConfig {
@@ -108,6 +112,7 @@ impl Default for TransportFileConfig {
         Self {
             enabled: false,
             relay_bind_port: default_relay_bind_port(),
+            use_public_relays: default_use_public_relays(),
         }
     }
 }
@@ -116,11 +121,18 @@ fn default_relay_bind_port() -> u16 {
     4434
 }
 
+fn default_use_public_relays() -> bool {
+    true
+}
+
 /// Resolved transport configuration (runtime view).
 #[derive(Clone, Debug)]
 pub struct TransportConfig {
     pub enabled: bool,
     pub relay_bind_addr: SocketAddr,
+    /// When true, use iroh's public relays (RelayMode::Default).
+    /// When false, use only the embedded relay (RelayMode::Custom).
+    pub use_public_relays: bool,
 }
 
 impl TransportConfig {
@@ -128,6 +140,7 @@ impl TransportConfig {
         Self {
             enabled: fc.enabled,
             relay_bind_addr: ([127, 0, 0, 1], fc.relay_bind_port).into(),
+            use_public_relays: fc.use_public_relays,
         }
     }
 }

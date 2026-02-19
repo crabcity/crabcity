@@ -5,6 +5,7 @@
 //! - `iroh_transport` — QUIC endpoint, connection accept loop, message dispatch
 //! - `framing` — length-prefixed JSON envelope over QUIC streams
 
+pub mod connection_token;
 pub mod framing;
 pub mod iroh_transport;
 pub mod relay;

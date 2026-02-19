@@ -73,11 +73,11 @@ Helpers in `handlers/tasks.rs` (`broadcast_task`, `broadcast_task_by_id`) and `r
 
 ### WebSocket Protocol
 
-Two WebSocket endpoints:
-- `/api/instances/{id}/ws` — single-instance terminal connection
-- `/api/ws` — multiplexed connection (all instances, chat, presence, tasks)
+Single multiplexed endpoint: `/api/ws` — handles all instances, chat, presence, tasks, and terminal I/O. CLI `attach` also uses this endpoint (with `LoopbackAuth` + `Focus`).
 
-The multiplexed protocol uses `ServerMessage` (defined in `ws/protocol.rs`) — a tagged enum serialized as JSON. When adding new real-time features, add a variant to `ServerMessage` and handle it in `ws/handler.rs` (server) and `stores/ws-handlers.ts` (client).
+The protocol uses `ClientMessage`/`ServerMessage` (defined in `ws/protocol.rs`) — tagged enums serialized as JSON. Auth is always challenge-response inside the WS connection (not HTTP middleware). Loopback clients without a keypair send `LoopbackAuth` to get Owner access; remote clients must use `ChallengeResponse` or `PasswordAuth`.
+
+When adding new real-time features, add a variant to `ServerMessage` and handle it in `ws/handler.rs` (server) and `stores/ws-handlers.ts` (client).
 
 ### Inference Engine
 
@@ -92,4 +92,4 @@ State is exposed as `ClaudeState` in `inference/state.rs` and broadcast to clien
 Multiple clients share a single PTY per instance:
 - `virtual_terminal` maintains the screen buffer and negotiates dimensions as min(all active viewports)
 - `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
-- `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
+- `instance_actor.rs` manages the fan-out from one PTY to N WebSocket clients via the mux endpoint

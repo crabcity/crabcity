@@ -126,6 +126,88 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<IncomingMess
     }
 }
 
+/// Write a `ClientMessage` to a QUIC send stream with length-prefixed framing.
+///
+/// Client-side counterpart to `write_message`. Injects `v: 1` and optional
+/// `request_id` but no `seq` (server tracks its own sequence).
+pub async fn write_client_message(
+    stream: &mut SendStream,
+    msg: &ClientMessage,
+    request_id: Option<&str>,
+) -> Result<()> {
+    let mut obj = serde_json::to_value(msg)?;
+
+    if let Value::Object(ref mut map) = obj {
+        map.insert("v".into(), Value::from(1u32));
+        if let Some(rid) = request_id {
+            map.insert("request_id".into(), Value::from(rid));
+        }
+    }
+
+    let bytes = serde_json::to_vec(&obj)?;
+    let len = (bytes.len() as u32).to_be_bytes();
+    stream.write_all(&len).await?;
+    stream.write_all(&bytes).await?;
+    Ok(())
+}
+
+/// Read a `ServerMessage` from a QUIC recv stream with length-prefixed framing.
+///
+/// Client-side counterpart to `read_message`. Strips transport fields (`v`, `seq`,
+/// `request_id`) before deserializing.
+///
+/// Returns `None` if the stream is cleanly closed.
+pub async fn read_server_message(stream: &mut RecvStream) -> Result<Option<ServerMessage>> {
+    let mut len_buf = [0u8; 4];
+    match stream.read_exact(&mut len_buf).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_MESSAGE_SIZE {
+        bail!(
+            "message too large: {} bytes (max {})",
+            len,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    let mut buf = vec![0u8; len];
+    match stream.read_exact(&mut buf).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+
+    let mut obj: Value = serde_json::from_slice(&buf)?;
+
+    // Strip transport fields
+    if let Value::Object(ref mut map) = obj {
+        map.remove("v");
+        map.remove("seq");
+        map.remove("request_id");
+    }
+
+    match serde_json::from_value::<ServerMessage>(obj) {
+        Ok(msg) => Ok(Some(msg)),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "unknown or malformed server message type, skipping"
+            );
+            Ok(None)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

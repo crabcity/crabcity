@@ -84,7 +84,7 @@ pub struct DbStats {
 }
 
 /// Current schema version - increment when adding migrations
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -746,6 +746,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
             use_count INTEGER NOT NULL DEFAULT 0,
             expires_at TEXT,
             chain_blob BLOB NOT NULL,
+            label TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             revoked_at TEXT,
             FOREIGN KEY (issuer) REFERENCES member_identities(public_key)
@@ -1038,11 +1039,19 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         info!("v11: Migrated users table, dropped old session/permission tables");
     }
 
+    if current_version < 12 {
+        sqlx::query("ALTER TABLE invites ADD COLUMN label TEXT")
+            .execute(&mut *conn)
+            .await
+            .ok(); // .ok() swallows "duplicate column" on fresh databases
+        info!("v12: Added label column to invites table");
+    }
+
     // Record the schema version
     if current_version < SCHEMA_VERSION {
         sqlx::query("INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)")
             .bind(SCHEMA_VERSION)
-            .bind("Interconnect auth: member_identities, member_grants, invites, event_log, blocklist")
+            .bind("Add label column to invites")
             .execute(&mut *conn)
             .await?;
         info!("Schema upgraded to version {}", SCHEMA_VERSION);

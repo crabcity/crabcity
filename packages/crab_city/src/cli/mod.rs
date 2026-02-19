@@ -1,5 +1,7 @@
 pub mod attach;
+pub mod connect;
 pub mod daemon;
+pub mod invite;
 pub mod picker;
 pub mod settings;
 pub mod terminal;

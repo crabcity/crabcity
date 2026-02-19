@@ -117,7 +117,14 @@ pub async fn get_config_handler(State(state): State<AppState>) -> impl IntoRespo
         .or(fc.server.host.as_deref())
         .unwrap_or("127.0.0.1")
         .to_string();
-    let effective_port = overrides.port.or(fc.server.port).unwrap_or(0);
+    let daemon_port = std::fs::read_to_string(state.config.daemon_port_path())
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    let effective_port = overrides
+        .port
+        .or(fc.server.port)
+        .or(daemon_port)
+        .unwrap_or(0);
     let effective_auth = overrides.auth_enabled.unwrap_or(fc.auth.enabled);
     let effective_https = overrides.https.unwrap_or(fc.auth.https);
 

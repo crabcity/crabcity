@@ -6,15 +6,20 @@
 
 use std::sync::Arc;
 
+use axum::extract::State;
+use axum::{Json, http::StatusCode};
 use crab_city_auth::event::EventType;
 use crab_city_auth::{Capability, Invite, PublicKey};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 use tracing::{error, info};
 
+use crate::AppState;
 use crate::auth::AuthUser;
 use crate::identity::InstanceIdentity;
 use crate::repository::ConversationRepository;
+use crate::transport::connection_token::ConnectionToken;
 use crate::ws::ServerMessage;
 
 /// Shared context for all interconnect RPC handlers.
@@ -84,6 +89,22 @@ fn member_to_json(m: &crate::repository::membership::Member) -> serde_json::Valu
     })
 }
 
+fn invite_state(inv: &crate::repository::invites::StoredInvite) -> &'static str {
+    if inv.revoked_at.is_some() {
+        return "revoked";
+    }
+    if inv.max_uses > 0 && inv.use_count >= inv.max_uses {
+        return "exhausted";
+    }
+    if let Some(ref expires) = inv.expires_at {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        if *expires <= now {
+            return "expired";
+        }
+    }
+    "active"
+}
+
 fn invite_to_json(inv: &crate::repository::invites::StoredInvite) -> serde_json::Value {
     json!({
         "nonce": bytes_to_hex(&inv.nonce),
@@ -93,6 +114,8 @@ fn invite_to_json(inv: &crate::repository::invites::StoredInvite) -> serde_json:
         "use_count": inv.use_count,
         "expires_at": inv.expires_at,
         "created_at": inv.created_at,
+        "label": inv.label,
+        "state": invite_state(inv),
     })
 }
 
@@ -106,6 +129,7 @@ pub async fn handle_create_invite(
     capability: &str,
     max_uses: u32,
     expires_in_secs: Option<u64>,
+    label: Option<&str>,
 ) -> ServerMessage {
     let Ok(()) = caller.require_access("members", "invite") else {
         return rpc_err("insufficient permissions for invite");
@@ -142,7 +166,7 @@ pub async fn handle_create_invite(
     );
 
     let nonce = invite.links[0].nonce;
-    let token = invite.to_base32();
+    let token = bytes_to_hex(&nonce);
     let chain_blob = invite.to_bytes();
 
     let expires_at_str = expires_at.map(|ts| {
@@ -160,6 +184,7 @@ pub async fn handle_create_invite(
             max_uses as i64,
             expires_at_str.as_deref(),
             &chain_blob,
+            label,
         )
         .await
     {
@@ -192,6 +217,7 @@ pub async fn handle_create_invite(
         capability: capability.to_string(),
         max_uses,
         expires_at: expires_at_str,
+        label: label.map(|s| s.to_string()),
     }
 }
 
@@ -201,12 +227,25 @@ pub async fn handle_redeem_invite(
     token: &str,
     display_name: &str,
 ) -> ServerMessage {
-    let invite = match Invite::from_base32(token) {
-        Ok(i) => i,
-        Err(e) => return rpc_err(format!("invalid invite token: {e}")),
+    // Token is a hex-encoded nonce (32 hex chars = 16 bytes)
+    let nonce_bytes = match hex_to_bytes(token) {
+        Ok(b) if b.len() == 16 => b,
+        _ => return rpc_err("invalid invite token"),
     };
 
-    // Verify the cryptographic chain
+    // Look up stored invite by nonce
+    let stored = match ctx.repo.get_invite(&nonce_bytes).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return rpc_err("invite not found"),
+        Err(e) => return rpc_err(format!("failed to look up invite: {e}")),
+    };
+
+    // Verify the cryptographic chain from the stored blob
+    let invite = match Invite::from_bytes(&stored.chain_blob) {
+        Ok(i) => i,
+        Err(e) => return rpc_err(format!("stored invite corrupt: {e}")),
+    };
+
     let claims = match invite.verify() {
         Ok(c) => c,
         Err(e) => return rpc_err(format!("invite verification failed: {e}")),
@@ -215,13 +254,6 @@ pub async fn handle_redeem_invite(
     // Must be for this instance
     if claims.instance != ctx.identity.public_key {
         return rpc_err("invite is for a different instance");
-    }
-
-    // Look up stored invite by nonce
-    let stored = match ctx.repo.get_invite(&claims.nonce).await {
-        Ok(Some(s)) => s,
-        Ok(None) => return rpc_err("invite not found (nonce not recognized)"),
-        Err(e) => return rpc_err(format!("failed to look up invite: {e}")),
     };
 
     if !stored.is_valid() {
@@ -455,7 +487,7 @@ pub async fn handle_list_invites(ctx: &RpcContext, caller: &AuthUser) -> ServerM
         return rpc_err("insufficient permissions for invite");
     };
 
-    let invites = match ctx.repo.list_active_invites().await {
+    let invites = match ctx.repo.list_all_invites().await {
         Ok(i) => i,
         Err(e) => return rpc_err(format!("failed to list invites: {e}")),
     };
@@ -950,6 +982,164 @@ pub async fn handle_get_event_proof(
     }
 }
 
+// =============================================================================
+// HTTP invite endpoints (wrap the RPC handlers for REST access)
+// =============================================================================
+
+#[derive(Deserialize)]
+pub struct CreateInviteRequest {
+    #[serde(default = "default_capability")]
+    pub capability: String,
+    #[serde(default = "default_max_uses")]
+    pub max_uses: u32,
+    #[serde(default)]
+    pub expires_in_secs: Option<u64>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+fn default_capability() -> String {
+    "collaborate".to_string()
+}
+
+fn default_max_uses() -> u32 {
+    1
+}
+
+/// POST /api/invites — create an invite and return a connection token.
+pub async fn create_invite_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateInviteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let node_id = state.iroh_node_id.ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let rpc_ctx = RpcContext {
+        repo: state.repository.as_ref().clone(),
+        identity: identity.clone(),
+        broadcast_tx: state.global_state_manager.lifecycle_sender(),
+    };
+
+    // Loopback caller gets Owner access
+    let caller = AuthUser::from_grant(
+        identity.public_key,
+        "Instance Owner".into(),
+        Capability::Owner,
+    );
+
+    let result = handle_create_invite(
+        &rpc_ctx,
+        &caller,
+        &req.capability,
+        req.max_uses,
+        req.expires_in_secs,
+        req.label.as_deref(),
+    )
+    .await;
+
+    match result {
+        ServerMessage::InviteCreated {
+            nonce,
+            capability,
+            max_uses,
+            expires_at,
+            label,
+            ..
+        } => {
+            // Parse nonce hex back to bytes for the connection token
+            let nonce_bytes =
+                hex_to_bytes(&nonce).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let nonce_arr: [u8; 16] = nonce_bytes
+                .try_into()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let token = ConnectionToken {
+                node_id,
+                invite_nonce: nonce_arr,
+                relay_url: None,
+            };
+
+            Ok(Json(json!({
+                "token": token.to_base32(),
+                "nonce": nonce,
+                "capability": capability,
+                "max_uses": max_uses,
+                "expires_at": expires_at,
+                "label": label,
+            })))
+        }
+        ServerMessage::Error { message, .. } => {
+            info!("create invite failed: {}", message);
+            Ok(Json(json!({ "error": message })))
+        }
+        _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET /api/invites — list all invites.
+pub async fn list_invites_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let rpc_ctx = RpcContext {
+        repo: state.repository.as_ref().clone(),
+        identity: identity.clone(),
+        broadcast_tx: state.global_state_manager.lifecycle_sender(),
+    };
+
+    let caller = AuthUser::from_grant(
+        identity.public_key,
+        "Instance Owner".into(),
+        Capability::Owner,
+    );
+
+    let result = handle_list_invites(&rpc_ctx, &caller).await;
+
+    match result {
+        ServerMessage::InviteList { invites } => Ok(Json(json!({ "invites": invites }))),
+        ServerMessage::Error { message, .. } => Ok(Json(json!({ "error": message }))),
+        _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// DELETE /api/invites/{nonce} — revoke an invite.
+pub async fn revoke_invite_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(nonce): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let rpc_ctx = RpcContext {
+        repo: state.repository.as_ref().clone(),
+        identity: identity.clone(),
+        broadcast_tx: state.global_state_manager.lifecycle_sender(),
+    };
+
+    let caller = AuthUser::from_grant(
+        identity.public_key,
+        "Instance Owner".into(),
+        Capability::Owner,
+    );
+
+    let result = handle_revoke_invite(&rpc_ctx, &caller, &nonce, false).await;
+
+    match result {
+        ServerMessage::InviteRevoked { nonce } => Ok(Json(json!({ "revoked": nonce }))),
+        ServerMessage::Error { message, .. } => Ok(Json(json!({ "error": message }))),
+        _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,7 +1196,7 @@ mod tests {
     async fn create_and_list_invites() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 5, None).await;
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 5, None, None).await;
         assert_not_error(&result);
 
         match &result {
@@ -1063,7 +1253,7 @@ mod tests {
         let collab_user = AuthUser::from_grant(collab_pk, "Collab".into(), Capability::Collaborate);
 
         // Collaborator cannot invite with Admin capability
-        let result = handle_create_invite(&ctx, &collab_user, "admin", 1, None).await;
+        let result = handle_create_invite(&ctx, &collab_user, "admin", 1, None, None).await;
         assert_is_error(&result);
     }
 
@@ -1072,7 +1262,7 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
 
         // Create invite
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 1, None).await;
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 1, None, None).await;
         assert_not_error(&result);
         let token = match &result {
             ServerMessage::InviteCreated { token, .. } => token.clone(),
@@ -1118,7 +1308,7 @@ mod tests {
     async fn redeem_invite_exhausted() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "view", 1, None).await;
+        let result = handle_create_invite(&ctx, &caller, "view", 1, None, None).await;
         assert_not_error(&result);
         let token = match &result {
             ServerMessage::InviteCreated { token, .. } => token.clone(),
@@ -1140,7 +1330,7 @@ mod tests {
     async fn revoke_then_redeem_fails() {
         let (ctx, caller) = test_ctx().await;
 
-        let result = handle_create_invite(&ctx, &caller, "collaborate", 0, None).await;
+        let result = handle_create_invite(&ctx, &caller, "collaborate", 0, None, None).await;
         assert_not_error(&result);
         let (token, nonce) = match &result {
             ServerMessage::InviteCreated { token, nonce, .. } => (token.clone(), nonce.clone()),
@@ -1358,9 +1548,9 @@ mod tests {
         let (ctx, caller) = test_ctx().await;
 
         // Create some events via invite flow
-        let r = handle_create_invite(&ctx, &caller, "view", 0, None).await;
+        let r = handle_create_invite(&ctx, &caller, "view", 0, None, None).await;
         assert_not_error(&r);
-        let r = handle_create_invite(&ctx, &caller, "collaborate", 0, None).await;
+        let r = handle_create_invite(&ctx, &caller, "collaborate", 0, None, None).await;
         assert_not_error(&r);
 
         let events = handle_query_events(&ctx, &caller, None, Some("invite."), 10, None).await;
@@ -1392,7 +1582,7 @@ mod tests {
     async fn event_proof() {
         let (ctx, caller) = test_ctx().await;
 
-        let r = handle_create_invite(&ctx, &caller, "view", 0, None).await;
+        let r = handle_create_invite(&ctx, &caller, "view", 0, None, None).await;
         assert_not_error(&r);
 
         let proof = handle_get_event_proof(&ctx, &caller, 1).await;

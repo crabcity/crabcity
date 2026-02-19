@@ -1,7 +1,7 @@
 //! Cryptographic identity, authorization, and invite primitives for Crab City.
 
 pub mod capability;
-pub(crate) mod encoding;
+pub mod encoding;
 pub mod error;
 pub mod event;
 pub mod identity_proof;

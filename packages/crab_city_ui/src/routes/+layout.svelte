@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
@@ -14,6 +15,8 @@
 	import { theme } from '$lib/stores/settings';
 	import { resolveAuthGuard } from '$lib/utils/authGuard';
 	import DebugPanel from '$lib/components/DebugPanel.svelte';
+
+	let { children }: { children: Snippet } = $props();
 
 	let appInitialized = $state(false);
 
@@ -166,7 +169,7 @@
 	});
 </script>
 
-<slot />
+{@render children()}
 <DebugPanel />
 
 <style>

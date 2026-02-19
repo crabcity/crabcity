@@ -50,38 +50,32 @@ pub async fn handle_multiplexed_ws(
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // === Auth handshake phase ===
-    let (auth_user, ws_user) = if is_loopback {
-        let user = AuthUser::loopback();
-        let ws = auth_user_to_ws_user(&user);
-        info!("multiplexed WS connection (loopback)");
-        (user, ws)
-    } else {
-        match run_auth_handshake(
-            &mut ws_sender,
-            &mut ws_receiver,
-            &repository,
-            &state_manager,
-            &identity,
-        )
-        .await
-        {
-            Some((user, ws)) => {
-                info!(
-                    fingerprint = %user.fingerprint,
-                    display_name = %user.display_name,
-                    capability = ?user.capability,
-                    "multiplexed WS connection authenticated"
-                );
-                (user, ws)
+    // === Auth handshake phase (always runs, even on loopback) ===
+    let (auth_user, ws_user) = match run_auth_handshake(
+        &mut ws_sender,
+        &mut ws_receiver,
+        &repository,
+        &state_manager,
+        &identity,
+        is_loopback,
+    )
+    .await
+    {
+        Some((user, ws)) => {
+            info!(
+                fingerprint = %user.fingerprint,
+                display_name = %user.display_name,
+                capability = ?user.capability,
+                "multiplexed WS connection authenticated"
+            );
+            (user, ws)
+        }
+        None => {
+            info!("WS connection closed during auth handshake");
+            if let Some(ref m) = server_metrics {
+                m.connection_closed();
             }
-            None => {
-                info!("WS connection closed during auth handshake");
-                if let Some(ref m) = server_metrics {
-                    m.connection_closed();
-                }
-                return;
-            }
+            return;
         }
     };
 
@@ -288,7 +282,7 @@ use futures::stream::SplitStream;
 /// Run the auth handshake on a WebSocket connection.
 ///
 /// 1. Send `Challenge { nonce }`
-/// 2. Wait for `ChallengeResponse` (ed25519 signature)
+/// 2. Wait for `ChallengeResponse`, `PasswordAuth`, or `LoopbackAuth`
 /// 3. Verify and return `(AuthUser, WsUser)`, or `None` if auth failed/connection closed
 async fn run_auth_handshake(
     ws_sender: &mut SplitSink<WebSocket, Message>,
@@ -296,6 +290,7 @@ async fn run_auth_handshake(
     repository: &ConversationRepository,
     state_manager: &Arc<GlobalStateManager>,
     identity: &Option<Arc<InstanceIdentity>>,
+    is_loopback: bool,
 ) -> Option<(AuthUser, WsUser)> {
     // Generate challenge nonce (32 random bytes, hex-encoded)
     let nonce_bytes: [u8; 32] = rand::random();
@@ -391,10 +386,25 @@ async fn run_auth_handshake(
             )
             .await
         }
+        ClientMessage::LoopbackAuth => {
+            if !is_loopback {
+                send_error(ws_sender, "LoopbackAuth only allowed from loopback").await;
+                return None;
+            }
+            let user = AuthUser::loopback();
+            let msg = ServerMessage::Authenticated {
+                fingerprint: user.fingerprint.clone(),
+                capability: format!("{}", user.capability),
+            };
+            let json = serde_json::to_string(&msg).ok()?;
+            ws_sender.send(Message::Text(json.into())).await.ok()?;
+            let ws = auth_user_to_ws_user(&user);
+            Some((user, ws))
+        }
         _ => {
             let err = ServerMessage::Error {
                 instance_id: None,
-                message: "expected ChallengeResponse or PasswordAuth".into(),
+                message: "expected ChallengeResponse, PasswordAuth, or LoopbackAuth".into(),
             };
             let json = serde_json::to_string(&err).ok()?;
             ws_sender.send(Message::Text(json.into())).await.ok()?;
@@ -582,11 +592,17 @@ async fn handle_invite_redeem(
     ws_sender.send(Message::Text(json.into())).await.ok()?;
 
     // Look up the grant we just created
-    let grant = repository
-        .get_active_grant(public_key.as_bytes())
-        .await
-        .ok()
-        .flatten()?;
+    let grant = match repository.get_active_grant(public_key.as_bytes()).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            send_error(ws_sender, "grant not found after invite redeem").await;
+            return None;
+        }
+        Err(e) => {
+            send_error(ws_sender, &format!("failed to look up grant: {e}")).await;
+            return None;
+        }
+    };
     let cap: Capability = grant.capability.parse().unwrap_or_else(|_| {
         warn!(raw = %grant.capability, "corrupted capability string, falling back to View");
         Capability::View
@@ -626,6 +642,7 @@ async fn dispatch_ws_rpc(
             capability,
             max_uses,
             expires_in_secs,
+            label,
         } => {
             interconnect::handle_create_invite(
                 rpc_ctx,
@@ -633,6 +650,7 @@ async fn dispatch_ws_rpc(
                 &capability,
                 max_uses,
                 expires_in_secs,
+                label.as_deref(),
             )
             .await
         }
@@ -870,11 +888,8 @@ async fn handle_password_auth(
                 return None;
             }
 
-            // Create member identity
-            if let Err(e) = repository.create_identity(public_key.as_bytes(), dn).await {
-                send_error(ws_sender, &format!("failed to create identity: {e}")).await;
-                return None;
-            }
+            // Note: identity is created by handle_redeem_invite, not here,
+            // to avoid duplicate INSERT on member_identities.
 
             // Redeem invite via the real interconnect handler
             let id = match identity {

@@ -143,9 +143,10 @@ describe('InviteList', () => {
 			max_uses: 1,
 		});
 
+		// Server only returns active invites (no state field) — store defaults to 'active'
 		const newList: InviteInfo[] = [
-			{ nonce: 'new1', capability: 'Admin', max_uses: 1, state: 'active' },
-			{ nonce: 'new2', capability: 'Collaborate', max_uses: 5, state: 'revoked' },
+			{ nonce: 'new1', capability: 'Admin', max_uses: 1 },
+			{ nonce: 'new2', capability: 'Collaborate', max_uses: 5 },
 		];
 
 		handleInvitesMessage({ type: 'InviteList', invites: newList });
@@ -153,7 +154,25 @@ describe('InviteList', () => {
 		const list = get(invites);
 		expect(list.length).toBe(2);
 		expect(list[0]?.nonce).toBe('new1');
+		expect(list[0]?.state).toBe('active');
+		expect(list[1]?.state).toBe('active');
+		// token defaults to nonce for list items
+		expect(list[0]?.token).toBe('new1');
+		expect(list[1]?.token).toBe('new2');
+	});
+
+	it('preserves server-provided state', () => {
+		const newList: InviteInfo[] = [
+			{ nonce: 'a1', capability: 'Admin', max_uses: 1, state: 'active' },
+			{ nonce: 'a2', capability: 'View', max_uses: 5, state: 'revoked' },
+			{ nonce: 'a3', capability: 'Collaborate', max_uses: 3, state: 'expired' },
+		];
+		handleInvitesMessage({ type: 'InviteList', invites: newList });
+
+		const list = get(invites);
+		expect(list[0]?.state).toBe('active');
 		expect(list[1]?.state).toBe('revoked');
+		expect(list[2]?.state).toBe('expired');
 	});
 
 	it('handles empty list', () => {

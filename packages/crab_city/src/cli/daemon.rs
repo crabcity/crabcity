@@ -52,13 +52,6 @@ impl DaemonInfo {
         format!("http://{}:{}", self.host, self.port)
     }
 
-    pub fn ws_url(&self, instance_id: &str) -> String {
-        format!(
-            "ws://{}:{}/api/instances/{}/ws",
-            self.host, self.port, instance_id
-        )
-    }
-
     pub fn mux_ws_url(&self) -> String {
         format!("ws://{}:{}/api/ws", self.host, self.port)
     }
@@ -421,15 +414,6 @@ mod tests {
     fn base_url_custom_host() {
         let info = make_daemon_info("0.0.0.0", 8080);
         assert_eq!(info.base_url(), "http://0.0.0.0:8080");
-    }
-
-    #[test]
-    fn ws_url_formats_correctly() {
-        let info = make_daemon_info("127.0.0.1", 9000);
-        assert_eq!(
-            info.ws_url("abc-123"),
-            "ws://127.0.0.1:9000/api/instances/abc-123/ws"
-        );
     }
 
     #[test]

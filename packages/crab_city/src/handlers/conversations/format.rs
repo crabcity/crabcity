@@ -346,23 +346,12 @@ pub async fn format_entry_with_attribution(
             }
             // Persist entry_uuid link to DB so historical queries find it
             if let Some(repo) = repo {
-                let repo = Arc::clone(repo);
-                let instance_id = instance_id.to_string();
-                let entry_uuid = entry.uuid.clone();
-                let entry_content = content.to_string();
                 let unix_ts = chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
                     .map(|dt| dt.timestamp())
                     .unwrap_or(0);
-                tokio::spawn(async move {
-                    let _ = repo
-                        .correlate_attribution(
-                            &instance_id,
-                            &entry_uuid,
-                            unix_ts,
-                            Some(&entry_content),
-                        )
-                        .await;
-                });
+                let _ = repo
+                    .correlate_attribution(instance_id, &entry.uuid, unix_ts, Some(content))
+                    .await;
             }
             return json;
         }
@@ -1769,9 +1758,6 @@ mod attribution_pipeline_diagnostic_tests {
             watcher_result["attributed_to"]["user_id"], "u1",
             "Watcher (first consumer) should attribute to Alice"
         );
-
-        // Let DB write-back complete
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // === Step D: REST endpoint also processes the entry ===
         let rest_result =

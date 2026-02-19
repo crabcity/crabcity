@@ -127,6 +127,10 @@ pub enum ClientMessage {
         display_name: Option<String>,
     },
 
+    /// Loopback-only auth: accepted only from 127.0.0.1/::1 connections.
+    /// Clients without a keypair send this to get Owner access on localhost.
+    LoopbackAuth,
+
     /// Reconnect with replay: client sends last seen sequence number
     /// and the connection_id of the previous session to replay from.
     Reconnect {
@@ -217,6 +221,8 @@ pub enum ClientMessage {
         max_uses: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_in_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     /// Redeem an invite token (public_key is hex-encoded 32-byte ed25519 key)
     RedeemInvite {
@@ -418,6 +424,8 @@ pub enum ServerMessage {
         max_uses: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         expires_at: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     /// Invite was redeemed by a new member
     InviteRedeemed {
@@ -1686,6 +1694,7 @@ mod tests {
             capability: "collaborate".to_string(),
             max_uses: 5,
             expires_in_secs: Some(3600),
+            label: Some("For Alice".to_string()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -1694,10 +1703,12 @@ mod tests {
                 capability,
                 max_uses,
                 expires_in_secs,
+                label,
             } => {
                 assert_eq!(capability, "collaborate");
                 assert_eq!(max_uses, 5);
                 assert_eq!(expires_in_secs, Some(3600));
+                assert_eq!(label, Some("For Alice".to_string()));
             }
             _ => panic!("Expected CreateInvite"),
         }
@@ -1898,6 +1909,7 @@ mod tests {
             capability: "collaborate".to_string(),
             max_uses: 5,
             expires_at: Some("2025-12-31 23:59:59".to_string()),
+            label: Some("QA team".to_string()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -1908,12 +1920,14 @@ mod tests {
                 capability,
                 max_uses,
                 expires_at,
+                label,
             } => {
                 assert_eq!(token, "CROCK32TOKEN");
                 assert_eq!(nonce, "aabbccdd");
                 assert_eq!(capability, "collaborate");
                 assert_eq!(max_uses, 5);
                 assert!(expires_at.is_some());
+                assert_eq!(label, Some("QA team".to_string()));
             }
             _ => panic!("Expected InviteCreated"),
         }
@@ -2233,5 +2247,21 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("invite_token"));
         assert!(!json.contains("display_name"));
+    }
+
+    #[test]
+    fn test_client_message_loopback_auth_roundtrip() {
+        let original = ClientMessage::LoopbackAuth;
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#"{"type":"LoopbackAuth"}"#);
+        let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, ClientMessage::LoopbackAuth));
+    }
+
+    #[test]
+    fn test_client_message_loopback_auth_from_raw_json() {
+        let json = r#"{"type":"LoopbackAuth"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(matches!(msg, ClientMessage::LoopbackAuth));
     }
 }

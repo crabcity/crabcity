@@ -149,22 +149,27 @@ struct TransportContext {
 /// The iroh-based P2P transport layer.
 pub struct IrohTransport {
     endpoint: Endpoint,
-    relay_url: RelayUrl,
     connections: Arc<Mutex<ConnectionRegistry>>,
     cancel: CancellationToken,
 }
 
 impl IrohTransport {
     /// Start the iroh endpoint and begin accepting connections.
+    ///
+    /// - `relay_url: Some(url)` → private/airgapped mode (`RelayMode::Custom`)
+    /// - `relay_url: None` → public relay mode (`RelayMode::Default`)
     pub async fn start(
         identity: Arc<InstanceIdentity>,
-        relay_url: RelayUrl,
+        relay_url: Option<RelayUrl>,
         repo: ConversationRepository,
         state_manager: Arc<GlobalStateManager>,
         instance_manager: Arc<InstanceManager>,
         server_config: Option<Arc<ServerConfig>>,
     ) -> Result<Self> {
-        let relay_map = iroh::RelayMap::from(relay_url.clone());
+        let relay_mode = match relay_url {
+            Some(ref url) => RelayMode::Custom(iroh::RelayMap::from(url.clone())),
+            None => RelayMode::Default,
+        };
 
         // Configure QUIC keepalive: send pings every 30s, timeout after 40s idle
         let transport_config = iroh::endpoint::QuicTransportConfig::builder()
@@ -177,7 +182,7 @@ impl IrohTransport {
         let endpoint = Endpoint::builder()
             .secret_key(identity.iroh_secret_key())
             .alpns(vec![ALPN.to_vec()])
-            .relay_mode(RelayMode::Custom(relay_map))
+            .relay_mode(relay_mode)
             .transport_config(transport_config)
             .bind()
             .await
@@ -281,14 +286,13 @@ impl IrohTransport {
             }
         });
 
-        info!(
-            "iroh transport started, accepting connections via relay {}",
-            relay_url
-        );
+        match relay_url {
+            Some(ref url) => info!("iroh transport started (private relay: {})", url),
+            None => info!("iroh transport started (public relays)"),
+        }
 
         Ok(Self {
             endpoint,
-            relay_url,
             connections,
             cancel,
         })
@@ -296,7 +300,12 @@ impl IrohTransport {
 
     /// The endpoint address that clients use to connect to this instance.
     pub fn endpoint_addr(&self) -> EndpointAddr {
-        EndpointAddr::new(self.endpoint.id()).with_relay_url(self.relay_url.clone())
+        EndpointAddr::new(self.endpoint.id())
+    }
+
+    /// The node ID (ed25519 public key) of this endpoint.
+    pub fn node_id(&self) -> [u8; 32] {
+        *self.endpoint.id().as_bytes()
     }
 
     /// Close all connections for a specific identity.
@@ -787,6 +796,7 @@ impl IrohTransport {
                 capability,
                 max_uses,
                 expires_in_secs,
+                label,
             } => {
                 interconnect::handle_create_invite(
                     rpc_ctx,
@@ -794,6 +804,7 @@ impl IrohTransport {
                     &capability,
                     max_uses,
                     expires_in_secs,
+                    label.as_deref(),
                 )
                 .await
             }

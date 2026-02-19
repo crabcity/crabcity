@@ -64,6 +64,9 @@ function setDisconnected(): void {
 	connectionState.set({ status: 'disconnected' });
 }
 
+/** Whether the multiplexed WS has completed auth and is ready for messages. */
+export const muxConnected = writable(false);
+
 // =============================================================================
 // Presence Store
 // =============================================================================
@@ -93,6 +96,10 @@ let pendingPasswordAuth: {
 	inviteToken?: string;
 	displayName?: string;
 } | null = null;
+
+/** When true, next handleChallenge sends LoopbackAuth instead of ChallengeResponse.
+ *  Set when a loopback user's keypair has no server grant (AuthRequired on reconnect). */
+let loopbackFallback = false;
 
 const STALE_THRESHOLD_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -454,6 +461,7 @@ function connectMultiplexed(onConnected?: () => void): void {
 		console.log('[WebSocket] Disconnected');
 		socket = null;
 		authPhase = false;
+		muxConnected.set(false);
 		clearAuthentication();
 
 		const selectedId = get(currentInstanceId);
@@ -490,6 +498,7 @@ function handleAuthMessage(msg: MuxServerMessage, onConnected?: () => void): voi
 			);
 
 			reconnectAttempt = 0;
+			muxConnected.set(true);
 			const pendingFocus = get(currentInstanceId);
 			if (pendingFocus) {
 				sendFocus(pendingFocus);
@@ -504,8 +513,15 @@ function handleAuthMessage(msg: MuxServerMessage, onConnected?: () => void): voi
 				authRequiredCallback();
 			} else {
 				authPhase = false;
-				// Redirect to join page if not already there
-				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/join')) {
+				const host = typeof window !== 'undefined' ? window.location.hostname : '';
+				const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+				if (isLoopback) {
+					// Keypair has no grant but we're on loopback — fall back to
+					// LoopbackAuth on reconnect instead of redirecting to /join.
+					console.log('[WebSocket] Loopback fallback: will retry with LoopbackAuth');
+					loopbackFallback = true;
+					socket?.close();
+				} else if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/join')) {
 					window.location.href = '/join';
 				}
 			}
@@ -528,6 +544,7 @@ function handleAuthMessage(msg: MuxServerMessage, onConnected?: () => void): voi
 		default:
 			// InstanceList etc. can arrive after auth — transition to normal
 			authPhase = false;
+			muxConnected.set(true);
 			handleMultiplexedMessage(msg);
 			break;
 	}
@@ -549,11 +566,18 @@ function handleChallenge(nonceHex: string): void {
 		return;
 	}
 
+	// Loopback fallback: keypair exists but server has no grant — use LoopbackAuth
+	if (loopbackFallback) {
+		console.log('[WebSocket] Loopback fallback — sending LoopbackAuth instead of keypair');
+		loopbackFallback = false;
+		socket?.send(JSON.stringify({ type: 'LoopbackAuth' }));
+		return;
+	}
+
 	const kp = get(localKeypair);
 	if (!kp) {
-		console.warn('[WebSocket] No keypair available for challenge-response');
-		// Can't authenticate — close and redirect
-		socket?.close();
+		console.log('[WebSocket] No keypair — sending LoopbackAuth');
+		socket?.send(JSON.stringify({ type: 'LoopbackAuth' }));
 		return;
 	}
 

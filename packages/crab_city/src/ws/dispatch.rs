@@ -596,6 +596,7 @@ pub(crate) async fn dispatch_client_message(
         // Auth messages should not reach the message loop (handled during handshake)
         msg @ (ClientMessage::ChallengeResponse { .. }
         | ClientMessage::PasswordAuth { .. }
+        | ClientMessage::LoopbackAuth
         | ClientMessage::Reconnect { .. }) => {
             warn!("auth/handshake message received after handshake — ignoring");
             let _ = msg;

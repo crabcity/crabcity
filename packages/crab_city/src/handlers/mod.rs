@@ -22,6 +22,7 @@ pub use instances::{
     create_instance, delete_instance, get_instance, get_instance_output, list_instances,
     set_custom_name,
 };
+pub use interconnect::{create_invite_handler, list_invites_handler, revoke_invite_handler};
 pub use notes::{create_note, delete_note, get_notes, update_note};
 pub use preview::preview_websocket_handler;
 pub use tasks::{
@@ -29,4 +30,4 @@ pub use tasks::{
     get_task_handler, list_tasks_handler, migrate_tasks_handler, remove_task_tag_handler,
     send_task_handler, update_task_handler,
 };
-pub use websocket::{multiplexed_websocket_handler, websocket_handler};
+pub use websocket::multiplexed_websocket_handler;

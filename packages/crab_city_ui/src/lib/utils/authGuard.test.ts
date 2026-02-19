@@ -168,6 +168,20 @@ describe('not authenticated', () => {
 		}))).toEqual({ kind: 'noop' });
 	});
 
+	it('stays on /settings (noop)', () => {
+		expect(resolveAuthGuard(input({
+			isAuthenticated: false,
+			pathname: '/settings',
+		}))).toEqual({ kind: 'noop' });
+	});
+
+	it('stays on /members (noop)', () => {
+		expect(resolveAuthGuard(input({
+			isAuthenticated: false,
+			pathname: '/members',
+		}))).toEqual({ kind: 'noop' });
+	});
+
 	it('redirects from deep app path', () => {
 		expect(resolveAuthGuard(input({
 			isAuthenticated: false,

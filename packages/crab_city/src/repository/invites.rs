@@ -16,6 +16,7 @@ pub struct StoredInvite {
     pub chain_blob: Vec<u8>,
     pub created_at: String,
     pub revoked_at: Option<String>,
+    pub label: Option<String>,
 }
 
 impl StoredInvite {
@@ -46,11 +47,12 @@ impl ConversationRepository {
         max_uses: i64,
         expires_at: Option<&str>,
         chain_blob: &[u8],
+        label: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO invites (nonce, issuer, capability, max_uses, expires_at, chain_blob)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO invites (nonce, issuer, capability, max_uses, expires_at, chain_blob, label)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(nonce)
@@ -59,6 +61,7 @@ impl ConversationRepository {
         .bind(max_uses)
         .bind(expires_at)
         .bind(chain_blob)
+        .bind(label)
         .execute(&self.pool)
         .await
         .context("Failed to store invite")?;
@@ -69,7 +72,7 @@ impl ConversationRepository {
         let row = sqlx::query(
             r#"
             SELECT nonce, issuer, capability, max_uses, use_count,
-                   expires_at, chain_blob, created_at, revoked_at
+                   expires_at, chain_blob, created_at, revoked_at, label
             FROM invites WHERE nonce = ?
             "#,
         )
@@ -104,9 +107,24 @@ impl ConversationRepository {
         let rows = sqlx::query(
             r#"
             SELECT nonce, issuer, capability, max_uses, use_count,
-                   expires_at, chain_blob, created_at, revoked_at
+                   expires_at, chain_blob, created_at, revoked_at, label
             FROM invites
             WHERE revoked_at IS NULL
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(row_to_invite).collect())
+    }
+
+    pub async fn list_all_invites(&self) -> Result<Vec<StoredInvite>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT nonce, issuer, capability, max_uses, use_count,
+                   expires_at, chain_blob, created_at, revoked_at, label
+            FROM invites
             ORDER BY created_at DESC
             "#,
         )
@@ -128,6 +146,7 @@ fn row_to_invite(r: sqlx::sqlite::SqliteRow) -> StoredInvite {
         chain_blob: r.get("chain_blob"),
         created_at: r.get("created_at"),
         revoked_at: r.get("revoked_at"),
+        label: r.get("label"),
     }
 }
 
@@ -143,7 +162,7 @@ mod tests {
         let issuer = vec![0u8; 32];
         let nonce = vec![0xaa; 16];
 
-        repo.store_invite(&nonce, &issuer, "collaborate", 5, None, b"chain-data")
+        repo.store_invite(&nonce, &issuer, "collaborate", 5, None, b"chain-data", None)
             .await
             .unwrap();
 
@@ -168,7 +187,7 @@ mod tests {
         let issuer = vec![0u8; 32];
         let nonce = vec![0xcc; 16];
 
-        repo.store_invite(&nonce, &issuer, "view", 2, None, b"blob")
+        repo.store_invite(&nonce, &issuer, "view", 2, None, b"blob", None)
             .await
             .unwrap();
 
@@ -189,7 +208,7 @@ mod tests {
         let issuer = vec![0u8; 32];
         let nonce = vec![0xdd; 16];
 
-        repo.store_invite(&nonce, &issuer, "admin", 0, None, b"blob")
+        repo.store_invite(&nonce, &issuer, "admin", 0, None, b"blob", None)
             .await
             .unwrap();
         assert!(repo.get_invite(&nonce).await.unwrap().unwrap().is_valid());
@@ -206,13 +225,21 @@ mod tests {
         let issuer = vec![0u8; 32];
 
         // Create two active and one revoked
-        repo.store_invite(&[1u8; 16], &issuer, "view", 0, None, b"a")
+        repo.store_invite(&[1u8; 16], &issuer, "view", 0, None, b"a", None)
             .await
             .unwrap();
-        repo.store_invite(&[2u8; 16], &issuer, "collaborate", 0, None, b"b")
-            .await
-            .unwrap();
-        repo.store_invite(&[3u8; 16], &issuer, "admin", 0, None, b"c")
+        repo.store_invite(
+            &[2u8; 16],
+            &issuer,
+            "collaborate",
+            0,
+            None,
+            b"b",
+            Some("for Bob"),
+        )
+        .await
+        .unwrap();
+        repo.store_invite(&[3u8; 16], &issuer, "admin", 0, None, b"c", None)
             .await
             .unwrap();
         repo.revoke_invite(&[3u8; 16]).await.unwrap();
@@ -228,7 +255,7 @@ mod tests {
         let nonce = vec![0xee; 16];
 
         // max_uses = 0 means unlimited
-        repo.store_invite(&nonce, &issuer, "view", 0, None, b"blob")
+        repo.store_invite(&nonce, &issuer, "view", 0, None, b"blob", None)
             .await
             .unwrap();
 

@@ -77,7 +77,7 @@ impl FromStr for Capability {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_ascii_lowercase().as_str() {
             "view" => Ok(Self::View),
             "collaborate" => Ok(Self::Collaborate),
             "admin" => Ok(Self::Admin),
@@ -304,6 +304,20 @@ mod tests {
             let back: Capability = s.parse().unwrap();
             assert_eq!(cap, back);
         }
+    }
+
+    #[test]
+    fn capability_fromstr_case_insensitive() {
+        // UI sends title-case, server must accept it
+        assert_eq!("View".parse::<Capability>().unwrap(), Capability::View);
+        assert_eq!(
+            "Collaborate".parse::<Capability>().unwrap(),
+            Capability::Collaborate
+        );
+        assert_eq!("Admin".parse::<Capability>().unwrap(), Capability::Admin);
+        assert_eq!("Owner".parse::<Capability>().unwrap(), Capability::Owner);
+        assert_eq!("VIEW".parse::<Capability>().unwrap(), Capability::View);
+        assert!("unknown".parse::<Capability>().is_err());
     }
 
     #[test]
