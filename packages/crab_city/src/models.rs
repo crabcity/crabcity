@@ -72,25 +72,8 @@ impl ConversationEntry {
                 toolpath_claude::MessageRole::System => Some("system".to_string()),
             };
 
-            let content = match &msg.content {
-                Some(toolpath_claude::MessageContent::Text(text)) => Some(text.clone()),
-                Some(toolpath_claude::MessageContent::Parts(parts)) => {
-                    // Extract text content from parts
-                    let texts: Vec<String> = parts
-                        .iter()
-                        .filter_map(|part| match part {
-                            toolpath_claude::ContentPart::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(texts.join("\n"))
-                    }
-                }
-                None => None,
-            };
+            let text = msg.text();
+            let content = if text.is_empty() { None } else { Some(text) };
 
             (role, content, msg.model.clone())
         } else {

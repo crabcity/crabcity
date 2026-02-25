@@ -81,6 +81,7 @@ pub async fn create_instance(
                         instance.working_dir.clone(),
                         created_at,
                         is_claude,
+                        Some(state.repository.clone()),
                     )
                     .await;
             }

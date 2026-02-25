@@ -244,7 +244,6 @@ pub async fn handle_multiplexed_ws(
                                 let session_rx = session_rx_clone.clone();
 
                                 let max_history = max_history_bytes;
-                                let repo_focus = repository_clone.clone();
                                 tokio::spawn(async move {
                                     handle_focus(
                                         instance_id,
@@ -255,7 +254,6 @@ pub async fn handle_multiplexed_ws(
                                         tx_focus,
                                         session_rx,
                                         max_history,
-                                        repo_focus,
                                     )
                                     .await;
                                 });

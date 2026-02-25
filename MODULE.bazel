@@ -357,6 +357,12 @@ crate_index.spec(
 crate_index.spec(
     features = ["watcher"],
     package = "toolpath-claude",
+    version = "0.2",
+)
+
+# Toolpath - provider-agnostic conversation types
+crate_index.spec(
+    package = "toolpath-convo",
     version = "0.1",
 )
 

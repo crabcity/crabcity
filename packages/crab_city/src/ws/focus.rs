@@ -5,15 +5,13 @@
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use toolpath_claude::ClaudeConvo;
 use tracing::{debug, error, info, warn};
 
 use crate::instance_manager::InstanceManager;
-use crate::repository::ConversationRepository;
 
-use super::conversation_watcher::run_conversation_watcher;
+use super::conversation_watcher::run_session_discovery;
 use super::protocol::ServerMessage;
-use super::state_manager::GlobalStateManager;
+use super::state_manager::{ConversationEvent, GlobalStateManager};
 
 /// Streaming UTF-8 decoder that buffers incomplete multi-byte sequences
 /// across chunk boundaries so that raw PTY reads never produce replacement
@@ -76,89 +74,65 @@ impl Utf8StreamDecoder {
     }
 }
 
-/// Send conversation entries since a given UUID (or full conversation if None)
+/// Send conversation entries since a given UUID (or full conversation if None).
+///
+/// Reads from the server-owned conversation store (maintained by the server watcher),
+/// not directly from the JSONL file. This ensures a single source of truth.
 pub async fn send_conversation_since(
     instance_id: &str,
     since_uuid: Option<&str>,
     state_manager: &Arc<GlobalStateManager>,
     tx: &mpsc::Sender<ServerMessage>,
-    repository: Option<&Arc<ConversationRepository>>,
+    _repository: Option<&Arc<crate::repository::ConversationRepository>>,
 ) -> Result<(), String> {
-    // Get instance working dir and session info from state manager
-    let handle = state_manager
-        .get_handle(instance_id)
-        .await
-        .ok_or_else(|| format!("Instance {} not found", instance_id))?;
+    let all_turns = state_manager.get_conversation_snapshot(instance_id).await;
 
-    let info = handle.get_info().await;
-    let working_dir = info.working_dir;
-    let session_id = handle
-        .get_session_id()
-        .await
-        .ok_or_else(|| "No session ID available".to_string())?;
-
-    let manager = ClaudeConvo::new();
-    let convo = manager
-        .read_conversation(&working_dir, &session_id)
-        .map_err(|e| format!("Failed to read conversation: {}", e))?;
-
-    // Filter entries based on since_uuid
-    let entries = if let Some(since) = since_uuid {
-        convo.entries_since(since)
-    } else {
-        convo.entries
-    };
-
-    let mut turns = Vec::with_capacity(entries.len());
-    for e in &entries {
-        turns.push(
-            crate::handlers::format_entry_with_attribution(
-                e,
-                instance_id,
-                repository,
-                Some(state_manager),
-            )
-            .await,
+    if all_turns.is_empty() {
+        debug!(
+            "[CONVO-SYNC {}] Server store empty, nothing to send",
+            instance_id
         );
+        return Ok(());
     }
 
-    if since_uuid.is_some() && !turns.is_empty() {
-        // Incremental update
-        info!(
-            "[CONVO-SYNC {}] Sending ConversationUpdate with {} turns (since {:?})",
-            instance_id,
-            turns.len(),
-            since_uuid
-        );
-        if tx
-            .send(ServerMessage::ConversationUpdate {
-                instance_id: instance_id.to_string(),
-                turns,
-            })
-            .await
-            .is_err()
-        {
-            warn!(instance = %instance_id, "Failed to send ConversationUpdate - channel closed");
+    if let Some(since) = since_uuid {
+        // Find the position of since_uuid in the stored turns and send everything after it.
+        let since_idx = all_turns
+            .iter()
+            .position(|t| t.get("uuid").and_then(|v| v.as_str()) == Some(since));
+
+        let new_turns: Vec<_> = match since_idx {
+            Some(idx) => all_turns.into_iter().skip(idx + 1).collect(),
+            None => all_turns, // UUID not found → send full sync
+        };
+
+        if !new_turns.is_empty() {
+            info!(
+                "[CONVO-SYNC {}] Sending ConversationUpdate with {} turns (since {:?})",
+                instance_id,
+                new_turns.len(),
+                since
+            );
+            let _ = tx
+                .send(ServerMessage::ConversationUpdate {
+                    instance_id: instance_id.to_string(),
+                    turns: new_turns,
+                })
+                .await;
         }
-    } else if since_uuid.is_none() {
-        // Full conversation
+    } else {
         info!(
             "[CONVO-SYNC {}] Sending ConversationFull with {} turns",
             instance_id,
-            turns.len()
+            all_turns.len()
         );
-        if tx
+        let _ = tx
             .send(ServerMessage::ConversationFull {
                 instance_id: instance_id.to_string(),
-                turns,
+                turns: all_turns,
             })
-            .await
-            .is_err()
-        {
-            warn!(instance = %instance_id, "Failed to send ConversationFull - channel closed");
-        }
+            .await;
     }
-    // If since_uuid is Some but turns is empty, nothing new to send
 
     Ok(())
 }
@@ -173,7 +147,6 @@ pub async fn handle_focus(
     tx: mpsc::Sender<ServerMessage>,
     session_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
     max_history_bytes: usize,
-    repository: Option<Arc<ConversationRepository>>,
 ) {
     debug!("Focusing on instance: {}", instance_id);
 
@@ -244,35 +217,69 @@ pub async fn handle_focus(
         }
     };
 
-    // Start conversation watcher if this is a Claude instance
-    let convo_task = if is_claude {
-        let tx_convo = tx.clone();
-        let cancel_convo = cancel.clone();
-        let state_mgr = state_manager.clone();
-        let instance_id_convo = instance_id.clone();
-        let session_rx = session_rx.clone();
+    // Conversation data: get snapshot from server-owned watcher, subscribe for updates.
+    // If the session hasn't been discovered yet and this is Claude, run session discovery
+    // (handles the ambiguous multi-session case by asking the user).
+    let discovery_task = if is_claude {
+        // Check if session already discovered
+        let has_session = handle.get_session_id().await.is_some();
 
-        let repo_clone = repository.clone();
-        Some(tokio::spawn(async move {
-            run_conversation_watcher(
-                instance_id_convo,
-                working_dir,
-                created_at,
-                cancel_convo,
-                state_mgr,
-                tx_convo,
-                session_rx,
-                repo_clone,
-            )
-            .await;
-        }))
+        if !has_session {
+            let tx_disc = tx.clone();
+            let cancel_disc = cancel.clone();
+            let state_mgr = state_manager.clone();
+            let instance_id_disc = instance_id.clone();
+            let session_rx = session_rx.clone();
+
+            Some(tokio::spawn(async move {
+                run_session_discovery(
+                    instance_id_disc,
+                    working_dir,
+                    created_at,
+                    cancel_disc,
+                    state_mgr,
+                    tx_disc,
+                    session_rx,
+                )
+                .await;
+            }))
+        } else {
+            None
+        }
     } else {
         None
     };
 
-    // Forward PTY output to client until cancelled
-    // Note: State tracking is handled by the background PTY reader in InstanceTracker,
-    // so we only need to forward output to the focused client here.
+    // Subscribe to conversation broadcast BEFORE reading the snapshot.
+    // This prevents a race where the server watcher broadcasts between
+    // our snapshot read and subscription, causing us to miss the data.
+    let mut convo_rx = state_manager.subscribe_conversation(&instance_id).await;
+
+    // Send current conversation snapshot from server store.
+    if is_claude {
+        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+        if !turns.is_empty() {
+            info!(
+                "[FOCUS {}] Sending ConversationFull with {} turns from server store",
+                instance_id,
+                turns.len()
+            );
+            let _ = tx
+                .send(ServerMessage::ConversationFull {
+                    instance_id: instance_id.clone(),
+                    turns,
+                })
+                .await;
+        } else {
+            debug!(
+                "[FOCUS {}] Server store empty, will receive via broadcast when ready",
+                instance_id
+            );
+        }
+    }
+
+    // Forward PTY output and conversation updates to client until cancelled.
+    // State tracking is handled by the background PTY reader in InstanceTracker.
     let tx_output = tx.clone();
     let instance_id_output = instance_id.clone();
     let mut decoder = Utf8StreamDecoder::new();
@@ -288,7 +295,6 @@ pub async fn handle_focus(
                     Ok(event) => {
                         let data = decoder.decode(&event.data);
                         if !data.is_empty() {
-                            // Send to client only - state tracking is done by background task
                             if tx_output.send(ServerMessage::Output {
                                 instance_id: instance_id_output.clone(),
                                 data,
@@ -298,11 +304,8 @@ pub async fn handle_focus(
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        // Stale incomplete bytes in the decoder would poison
-                        // the next chunk — the continuation was in a dropped event.
                         decoder.clear();
                         warn!(instance = %instance_id_output, "PTY output lagged by {} messages", n);
-                        // Notify client about the lag so UI can indicate data loss
                         if tx_output.send(ServerMessage::OutputLagged {
                             instance_id: instance_id_output.clone(),
                             dropped_count: n,
@@ -317,11 +320,61 @@ pub async fn handle_focus(
                     }
                 }
             }
+            // Forward conversation events from server-owned watcher
+            event = async {
+                if let Some(ref mut rx) = convo_rx {
+                    rx.recv().await
+                } else {
+                    // No conversation subscription — park forever
+                    std::future::pending().await
+                }
+            } => {
+                match event {
+                    Ok(ConversationEvent::Full { instance_id: ref iid, turns }) if iid == &instance_id => {
+                        info!(
+                            "[FOCUS {}] Forwarding ConversationFull ({} turns)",
+                            instance_id, turns.len()
+                        );
+                        if tx.send(ServerMessage::ConversationFull {
+                            instance_id: instance_id.clone(),
+                            turns,
+                        }).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ConversationEvent::Update { instance_id: ref iid, turns }) if iid == &instance_id => {
+                        if tx.send(ServerMessage::ConversationUpdate {
+                            instance_id: instance_id.clone(),
+                            turns,
+                        }).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {
+                        // Event for a different instance — ignore
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(instance = %instance_id, "Conversation broadcast lagged by {} messages, sending full sync", n);
+                        // Re-sync from server store
+                        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+                        if !turns.is_empty() {
+                            let _ = tx.send(ServerMessage::ConversationFull {
+                                instance_id: instance_id.clone(),
+                                turns,
+                            }).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("Conversation broadcast channel closed for instance {}", instance_id);
+                        convo_rx = None; // Stop polling closed channel
+                    }
+                }
+            }
         }
     }
 
-    // Clean up conversation task
-    if let Some(task) = convo_task {
+    // Clean up session discovery task
+    if let Some(task) = discovery_task {
         task.abort();
     }
 }

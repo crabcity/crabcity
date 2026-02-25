@@ -90,32 +90,11 @@ impl PersistenceService {
                             // Extract title from first user message
                             if first_user_message {
                                 if let Some(msg) = &entry.message {
-                                    if matches!(msg.role, toolpath_claude::MessageRole::User) {
+                                    if msg.is_user() {
                                         first_user_message = false;
-                                        if let Some(content) = &msg.content {
-                                            let title = match content {
-                                                toolpath_claude::MessageContent::Text(text) => {
-                                                    text.chars().take(100).collect::<String>()
-                                                }
-                                                toolpath_claude::MessageContent::Parts(parts) => {
-                                                    parts
-                                                        .iter()
-                                                        .find_map(|p| {
-                                                            match p {
-                                                        toolpath_claude::ContentPart::Text {
-                                                            text,
-                                                        } => Some(text),
-                                                        _ => None,
-                                                    }
-                                                        })
-                                                        .map(|t| {
-                                                            t.chars().take(100).collect::<String>()
-                                                        })
-                                                        .unwrap_or_else(|| {
-                                                            "Conversation".to_string()
-                                                        })
-                                                }
-                                            };
+                                        let text = entry.text();
+                                        if !text.is_empty() {
+                                            let title: String = text.chars().take(100).collect();
 
                                             if let Err(e) = service
                                                 .repository

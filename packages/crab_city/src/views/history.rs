@@ -68,60 +68,12 @@ pub async fn history_page(
                 let title = match claude_convo
                     .read_conversation(&project_path.to_string_lossy(), session_id)
                 {
-                    Ok(conv) => {
-                        // Find first user message for title
-                        conv.entries
-                            .iter()
-                            .find_map(|e| {
-                                e.message.as_ref().and_then(|msg| {
-                                    if matches!(msg.role, toolpath_claude::MessageRole::User) {
-                                        msg.content.as_ref().map(|content| {
-                                            let text = match content {
-                                                toolpath_claude::MessageContent::Text(t) => {
-                                                    t.clone()
-                                                }
-                                                toolpath_claude::MessageContent::Parts(parts) => {
-                                                    parts
-                                                        .iter()
-                                                        .filter_map(|p| {
-                                                            match p {
-                                                        toolpath_claude::ContentPart::Text {
-                                                            text,
-                                                        } => Some(text.clone()),
-                                                        _ => None,
-                                                    }
-                                                        })
-                                                        .collect::<Vec<_>>()
-                                                        .join(" ")
-                                                }
-                                            };
-                                            // Clean up and truncate for title
-                                            let clean_text = text
-                                                .lines()
-                                                .next()
-                                                .unwrap_or(&text)
-                                                .trim()
-                                                .chars()
-                                                .take(80)
-                                                .collect::<String>();
-                                            if clean_text.len() >= 80 {
-                                                format!("{}...", clean_text)
-                                            } else {
-                                                clean_text
-                                            }
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                            .or_else(|| {
-                                Some(format!(
-                                    "Session {}",
-                                    &session_id[..8.min(session_id.len())]
-                                ))
-                            })
-                    }
+                    Ok(conv) => conv.title(80).or_else(|| {
+                        Some(format!(
+                            "Session {}",
+                            &session_id[..8.min(session_id.len())]
+                        ))
+                    }),
                     Err(_) => Some(format!(
                         "Session {}",
                         &session_id[..8.min(session_id.len())]

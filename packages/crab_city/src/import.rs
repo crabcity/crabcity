@@ -320,24 +320,15 @@ impl ConversationImporter {
     /// Extract a title from a conversation entry (first user message text, truncated to 100 chars)
     fn extract_title(entry: &toolpath_claude::ConversationEntry) -> Option<String> {
         let msg = entry.message.as_ref()?;
-        if !matches!(msg.role, toolpath_claude::MessageRole::User) {
+        if !msg.is_user() {
             return None;
         }
-        let content = msg.content.as_ref()?;
-        let title = match content {
-            toolpath_claude::MessageContent::Text(text) => {
-                text.chars().take(100).collect::<String>()
-            }
-            toolpath_claude::MessageContent::Parts(parts) => parts
-                .iter()
-                .find_map(|p| match p {
-                    toolpath_claude::ContentPart::Text { text } => Some(text),
-                    _ => None,
-                })
-                .map(|t| t.chars().take(100).collect::<String>())
-                .unwrap_or_else(|| "Imported Conversation".to_string()),
-        };
-        Some(title)
+        let text = entry.text();
+        if text.is_empty() {
+            return None;
+        }
+        let truncated: String = text.chars().take(100).collect();
+        Some(truncated)
     }
 }
 
@@ -535,7 +526,10 @@ mod tests {
         );
 
         let title = ConversationImporter::extract_title(&entry);
-        assert_eq!(title, Some("Imported Conversation".to_string()));
+        assert!(
+            title.is_none(),
+            "ToolUse-only entry should not produce a title"
+        );
     }
 
     #[test]

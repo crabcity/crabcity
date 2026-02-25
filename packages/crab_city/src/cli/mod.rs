@@ -242,7 +242,10 @@ async fn session_loop_inner(
                 }
                 PickerResult::Settings => {
                     if let Some(term) = terminal {
-                        settings::run_settings(term, &daemon)?;
+                        // run_settings uses reqwest::blocking which creates its own
+                        // tokio runtime. block_in_place lets it run without panicking
+                        // from inside our existing runtime.
+                        tokio::task::block_in_place(|| settings::run_settings(term, &daemon))?;
                     }
                     continue;
                 }

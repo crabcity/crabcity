@@ -16,4 +16,4 @@ mod state_manager;
 pub(crate) use focus::Utf8StreamDecoder;
 pub use handler::handle_multiplexed_ws;
 pub use protocol::{ServerMessage, WsUser};
-pub use state_manager::{GlobalStateManager, create_state_broadcast};
+pub use state_manager::{ConversationEvent, GlobalStateManager, create_state_broadcast};
