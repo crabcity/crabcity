@@ -4,7 +4,7 @@ use axum::{
 };
 use maud::{DOCTYPE, PreEscaped, html};
 use std::path::PathBuf;
-use toolpath_claude::{ClaudeConvo, ContentPart, MessageContent, MessageRole};
+use toolpath_claude::{ClaudeConvo, MessageRole};
 use tracing::error;
 
 use super::CSS;
@@ -38,29 +38,7 @@ pub async fn conversation_detail_page(
 
     // Extract title from first user message
     let title = conversation
-        .entries
-        .iter()
-        .find_map(|e| {
-            e.message.as_ref().and_then(|msg| {
-                if matches!(msg.role, MessageRole::User) {
-                    msg.content.as_ref().map(|content| match content {
-                        MessageContent::Text(text) => text.chars().take(100).collect::<String>(),
-                        MessageContent::Parts(parts) => parts
-                            .iter()
-                            .find_map(|p| match p {
-                                ContentPart::Text { text } => Some(text),
-                                _ => None,
-                            })
-                            .map(|t| t.chars().take(100).collect::<String>())
-                            .unwrap_or_else(|| {
-                                format!("Session {}", &session_id[..8.min(session_id.len())])
-                            }),
-                    })
-                } else {
-                    None
-                }
-            })
-        })
+        .title(100)
         .unwrap_or_else(|| format!("Session {}", &session_id[..8.min(session_id.len())]));
 
     let markup = html! {
@@ -226,25 +204,10 @@ pub async fn conversation_detail_page(
                                             }
                                         }
                                     }
-                                    @if let Some(content) = &msg.content {
-                                        div class="whitespace-pre-wrap" {
-                                            @match content {
-                                                MessageContent::Text(text) => {
-                                                    (text)
-                                                }
-                                                MessageContent::Parts(parts) => {
-                                                    @for part in parts {
-                                                        @match part {
-                                                            ContentPart::Text { text } => {
-                                                                (text)
-                                                            }
-                                                            _ => {
-                                                                div class="text-gray-400 italic" { "[Non-text content]" }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                    div class="whitespace-pre-wrap" {
+                                        @let text = entry.text();
+                                        @if !text.is_empty() {
+                                            (text)
                                         }
                                     }
 

@@ -3,16 +3,13 @@ use chrono::{DateTime, Utc};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use toolpath_claude::{ClaudeConvo, ConversationWatcher};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, warn};
 
-use crate::inference::{
-    ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
-};
+use crate::inference::ClaudeState;
 use crate::instance_actor::InstanceHandle;
 use crate::virtual_terminal::ClientType;
-use crate::ws::GlobalStateManager;
+use crate::ws::{ConversationEvent, GlobalStateManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -65,23 +62,6 @@ pub struct ConversationConfig {
     pub is_claude: bool,
     /// When the instance was created - used to narrow down candidate sessions
     pub instance_created_at: DateTime<Utc>,
-}
-
-/// Find candidate sessions that could belong to this instance.
-/// Returns sessions that started after the instance was created.
-fn find_candidate_sessions(
-    working_dir: &str,
-    created_at: DateTime<Utc>,
-) -> Vec<toolpath_claude::ConversationMetadata> {
-    let manager = ClaudeConvo::new();
-
-    match manager.list_conversation_metadata(working_dir) {
-        Ok(metadata) => metadata
-            .into_iter()
-            .filter(|m| m.started_at.map(|s| s >= created_at).unwrap_or(false))
-            .collect(),
-        Err(_) => vec![],
-    }
 }
 
 #[cfg(test)]
@@ -241,7 +221,7 @@ pub async fn handle_proxy(
     instance_id: String,
     handle: InstanceHandle,
     convo_config: Option<ConversationConfig>,
-    _global_state_manager: Option<Arc<GlobalStateManager>>,
+    global_state_manager: Option<Arc<GlobalStateManager>>,
 ) {
     debug!(
         "WebSocket connection established for instance {}",
@@ -256,46 +236,33 @@ pub async fn handle_proxy(
     // Create a channel for sending messages to the WebSocket
     let (tx, mut rx) = mpsc::channel::<WsMessage>(100);
 
-    // Channel for session selection (when ambiguous)
-    let (session_select_tx, mut session_select_rx) = mpsc::channel::<String>(1);
-
     let is_claude = convo_config.as_ref().map(|c| c.is_claude).unwrap_or(false);
 
-    // Unified state manager: one channel for all state signals
-    let (signal_tx, signal_rx) = mpsc::channel::<StateSignal>(100);
-    let (state_tx, mut state_rx) = mpsc::channel::<StateUpdate>(100);
+    // Subscribe to global state broadcast for state changes
+    // (the server-owned conversation watcher feeds the global state manager)
+    let mut state_rx: Option<broadcast::Receiver<(String, ClaudeState, bool)>> =
+        global_state_manager.as_ref().map(|gsm| gsm.subscribe());
 
-    // Spawn the unified state manager (handles tick internally)
-    let state_manager_handle = if is_claude {
-        Some(spawn_state_manager(
-            signal_rx,
-            state_tx,
-            StateManagerConfig::default(),
-        ))
+    // Subscribe to conversation broadcast from the server-owned watcher
+    let mut convo_rx: Option<broadcast::Receiver<ConversationEvent>> = if is_claude {
+        if let Some(ref gsm) = global_state_manager {
+            gsm.subscribe_conversation(&instance_id).await
+        } else {
+            None
+        }
     } else {
         None
     };
 
-    // Task to forward state changes to WebSocket
-    let tx_state = tx.clone();
-    let state_forward_task = async move {
-        while let Some(update) = state_rx.recv().await {
-            debug!(
-                "Forwarding state change to WebSocket: {:?} (stale={})",
-                update.state, update.terminal_stale
-            );
-            if tx_state
-                .send(WsMessage::StateChange {
-                    state: update.state,
-                    stale: update.terminal_stale,
-                })
-                .await
-                .is_err()
-            {
-                break;
+    // Send current conversation snapshot from server store
+    if is_claude {
+        if let Some(ref gsm) = global_state_manager {
+            let turns = gsm.get_conversation_snapshot(&instance_id).await;
+            if !turns.is_empty() {
+                let _ = tx.send(WsMessage::ConversationFull { turns }).await;
             }
         }
-    };
+    }
 
     // Subscribe to PTY output
     let mut output_rx = match handle.subscribe_output().await {
@@ -306,9 +273,8 @@ pub async fn handle_proxy(
         }
     };
 
-    // Task to forward PTY output to WebSocket (and signal state manager)
+    // Task to forward PTY output to WebSocket
     let tx_output = tx.clone();
-    let signal_tx_output = signal_tx.clone();
     let output_task = async move {
         let mut decoder = crate::ws::Utf8StreamDecoder::new();
         loop {
@@ -318,18 +284,6 @@ pub async fn handle_proxy(
                     if data.is_empty() {
                         continue;
                     }
-
-                    // Send signal to state manager (for tool detection)
-                    if is_claude {
-                        if signal_tx_output
-                            .send(StateSignal::TerminalOutput { data: data.clone() })
-                            .await
-                            .is_err()
-                        {
-                            warn!("Failed to send terminal output signal - state manager closed");
-                        }
-                    }
-
                     if tx_output.send(WsMessage::Output { data }).await.is_err() {
                         break;
                     }
@@ -342,224 +296,68 @@ pub async fn handle_proxy(
         }
     };
 
-    // Task to watch conversation and send updates (and signal state manager)
-    let tx_convo = tx.clone();
-    let signal_tx_convo = signal_tx.clone();
-    let handle_for_convo = handle.clone();
-    let has_convo_config = convo_config.is_some();
-    let convo_task = async move {
-        let handle = handle_for_convo;
-        let Some(config) = convo_config else {
-            return;
-        };
-
-        if !config.is_claude {
-            return;
-        }
-
-        // Wait a bit for the session to be created
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-        let manager = ClaudeConvo::new();
-
-        // Try to find the session ID if not provided
-        let session_id = match config.session_id {
-            Some(sid) => {
-                debug!("Using cached session ID: {}", sid);
-                sid
-            }
-            None => {
-                debug!(
-                    "Looking for sessions in {} created after {}",
-                    config.working_dir, config.instance_created_at
-                );
-
-                loop {
-                    let candidates =
-                        find_candidate_sessions(&config.working_dir, config.instance_created_at);
-
-                    match candidates.len() {
-                        0 => {
-                            debug!("No candidate sessions found yet, waiting...");
-                        }
-                        1 => {
-                            let session = &candidates[0];
-                            debug!("Found unique session: {}", session.session_id);
-                            if let Err(e) = handle.set_session_id(session.session_id.clone()).await
-                            {
-                                warn!(session = %session.session_id, "Failed to set session ID: {}", e);
-                            }
-                            break session.session_id.clone();
-                        }
-                        n => {
-                            debug!("Found {} candidate sessions, asking user to select", n);
-
-                            let candidate_info: Vec<SessionCandidate> = candidates
-                                .iter()
-                                .map(|c| {
-                                    let preview = manager
-                                        .read_conversation(&config.working_dir, &c.session_id)
-                                        .ok()
-                                        .and_then(|convo| {
-                                            convo.user_messages().first().and_then(|entry| {
-                                                entry.message.as_ref().and_then(|msg| {
-                                                    match &msg.content {
-                                                        Some(
-                                                            toolpath_claude::MessageContent::Text(
-                                                                t,
-                                                            ),
-                                                        ) => Some(t.chars().take(100).collect()),
-                                                        Some(
-                                                            toolpath_claude::MessageContent::Parts(
-                                                                parts,
-                                                            ),
-                                                        ) => parts.iter().find_map(|p| {
-                                                            match p {
-                                                            toolpath_claude::ContentPart::Text {
-                                                                text,
-                                                            } => Some(
-                                                                text.chars().take(100).collect(),
-                                                            ),
-                                                            _ => None,
-                                                        }
-                                                        }),
-                                                        None => None,
-                                                    }
-                                                })
-                                            })
-                                        });
-
-                                    SessionCandidate {
-                                        session_id: c.session_id.clone(),
-                                        started_at: c.started_at.map(|s| s.to_rfc3339()),
-                                        message_count: c.message_count,
-                                        preview,
-                                    }
-                                })
-                                .collect();
-
-                            if tx_convo
-                                .send(WsMessage::SessionAmbiguous {
-                                    candidates: candidate_info,
-                                })
-                                .await
-                                .is_err()
-                            {
-                                warn!("Failed to send SessionAmbiguous - channel closed");
-                                return;
-                            }
-
-                            if let Some(selected) = session_select_rx.recv().await {
-                                debug!("User selected session: {}", selected);
-                                if let Err(e) = handle.set_session_id(selected.clone()).await {
-                                    warn!(session = %selected, "Failed to set session ID: {}", e);
-                                }
-                                break selected;
-                            }
-                        }
-                    }
-
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                }
-            }
-        };
-
-        debug!("Starting conversation watcher for session {}", session_id);
-
-        let mut watcher = ConversationWatcher::new(manager, config.working_dir, session_id);
-
-        // Send initial full conversation
-        if let Ok(entries) = watcher.poll() {
-            let turns: Vec<serde_json::Value> =
-                entries.iter().map(crate::handlers::format_entry).collect();
-            if tx_convo
-                .send(WsMessage::ConversationFull { turns })
-                .await
-                .is_err()
-            {
-                warn!("Failed to send ConversationFull - channel closed");
-                return;
-            }
-
-            // Signal initial state from last entry
-            if let Some(last) = entries.last() {
-                let subtype = last
-                    .extra
-                    .get("subtype")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                if signal_tx_convo
-                    .send(StateSignal::ConversationEntry {
-                        entry_type: last.entry_type.clone(),
-                        subtype,
-                        stop_reason: last.message.as_ref().and_then(|m| m.stop_reason.clone()),
-                    })
-                    .await
-                    .is_err()
-                {
-                    warn!("Failed to send initial state signal - channel closed");
-                }
-            }
-        }
-
-        // Poll for updates every 500ms
+    // Task to forward state changes and conversation events to WebSocket
+    let tx_events = tx.clone();
+    let instance_id_events = instance_id.clone();
+    let gsm_for_events = global_state_manager.clone();
+    let events_task = async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-            match watcher.poll() {
-                Ok(new_entries) if !new_entries.is_empty() => {
-                    debug!("Conversation watcher got {} new entries", new_entries.len());
-                    // Signal state manager for each entry
-                    for entry in &new_entries {
-                        // Extract subtype from extra fields (for system entries like turn_duration)
-                        let subtype = entry
-                            .extra
-                            .get("subtype")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-
-                        debug!(
-                            "Sending ConversationEntry signal: type={}, subtype={:?}, stop_reason={:?}",
-                            entry.entry_type,
-                            subtype,
-                            entry.message.as_ref().and_then(|m| m.stop_reason.clone())
-                        );
-                        if signal_tx_convo
-                            .send(StateSignal::ConversationEntry {
-                                entry_type: entry.entry_type.clone(),
-                                subtype,
-                                stop_reason: entry
-                                    .message
-                                    .as_ref()
-                                    .and_then(|m| m.stop_reason.clone()),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            warn!(
-                                "Failed to send conversation entry signal - state manager closed"
-                            );
-                        }
+            tokio::select! {
+                // Forward state changes from global broadcast
+                state_event = async {
+                    if let Some(ref mut rx) = state_rx {
+                        rx.recv().await
+                    } else {
+                        std::future::pending().await
                     }
-
-                    let turns: Vec<serde_json::Value> = new_entries
-                        .iter()
-                        .map(crate::handlers::format_entry)
-                        .collect();
-                    if !turns.is_empty() {
-                        if tx_convo
-                            .send(WsMessage::ConversationUpdate { turns })
-                            .await
-                            .is_err()
-                        {
-                            break;
+                } => {
+                    match state_event {
+                        Ok((ref iid, ref state, stale)) if iid == &instance_id_events => {
+                            debug!("Forwarding state change to TUI WebSocket: {:?} (stale={})", state, stale);
+                            if tx_events.send(WsMessage::StateChange {
+                                state: state.clone(),
+                                stale,
+                            }).await.is_err() {
+                                break;
+                            }
                         }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        _ => {} // Different instance
                     }
                 }
-                Err(e) => {
-                    debug!("Conversation poll error: {}", e);
+                // Forward conversation events from server-owned watcher
+                convo_event = async {
+                    if let Some(ref mut rx) = convo_rx {
+                        rx.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    match convo_event {
+                        Ok(ConversationEvent::Full { instance_id: ref iid, turns }) if iid == &instance_id_events => {
+                            if tx_events.send(WsMessage::ConversationFull { turns }).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(ConversationEvent::Update { instance_id: ref iid, turns }) if iid == &instance_id_events => {
+                            if tx_events.send(WsMessage::ConversationUpdate { turns }).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Re-sync from server store
+                            if let Some(ref gsm) = gsm_for_events {
+                                let turns = gsm.get_conversation_snapshot(&instance_id_events).await;
+                                if !turns.is_empty() {
+                                    let _ = tx_events.send(WsMessage::ConversationFull { turns }).await;
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        _ => {} // Different instance
+                    }
                 }
-                _ => {}
             }
         }
     };
@@ -580,9 +378,8 @@ pub async fn handle_proxy(
         }
     };
 
-    // Task to forward WebSocket input to PTY (and signal state manager)
+    // Task to forward WebSocket input to PTY
     let handle_clone = handle.clone();
-    let signal_tx_input = signal_tx.clone();
     let connection_id_input = connection_id.clone();
     let input_task = async move {
         while let Some(msg) = ws_receiver.next().await {
@@ -592,19 +389,6 @@ pub async fn handle_proxy(
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Input { data } => {
-                                // Signal state manager
-                                if is_claude {
-                                    if signal_tx_input
-                                        .send(StateSignal::TerminalInput { data: data.clone() })
-                                        .await
-                                        .is_err()
-                                    {
-                                        warn!(
-                                            "Failed to send terminal input signal - state manager closed"
-                                        );
-                                    }
-                                }
-
                                 if let Err(e) = handle_clone.write_input(&data).await {
                                     error!("Failed to write to PTY: {}", e);
                                 }
@@ -620,12 +404,6 @@ pub async fn handle_proxy(
                                     .await
                                 {
                                     error!("Failed to resize PTY: {}", e);
-                                }
-                            }
-                            WsMessage::SessionSelect { session_id } => {
-                                debug!("User selected session: {}", session_id);
-                                if session_select_tx.send(session_id.clone()).await.is_err() {
-                                    warn!(session = %session_id, "Failed to send session selection - receiver dropped");
                                 }
                             }
                             _ => {}
@@ -646,21 +424,11 @@ pub async fn handle_proxy(
     };
 
     // Run all tasks concurrently
-    if has_convo_config {
-        tokio::select! {
-            _ = output_task => debug!("Output task ended"),
-            _ = convo_task => debug!("Conversation task ended"),
-            _ = sender_task => debug!("Sender task ended"),
-            _ = input_task => debug!("Input task ended"),
-            _ = state_forward_task => debug!("State forward task ended"),
-        }
-    } else {
-        tokio::select! {
-            _ = output_task => debug!("Output task ended"),
-            _ = sender_task => debug!("Sender task ended"),
-            _ = input_task => debug!("Input task ended"),
-        }
-        let _ = convo_task.await;
+    tokio::select! {
+        _ = output_task => debug!("Output task ended"),
+        _ = events_task => debug!("Events task ended"),
+        _ = sender_task => debug!("Sender task ended"),
+        _ = input_task => debug!("Input task ended"),
     }
 
     // Clean up VirtualTerminal viewport on disconnect
@@ -669,11 +437,6 @@ pub async fn handle_proxy(
             "Failed to resize PTY for {} on CLI disconnect: {}",
             instance_id, e
         );
-    }
-
-    // Clean up state manager
-    if let Some(handle) = state_manager_handle {
-        handle.abort();
     }
 
     debug!("WebSocket proxy closed for instance {}", instance_id);

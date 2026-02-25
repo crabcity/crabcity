@@ -14,8 +14,9 @@ use crate::inference::{
 };
 use crate::instance_actor::InstanceHandle;
 use crate::models::{attribution_content_matches, normalize_attribution_content};
+use crate::repository::ConversationRepository;
 
-use super::conversation_watcher::run_background_conversation_watcher;
+use super::conversation_watcher::run_server_conversation_watcher;
 use super::protocol::{PresenceUser, ServerMessage, WsUser};
 
 /// Entry in the presence map: one per WebSocket connection.
@@ -58,6 +59,24 @@ pub type StateBroadcast = broadcast::Sender<(String, ClaudeState, bool)>;
 /// Broadcast channel for instance lifecycle events (created/stopped)
 pub type LifecycleBroadcast = broadcast::Sender<ServerMessage>;
 
+/// Conversation event broadcast from server-owned watcher to consumers.
+#[derive(Debug, Clone)]
+pub enum ConversationEvent {
+    /// Full conversation snapshot (sent after initial load).
+    Full {
+        instance_id: String,
+        turns: Vec<serde_json::Value>,
+    },
+    /// Incremental update (new turns appended).
+    Update {
+        instance_id: String,
+        turns: Vec<serde_json::Value>,
+    },
+}
+
+/// Per-instance conversation broadcast channel.
+pub type ConversationBroadcast = broadcast::Sender<ConversationEvent>;
+
 /// Create a new state broadcast channel
 pub fn create_state_broadcast() -> StateBroadcast {
     let (tx, _) = broadcast::channel(256);
@@ -75,6 +94,10 @@ pub(crate) struct InstanceTracker {
     signal_tx: Option<mpsc::Sender<StateSignal>>,
     /// Cancellation token to stop background tasks when instance is unregistered
     cancel: CancellationToken,
+    /// Formatted conversation turns maintained by the server-owned watcher.
+    conversation_turns: Arc<RwLock<Vec<serde_json::Value>>>,
+    /// Broadcast channel for conversation events (Full/Update).
+    conversation_tx: ConversationBroadcast,
 }
 
 impl InstanceTracker {
@@ -85,6 +108,7 @@ impl InstanceTracker {
         created_at: DateTime<Utc>,
         is_claude: bool,
     ) -> Self {
+        let (conversation_tx, _) = broadcast::channel(64);
         Self {
             instance_id,
             handle,
@@ -93,6 +117,8 @@ impl InstanceTracker {
             is_claude,
             signal_tx: None,
             cancel: CancellationToken::new(),
+            conversation_turns: Arc::new(RwLock::new(Vec::new())),
+            conversation_tx,
         }
     }
 
@@ -101,6 +127,7 @@ impl InstanceTracker {
         &mut self,
         broadcast_tx: StateBroadcast,
         global_state_manager: Arc<GlobalStateManager>,
+        repository: Option<Arc<ConversationRepository>>,
     ) {
         if !self.is_claude {
             return;
@@ -185,23 +212,29 @@ impl InstanceTracker {
             }
         });
 
-        // Spawn background conversation watcher to feed state manager with ConversationEntry signals
-        // This is the CRITICAL piece - state transitions out of Responding depend on conversation entries
+        // Spawn the server-owned conversation watcher.
+        // This is the single watcher per instance: does session discovery, maintains
+        // formatted conversation data, broadcasts updates, and feeds state signals.
         let signal_tx_convo = signal_tx.clone();
         let instance_id_convo = self.instance_id.clone();
         let working_dir_convo = self.working_dir.clone();
         let created_at_convo = self.created_at;
         let cancel_convo = self.cancel.clone();
         let state_manager_convo = global_state_manager.clone();
+        let convo_turns = self.conversation_turns.clone();
+        let convo_tx = self.conversation_tx.clone();
 
         tokio::spawn(async move {
-            run_background_conversation_watcher(
+            run_server_conversation_watcher(
                 instance_id_convo,
                 working_dir_convo,
                 created_at_convo,
                 cancel_convo,
                 signal_tx_convo,
                 state_manager_convo,
+                convo_turns,
+                convo_tx,
+                repository,
             )
             .await;
         });
@@ -540,6 +573,7 @@ impl GlobalStateManager {
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
+        repository: Option<Arc<ConversationRepository>>,
     ) {
         let mut tracker = InstanceTracker::new(
             instance_id.clone(),
@@ -548,7 +582,7 @@ impl GlobalStateManager {
             created_at,
             is_claude,
         );
-        tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self));
+        tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
 
         self.trackers.write().await.insert(instance_id, tracker);
     }
@@ -624,6 +658,32 @@ impl GlobalStateManager {
     /// Broadcast an instance lifecycle event to all connected WebSocket clients
     pub fn broadcast_lifecycle(&self, msg: ServerMessage) {
         let _ = self.lifecycle_tx.send(msg);
+    }
+
+    // =========================================================================
+    // Conversation data (server-owned watcher)
+    // =========================================================================
+
+    /// Get a snapshot of the current formatted conversation turns for an instance.
+    pub async fn get_conversation_snapshot(&self, instance_id: &str) -> Vec<serde_json::Value> {
+        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
+            tracker.conversation_turns.read().await.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Subscribe to conversation events (Full/Update) for an instance.
+    /// Returns None if the instance doesn't exist.
+    pub async fn subscribe_conversation(
+        &self,
+        instance_id: &str,
+    ) -> Option<broadcast::Receiver<ConversationEvent>> {
+        self.trackers
+            .read()
+            .await
+            .get(instance_id)
+            .map(|t| t.conversation_tx.subscribe())
     }
 
     // =========================================================================

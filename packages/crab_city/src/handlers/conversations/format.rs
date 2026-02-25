@@ -1,4 +1,4 @@
-use toolpath_claude::{ContentPart, MessageContent, MessageRole};
+use toolpath_claude::MessageRole;
 use tracing::warn;
 
 use std::sync::Arc;
@@ -37,52 +37,14 @@ pub fn format_entry(entry: &toolpath_claude::ConversationEntry) -> serde_json::V
     if let Some(msg) = &entry.message {
         match msg.role {
             MessageRole::User | MessageRole::Assistant => {
-                let content_text = match &msg.content {
-                    Some(MessageContent::Text(text)) => text.clone(),
-                    Some(MessageContent::Parts(parts)) => parts
-                        .iter()
-                        .filter_map(|part| match part {
-                            ContentPart::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    None => String::new(),
-                };
-
+                let content_text = msg.text();
                 let normalized = normalize_whitespace(&content_text);
 
                 // Extract thinking content (extended thinking blocks from Claude)
-                let thinking_text: Option<String> =
-                    if let Some(MessageContent::Parts(parts)) = &msg.content {
-                        let thinking_parts: Vec<String> = parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                ContentPart::Thinking { thinking, .. } => Some(thinking.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        if thinking_parts.is_empty() {
-                            None
-                        } else {
-                            Some(thinking_parts.join("\n\n"))
-                        }
-                    } else {
-                        None
-                    };
+                let thinking_text: Option<String> = msg.thinking().map(|parts| parts.join("\n\n"));
 
                 let tool_names: Vec<String> =
-                    if let Some(MessageContent::Parts(parts)) = &msg.content {
-                        parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                ContentPart::ToolUse { name, .. } => Some(name.clone()),
-                                _ => None,
-                            })
-                            .collect()
-                    } else {
-                        vec![]
-                    };
+                    msg.tool_uses().iter().map(|t| t.name.to_string()).collect();
 
                 let mut json = serde_json::json!({
                     "uuid": entry.uuid,
@@ -101,18 +63,7 @@ pub fn format_entry(entry: &toolpath_claude::ConversationEntry) -> serde_json::V
                 return json;
             }
             MessageRole::System => {
-                let content_text = match &msg.content {
-                    Some(MessageContent::Text(text)) => text.clone(),
-                    Some(MessageContent::Parts(parts)) => parts
-                        .iter()
-                        .filter_map(|part| match part {
-                            ContentPart::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    None => String::new(),
-                };
+                let content_text = msg.text();
 
                 let empty_tools: Vec<String> = vec![];
                 return serde_json::json!({
@@ -311,23 +262,19 @@ pub async fn format_entry_with_attribution(
 ) -> serde_json::Value {
     let mut json = format_entry(entry);
 
-    let is_user = entry
-        .message
-        .as_ref()
-        .is_some_and(|m| m.role == MessageRole::User);
+    let is_user = entry.message.as_ref().is_some_and(|m| m.is_user());
 
     if !is_user {
         return json;
     }
 
-    let content_text = entry.message.as_ref().and_then(|msg| match &msg.content {
-        Some(MessageContent::Text(text)) => Some(text.as_str()),
-        Some(MessageContent::Parts(parts)) => parts.iter().find_map(|p| match p {
-            ContentPart::Text { text } => Some(text.as_str()),
-            _ => None,
-        }),
-        None => None,
-    });
+    let entry_text = entry.text();
+    let content_text = if entry_text.is_empty() {
+        None
+    } else {
+        Some(entry_text)
+    };
+    let content_text = content_text.as_deref();
 
     // 1. Try in-process content-matched attribution (fast path, no DB)
     if let (Some(content), Some(sm)) = (content_text, state_manager) {
@@ -499,7 +446,7 @@ mod tests {
         );
         let result = format_entry(&entry);
 
-        assert_eq!(result["content"], "first second");
+        assert_eq!(result["content"], "first\nsecond");
         assert_eq!(result["tools"], json!([]));
     }
 
@@ -949,6 +896,284 @@ mod tests {
         // tool_result content > 100 chars gets truncated to 100 + "..."
         assert!(content.contains("..."));
         assert!(content.starts_with("[result: "));
+    }
+}
+
+/// Tests that parse entries from JSONL (the same format Claude writes to disk)
+/// and verify that `format_entry` produces structured, non-Unknown output.
+///
+/// These bridge the gap between the existing unit tests (which construct
+/// entries manually) and the real production pipeline (which deserializes
+/// entries from JSONL files via `toolpath_claude`).
+#[cfg(test)]
+mod jsonl_integration_tests {
+    use super::*;
+
+    /// Helper: parse a JSONL line into a ConversationEntry, exactly as the
+    /// reader crate does.
+    fn parse_entry(json: &str) -> toolpath_claude::ConversationEntry {
+        serde_json::from_str(json).expect("JSONL entry should deserialize")
+    }
+
+    // ── User message with string content (real Claude format) ────────
+
+    #[test]
+    fn jsonl_user_string_content_produces_structured_entry() {
+        let entry = parse_entry(
+            r#"{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/project","sessionId":"sess-1","version":"2.1.37","type":"user","message":{"role":"user","content":"Fix the bug"},"uuid":"u1","timestamp":"2024-06-01T12:00:00Z"}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(
+            result["role"], "User",
+            "User entry should have role User, not Unknown"
+        );
+        assert_eq!(result["content"], "Fix the bug");
+        assert_eq!(result["uuid"], "u1");
+    }
+
+    // ── User message with array content ──────────────────────────────
+
+    #[test]
+    fn jsonl_user_parts_content_produces_structured_entry() {
+        let entry = parse_entry(
+            r#"{"type":"user","uuid":"u2","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":[{"type":"text","text":"Hello world"}]}}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(result["role"], "User");
+        assert_eq!(result["content"], "Hello world");
+    }
+
+    // ── Assistant with array content (text parts) ────────────────────
+
+    #[test]
+    fn jsonl_assistant_parts_content_produces_structured_entry() {
+        let entry = parse_entry(
+            r#"{"type":"assistant","uuid":"a1","timestamp":"2024-06-01T12:00:01Z","message":{"model":"claude-opus-4-6","id":"msg_01abc","type":"message","role":"assistant","content":[{"type":"text","text":"Here is the fix"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":100,"output_tokens":50}}}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(
+            result["role"], "Assistant",
+            "Assistant entry should have role Assistant, not Unknown"
+        );
+        assert_eq!(result["content"], "Here is the fix");
+    }
+
+    // ── Assistant with thinking block ────────────────────────────────
+
+    #[test]
+    fn jsonl_assistant_thinking_is_extracted() {
+        let entry = parse_entry(
+            r#"{"type":"assistant","uuid":"a2","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me analyze this...","signature":"sig123"},{"type":"text","text":"I found the issue"}]}}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(result["role"], "Assistant");
+        assert_eq!(result["content"], "I found the issue");
+        assert_eq!(
+            result["thinking"], "Let me analyze this...",
+            "Thinking block should be extracted from JSONL-parsed entry"
+        );
+    }
+
+    // ── Assistant with tool_use ──────────────────────────────────────
+
+    #[test]
+    fn jsonl_assistant_tool_use_names_extracted() {
+        let entry = parse_entry(
+            r#"{"type":"assistant","uuid":"a3","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Let me read that file"},{"type":"tool_use","id":"tu_1","name":"Read","input":{"path":"/foo.rs"}}]}}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(result["role"], "Assistant");
+        let tools: Vec<String> = serde_json::from_value(result["tools"].clone()).unwrap();
+        assert_eq!(tools, vec!["Read"]);
+    }
+
+    // ── stop_reason from real JSONL (snake_case) ─────────────────────
+    //
+    // Real Claude JSONL uses snake_case for message fields:
+    //   "stop_reason": "end_turn"
+    // But toolpath-claude 0.2 Message has #[serde(rename_all = "camelCase")]
+    // which expects "stopReason". This test documents the mismatch.
+
+    #[test]
+    fn jsonl_stop_reason_snake_case_is_lost() {
+        let entry = parse_entry(
+            r#"{"type":"assistant","uuid":"a4","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn","stop_sequence":null}}"#,
+        );
+
+        // The entry itself should parse fine
+        let msg = entry.message.as_ref().expect("message should be Some");
+        assert_eq!(msg.role, toolpath_claude::MessageRole::Assistant);
+
+        // BUG: stop_reason is always None because the JSONL uses snake_case
+        // but the Message struct expects camelCase ("stopReason").
+        // This means the inference engine never sees end_turn signals from
+        // the conversation watcher.
+        assert_eq!(
+            msg.stop_reason, None,
+            "stop_reason is None due to snake_case/camelCase mismatch — \
+             if this starts failing, the upstream bug was fixed!"
+        );
+    }
+
+    // ── Progress entry from real JSONL ───────────────────────────────
+
+    #[test]
+    fn jsonl_progress_hook_entry_produces_progress_format() {
+        let entry = parse_entry(
+            r#"{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/project","sessionId":"sess-1","version":"2.1.37","type":"progress","data":{"type":"hook_progress","hookEvent":"SessionStart","hookName":"SessionStart:startup","command":"hook cmd"},"uuid":"p1","timestamp":"2024-06-01T12:00:00Z"}"#,
+        );
+
+        let result = format_entry(&entry);
+
+        assert_eq!(
+            result["role"], "Progress",
+            "Hook progress entry should produce role=Progress, not Unknown"
+        );
+        assert_eq!(result["content"], "SessionStart:startup");
+    }
+
+    // ── Entry without message field → Unknown ────────────────────────
+
+    #[test]
+    fn jsonl_entry_without_message_is_unknown() {
+        let entry =
+            parse_entry(r#"{"type":"user","uuid":"x1","timestamp":"2024-06-01T12:00:00Z"}"#);
+
+        assert!(
+            entry.message.is_none(),
+            "Entry without message field should have message=None"
+        );
+
+        let result = format_entry(&entry);
+        assert_eq!(result["role"], "Unknown");
+    }
+
+    // ── Full conversation: all entries produce structured output ──────
+
+    #[test]
+    fn jsonl_full_conversation_all_entries_structured() {
+        let lines = [
+            // User message (string content)
+            r#"{"type":"user","uuid":"u1","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"What is 2+2?"}}"#,
+            // Assistant with thinking + text
+            r#"{"type":"assistant","uuid":"a1","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Simple math"},{"type":"text","text":"2+2 = 4"}]}}"#,
+            // User follow-up (array content)
+            r#"{"type":"user","uuid":"u2","timestamp":"2024-06-01T12:00:02Z","message":{"role":"user","content":[{"type":"text","text":"And 3+3?"}]}}"#,
+            // Assistant with tool use
+            r#"{"type":"assistant","uuid":"a2","timestamp":"2024-06-01T12:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Let me calculate"},{"type":"tool_use","id":"tu1","name":"Calculator","input":{"expr":"3+3"}}]}}"#,
+        ];
+
+        for (i, line) in lines.iter().enumerate() {
+            let entry = parse_entry(line);
+            let result = format_entry(&entry);
+            let role = result["role"].as_str().unwrap();
+
+            assert_ne!(
+                role, "Unknown",
+                "Entry {i} should be structured (got Unknown): {line}"
+            );
+            assert!(
+                !result["content"].as_str().unwrap_or("").is_empty()
+                    || result.get("thinking").is_some(),
+                "Entry {i} should have content or thinking"
+            );
+        }
+    }
+
+    // ── Real-world assistant entry with full API fields ──────────────
+    // Tests that extra message fields (stop_reason, stop_sequence, usage)
+    // don't prevent deserialization even though they use wrong case.
+
+    #[test]
+    fn jsonl_assistant_with_full_api_fields_deserializes() {
+        let entry = parse_entry(
+            r#"{"parentUuid":"u1","isSidechain":false,"userType":"external","cwd":"/project","sessionId":"sess-1","version":"2.1.37","gitBranch":"main","type":"assistant","message":{"model":"claude-opus-4-6","id":"msg_abc","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":500,"output_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":200}},"uuid":"a5","timestamp":"2024-06-01T12:00:01Z","thinkingMetadata":{"maxBudgetTokens":10000}}"#,
+        );
+
+        let msg = entry.message.as_ref().expect("message should be present");
+        assert_eq!(msg.role, toolpath_claude::MessageRole::Assistant);
+        assert_eq!(msg.text(), "Hello");
+
+        // Verify entry-level extra fields are captured
+        assert!(
+            entry.extra.contains_key("thinkingMetadata"),
+            "Unknown entry fields should be captured in extra"
+        );
+
+        // Verify format_entry produces structured output
+        let result = format_entry(&entry);
+        assert_eq!(result["role"], "Assistant");
+        assert_eq!(result["content"], "Hello");
+    }
+
+    // ── entry.text() convenience method on parsed JSONL ──────────────
+
+    #[test]
+    fn jsonl_entry_text_convenience_works() {
+        // String content
+        let entry1 = parse_entry(
+            r#"{"type":"user","uuid":"u1","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"Hello"}}"#,
+        );
+        assert_eq!(entry1.text(), "Hello");
+
+        // Array content
+        let entry2 = parse_entry(
+            r#"{"type":"assistant","uuid":"a1","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]}}"#,
+        );
+        assert_eq!(entry2.text(), "First\nSecond");
+
+        // No message
+        let entry3 =
+            parse_entry(r#"{"type":"user","uuid":"x1","timestamp":"2024-06-01T12:00:00Z"}"#);
+        assert_eq!(entry3.text(), "");
+    }
+
+    // ── msg.is_user() on parsed JSONL ────────────────────────────────
+
+    #[test]
+    fn jsonl_is_user_convenience_works() {
+        let user = parse_entry(
+            r#"{"type":"user","uuid":"u1","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"Hi"}}"#,
+        );
+        let asst = parse_entry(
+            r#"{"type":"assistant","uuid":"a1","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":"Hello"}}"#,
+        );
+
+        assert!(user.message.as_ref().unwrap().is_user());
+        assert!(!asst.message.as_ref().unwrap().is_user());
+    }
+
+    // ── convo.title() on parsed JSONL ────────────────────────────────
+
+    #[test]
+    fn jsonl_conversation_title_works() {
+        let convo: toolpath_claude::Conversation = {
+            let mut c = toolpath_claude::Conversation::new("sess-1".to_string());
+            c.add_entry(parse_entry(
+                r#"{"type":"user","uuid":"u1","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"Fix the authentication bug in login.rs"}}"#,
+            ));
+            c.add_entry(parse_entry(
+                r#"{"type":"assistant","uuid":"a1","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":"Sure, let me look at that."}}"#,
+            ));
+            c
+        };
+
+        let title = convo.title(20);
+        assert_eq!(
+            title,
+            Some("Fix the authenticati...".to_string()),
+            "title() should return truncated first user message text"
+        );
     }
 }
 
