@@ -84,7 +84,7 @@ pub struct DbStats {
 }
 
 /// Current schema version - increment when adding migrations
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -1047,11 +1047,63 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         info!("v12: Added label column to invites table");
     }
 
+    // v13: Federation tables — federated accounts (host side) + remote crab cities (home side)
+    if current_version < 13 {
+        // Host-side: accounts on this server for identities from other servers
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS federated_accounts (
+                account_key BLOB NOT NULL PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                home_node_id BLOB,
+                home_name TEXT,
+                access TEXT NOT NULL DEFAULT '[]',
+                state TEXT NOT NULL DEFAULT 'active',
+                created_by BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_federated_state ON federated_accounts(state)")
+            .execute(&mut *conn)
+            .await?;
+
+        // Home-side: remote Crab Cities this instance can connect to
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS remote_crab_cities (
+                host_node_id BLOB NOT NULL,
+                account_key BLOB NOT NULL,
+                host_name TEXT NOT NULL,
+                granted_access TEXT NOT NULL DEFAULT '[]',
+                auto_connect INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (host_node_id, account_key)
+            )
+            "#,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_remote_auto ON remote_crab_cities(auto_connect)",
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        info!("v13: Created federation tables (federated_accounts, remote_crab_cities)");
+    }
+
     // Record the schema version
     if current_version < SCHEMA_VERSION {
         sqlx::query("INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)")
             .bind(SCHEMA_VERSION)
-            .bind("Add label column to invites")
+            .bind("Federation tables (federated_accounts, remote_crab_cities)")
             .execute(&mut *conn)
             .await?;
         info!("Schema upgraded to version {}", SCHEMA_VERSION);

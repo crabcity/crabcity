@@ -105,6 +105,10 @@ pub struct TransportFileConfig {
     /// When false, only the embedded relay is used (airgapped/private mode).
     #[serde(default = "default_use_public_relays")]
     pub use_public_relays: bool,
+    /// Human-readable name for this instance (shown in invites, federation).
+    /// Defaults to the system hostname.
+    #[serde(default = "default_instance_name")]
+    pub instance_name: String,
 }
 
 impl Default for TransportFileConfig {
@@ -113,6 +117,7 @@ impl Default for TransportFileConfig {
             enabled: false,
             relay_bind_port: default_relay_bind_port(),
             use_public_relays: default_use_public_relays(),
+            instance_name: default_instance_name(),
         }
     }
 }
@@ -125,6 +130,33 @@ fn default_use_public_relays() -> bool {
     true
 }
 
+pub fn default_instance_name() -> String {
+    std::env::var("CRAB_INSTANCE_NAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            #[cfg(unix)]
+            {
+                // gethostname via nix's re-exported libc
+                let mut buf = [0u8; 256];
+                let ret = unsafe {
+                    nix::libc::gethostname(buf.as_mut_ptr() as *mut nix::libc::c_char, buf.len())
+                };
+                if ret == 0 {
+                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    String::from_utf8(buf[..len].to_vec()).ok()
+                } else {
+                    None
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        })
+        .unwrap_or_else(|| "Crab City".to_string())
+}
+
 /// Resolved transport configuration (runtime view).
 #[derive(Clone, Debug)]
 pub struct TransportConfig {
@@ -133,6 +165,8 @@ pub struct TransportConfig {
     /// When true, use iroh's public relays (RelayMode::Default).
     /// When false, use only the embedded relay (RelayMode::Custom).
     pub use_public_relays: bool,
+    /// Human-readable instance name (shown in invites, federation).
+    pub instance_name: String,
 }
 
 impl TransportConfig {
@@ -141,6 +175,7 @@ impl TransportConfig {
             enabled: fc.enabled,
             relay_bind_addr: ([127, 0, 0, 1], fc.relay_bind_port).into(),
             use_public_relays: fc.use_public_relays,
+            instance_name: fc.instance_name.clone(),
         }
     }
 }

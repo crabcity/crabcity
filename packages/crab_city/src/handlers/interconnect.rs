@@ -1056,11 +1056,27 @@ pub async fn create_invite_handler(
                 .try_into()
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-            let token = ConnectionToken {
+            // Map capability string to v2 byte encoding
+            let cap_byte = match capability.as_str() {
+                "view" => 0u8,
+                "collaborate" => 1,
+                "admin" => 2,
+                "owner" => 3,
+                _ => 1, // default to collaborate
+            };
+
+            let inviter_fp = ConnectionToken::compute_fingerprint(identity.public_key.as_bytes());
+
+            let mut token = ConnectionToken {
                 node_id,
                 invite_nonce: nonce_arr,
                 relay_url: None,
+                instance_name: Some(state.instance_name.clone()),
+                inviter_fingerprint: Some(inviter_fp),
+                capability: Some(cap_byte),
+                signature: None,
             };
+            token.sign(identity.signing_key());
 
             Ok(Json(json!({
                 "token": token.to_base32(),
@@ -1069,6 +1085,7 @@ pub async fn create_invite_handler(
                 "max_uses": max_uses,
                 "expires_at": expires_at,
                 "label": label,
+                "instance_name": state.instance_name,
             })))
         }
         ServerMessage::Error { message, .. } => {
@@ -1138,6 +1155,44 @@ pub async fn revoke_invite_handler(
         ServerMessage::Error { message, .. } => Ok(Json(json!({ "error": message }))),
         _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+// =============================================================================
+// Federation connection management HTTP endpoints
+// =============================================================================
+
+/// GET /api/federation/connections — list all federation connections.
+pub async fn list_connections_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let conn_mgr = state
+        .connection_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let connections = conn_mgr.list_connections().await;
+    let result: Vec<serde_json::Value> = connections
+        .iter()
+        .map(|c| {
+            let state_str = match &c.state {
+                crate::interconnect::manager::ConnectionState::Connected => "connected",
+                crate::interconnect::manager::ConnectionState::Disconnected { .. } => {
+                    "disconnected"
+                }
+                crate::interconnect::manager::ConnectionState::Reconnecting { .. } => {
+                    "reconnecting"
+                }
+            };
+            json!({
+                "host_node_id": bytes_to_hex(&c.host_node_id),
+                "host_name": c.host_name,
+                "state": state_str,
+                "authenticated_users": c.authenticated_users,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(result)))
 }
 
 #[cfg(test)]

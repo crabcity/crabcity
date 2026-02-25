@@ -40,6 +40,107 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Format a capability byte as a human-readable string with access details.
+fn capability_display(cap: u8) -> &'static str {
+    match cap {
+        0 => "view",
+        1 => "collaborate",
+        2 => "admin",
+        3 => "owner",
+        _ => "unknown",
+    }
+}
+
+/// Format access rights for a capability level.
+fn capability_access_summary(cap: u8) -> &'static str {
+    match cap {
+        0 => "terminals: read",
+        1 => "terminals: read, input | chat: send | tasks: read, create",
+        2 => "terminals: read, input | chat: send | tasks: read, create | members: manage",
+        3 => "full access",
+        _ => "",
+    }
+}
+
+/// Format an 8-byte inviter fingerprint as crab_XXXXXXXX.
+fn format_fingerprint(fp: &[u8; 8]) -> String {
+    use crab_city_auth::encoding::crockford_encode;
+    let encoded = crockford_encode(fp);
+    format!("crab_{}", &encoded[..8.min(encoded.len())])
+}
+
+/// Show invite metadata and ask for confirmation. Returns false if user declines.
+fn confirm_join(token: &ConnectionToken, skip_confirm: bool) -> bool {
+    // Show metadata if available (v2 token)
+    if let Some(ref name) = token.instance_name {
+        eprintln!();
+        eprintln!("  {}", name);
+        if let Some(ref fp) = token.inviter_fingerprint {
+            eprintln!("  Invited by: {}", format_fingerprint(fp));
+        }
+        if let Some(cap) = token.capability {
+            eprintln!("  Access: {}", capability_display(cap));
+            let summary = capability_access_summary(cap);
+            if !summary.is_empty() {
+                eprintln!("    {}", summary);
+            }
+        }
+        eprintln!();
+    }
+
+    if skip_confirm {
+        return true;
+    }
+
+    eprint!("  Join this workspace? [Y/n] ");
+    let _ = std::io::stderr().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    let trimmed = input.trim().to_ascii_lowercase();
+    trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
+}
+
+/// Translate server error messages into user-friendly text with recovery actions.
+fn format_server_error(message: &str, instance_name: Option<&str>) -> String {
+    let name = instance_name.unwrap_or("the remote host");
+
+    if message.contains("expired") {
+        return format!("This invite has expired. Ask {} for a new one.", name);
+    }
+    if message.contains("exhausted") || message.contains("max_uses") {
+        return format!(
+            "This invite has been fully used. Ask {} for a new one.",
+            name
+        );
+    }
+    if message.contains("revoked") {
+        return format!("This invite was revoked. Contact {}.", name);
+    }
+    if message.contains("already have a grant") {
+        if let Some(n) = instance_name {
+            return format!(
+                "You already have access to {}. Switch with: crab switch '{}'",
+                n, n
+            );
+        }
+        return "You already have access. Use `crab switch` to connect.".to_string();
+    }
+    if message.contains("suspended") {
+        return format!(
+            "Your access to {} has been suspended. Contact the admin.",
+            name
+        );
+    }
+    if message.contains("not_a_member") || message.contains("no grant") {
+        return format!("No access to {}. You need an invite token to join.", name);
+    }
+
+    // Fall through: return original message
+    message.to_string()
+}
+
 /// Main entry point for `crab connect`.
 pub async fn connect_command(
     config: &CrabCityConfig,
@@ -48,12 +149,16 @@ pub async fn connect_command(
     invite_hex: Option<String>,
     relay: Option<String>,
     name: Option<String>,
+    skip_confirm: bool,
 ) -> Result<()> {
     // Parse connection info from token or flags
-    let (node_id, invite_nonce, relay_url) = if let Some(ref token_str) = token {
+    let (ct, node_id, invite_nonce, relay_url) = if let Some(ref token_str) = token {
         let ct = ConnectionToken::from_base32(token_str)
             .map_err(|e| anyhow::anyhow!("invalid token: {e}"))?;
-        (ct.node_id, ct.invite_nonce, ct.relay_url)
+        let node_id = ct.node_id;
+        let invite_nonce = ct.invite_nonce;
+        let relay_url = ct.relay_url.clone();
+        (Some(ct), node_id, invite_nonce, relay_url)
     } else {
         let node_hex = node_hex.ok_or_else(|| anyhow::anyhow!("provide a token or --node"))?;
         let invite_hex =
@@ -69,12 +174,22 @@ pub async fn connect_command(
             .try_into()
             .map_err(|_| anyhow::anyhow!("--invite must be 16 bytes (32 hex chars)"))?;
 
-        (node_id, invite_nonce, relay)
+        (None, node_id, invite_nonce, relay)
     };
+
+    // Show metadata and confirm before connecting
+    if let Some(ref ct) = ct {
+        if !confirm_join(ct, skip_confirm) {
+            eprintln!("Cancelled.");
+            return Ok(());
+        }
+    }
 
     // Load or generate local identity
     let identity = InstanceIdentity::load_or_generate(&config.data_dir)?;
     let display_name = name.unwrap_or_else(|| identity.public_key.fingerprint());
+
+    let instance_name = ct.as_ref().and_then(|t| t.instance_name.clone());
 
     eprintln!("Connecting as {}...", display_name);
 
@@ -124,17 +239,14 @@ pub async fn connect_command(
             fingerprint,
             ..
         } => {
-            eprintln!(
-                "Invite redeemed! Joined as {} ({})",
-                fingerprint, capability
-            );
+            eprintln!("Joined as {} ({})", fingerprint, capability);
         }
         ServerMessage::Error { message, .. } => {
-            // Might already have a grant (reconnecting)
             if message.contains("already have a grant") {
                 eprintln!("Already a member, reconnecting...");
             } else {
-                bail!("Invite redemption failed: {}", message);
+                let friendly = format_server_error(message, instance_name.as_deref());
+                bail!("{}", friendly);
             }
         }
         other => {
@@ -145,7 +257,6 @@ pub async fn connect_command(
     // Wait for server to close the connection (it sends "please reconnect")
     drop(send);
     drop(recv);
-    // The connection should be closed by the server after invite redemption
     // Brief wait for the close frame
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -172,7 +283,8 @@ pub async fn connect_command(
             connection_id
         }
         ServerMessage::Error { message, .. } => {
-            bail!("Server error: {}", message);
+            let friendly = format_server_error(&message, instance_name.as_deref());
+            bail!("{}", friendly);
         }
         other => {
             bail!("Expected ConnectionEstablished, got: {:?}", other);
@@ -197,6 +309,23 @@ pub async fn connect_command(
         return Ok(());
     }
 
+    // Print instance list
+    if let Some(ref name) = instance_name {
+        eprintln!("Connected to {}", name);
+    }
+    eprintln!("{} terminal(s) available:", instances.len());
+    for inst in &instances {
+        let name = inst.custom_name.as_deref().unwrap_or(&inst.name);
+        let status = if inst.running { "running" } else { "stopped" };
+        eprintln!(
+            "  {} {} ({})",
+            if inst.running { "►" } else { " " },
+            name,
+            status,
+        );
+    }
+    eprintln!();
+
     // Select instance
     let instance_id = if instances.len() == 1 {
         let inst = &instances[0];
@@ -208,7 +337,7 @@ pub async fn connect_command(
         );
         inst.id.clone()
     } else {
-        eprintln!("\nAvailable instances:");
+        eprintln!("Select instance:");
         for (i, inst) in instances.iter().enumerate() {
             let name = inst.custom_name.as_deref().unwrap_or(&inst.name);
             let status = if inst.running { "running" } else { "stopped" };
@@ -351,7 +480,8 @@ pub async fn connect_command(
                                 let _ = stdout.flush();
                             }
                             ServerMessage::Error { message, .. } => {
-                                eprintln!("\r\n[crab: error: {}]", message);
+                                let friendly = format_server_error(&message, instance_name.as_deref());
+                                eprintln!("\r\n[crab: error: {}]", friendly);
                             }
                             ServerMessage::InstanceStopped { instance_id: ref id } if *id == instance_id => {
                                 eprintln!("\r\n[crab: remote instance stopped]");

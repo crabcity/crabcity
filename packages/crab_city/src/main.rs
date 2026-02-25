@@ -30,6 +30,7 @@ mod import;
 mod inference;
 mod instance_actor;
 mod instance_manager;
+mod interconnect;
 mod metrics;
 mod models;
 mod notes;
@@ -205,8 +206,8 @@ struct InviteCreateArgs {
     /// Expiration in seconds (default: 1 hour)
     #[arg(short, long, default_value = "3600")]
     expires: u64,
-    /// Human-readable label
-    #[arg(short, long)]
+    /// Human-readable label (e.g. --for alice)
+    #[arg(short, long, alias = "for")]
     label: Option<String>,
 }
 
@@ -232,6 +233,9 @@ struct ConnectArgs {
     /// Display name
     #[arg(long)]
     name: Option<String>,
+    /// Skip confirmation prompt
+    #[arg(short, long)]
+    yes: bool,
 }
 
 #[derive(Clone)]
@@ -260,6 +264,10 @@ pub(crate) struct AppState {
     pub identity: Option<Arc<InstanceIdentity>>,
     /// The iroh node ID (ed25519 public key) when transport is active
     pub iroh_node_id: Option<[u8; 32]>,
+    /// Human-readable instance name (for invite tokens and federation)
+    pub instance_name: String,
+    /// Federation connection manager (outbound tunnels to remote Crab Cities)
+    pub connection_manager: Option<Arc<interconnect::manager::ConnectionManager>>,
     /// Send to trigger an HTTP server restart (config reload)
     pub restart_tx: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -319,6 +327,7 @@ async fn main() -> Result<()> {
                 args.invite,
                 args.relay,
                 args.name,
+                args.yes,
             )
             .await
         }
@@ -566,6 +575,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             global_state_manager.clone(),
             instance_manager.clone(),
             Some(Arc::new(ServerConfig::from_file(&fc_initial.server))),
+            fc_initial.transport.instance_name.clone(),
         )
         .await?;
 
@@ -574,6 +584,22 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             iroh.endpoint_addr()
         );
         Some((iroh, relay))
+    } else {
+        None
+    };
+
+    // Start federation ConnectionManager if iroh is active
+    let connection_manager = if let Some((ref iroh, _)) = iroh_transport {
+        let mgr = Arc::new(interconnect::manager::ConnectionManager::new(
+            iroh.endpoint().clone(),
+            identity.clone(),
+            fc_initial.transport.instance_name.clone(),
+            repository.as_ref().clone(),
+        ));
+        if let Err(e) = mgr.start().await {
+            warn!("Failed to start federation auto-connect: {}", e);
+        }
+        Some(mgr)
     } else {
         None
     };
@@ -648,6 +674,8 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             global_state_manager: global_state_manager.clone(),
             identity: Some(identity.clone()),
             iroh_node_id: iroh_transport.as_ref().map(|(iroh, _)| iroh.node_id()),
+            instance_name: fc_initial.transport.instance_name.clone(),
+            connection_manager: connection_manager.clone(),
             runtime_overrides: runtime_overrides.clone(),
             restart_tx: restart_tx.clone(),
         };
@@ -776,6 +804,11 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/invites/{nonce}",
                 delete(handlers::revoke_invite_handler),
             )
+            // Federation connection endpoints
+            .route(
+                "/api/federation/connections",
+                get(handlers::list_connections_handler),
+            )
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))
@@ -858,7 +891,13 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
 
     // === Cleanup ===
 
-    // Shut down iroh transport first (stops accepting new connections)
+    // Shut down federation connections first
+    if let Some(ref mgr) = connection_manager {
+        mgr.shutdown().await;
+        info!("federation connection manager shut down");
+    }
+
+    // Shut down iroh transport (stops accepting new connections)
     if let Some((iroh, relay)) = iroh_transport {
         iroh.shutdown().await;
         relay.shutdown().await;

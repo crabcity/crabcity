@@ -11,6 +11,7 @@ mod chat;
 mod conversations;
 mod entries;
 pub mod event_log;
+pub mod federation;
 pub mod invites;
 pub mod membership;
 mod search;

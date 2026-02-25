@@ -126,6 +126,43 @@ pub async fn read_message(stream: &mut RecvStream) -> Result<Option<IncomingMess
     }
 }
 
+/// Read a raw length-prefixed frame from a QUIC recv stream without parsing.
+///
+/// Returns the raw JSON bytes so the caller can inspect the tag field and
+/// decide which type to deserialize into.
+pub async fn read_raw_frame(stream: &mut RecvStream) -> Result<Option<Vec<u8>>> {
+    let mut len_buf = [0u8; 4];
+    match stream.read_exact(&mut len_buf).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_MESSAGE_SIZE {
+        bail!(
+            "message too large: {} bytes (max {})",
+            len,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    let mut buf = vec![0u8; len];
+    match stream.read_exact(&mut buf).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(_)) => return Ok(None),
+        Err(ReadExactError::ReadError(
+            ReadError::Reset(_) | ReadError::ConnectionLost(_) | ReadError::ClosedStream,
+        )) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+
+    Ok(Some(buf))
+}
+
 /// Write a `ClientMessage` to a QUIC send stream with length-prefixed framing.
 ///
 /// Client-side counterpart to `write_message`. Injects `v: 1` and optional

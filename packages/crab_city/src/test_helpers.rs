@@ -61,6 +61,8 @@ pub async fn test_app_state() -> (AppState, tempfile::TempDir) {
         global_state_manager,
         identity: None,
         iroh_node_id: None,
+        instance_name: "Test Instance".into(),
+        connection_manager: None,
         runtime_overrides: Arc::new(tokio::sync::RwLock::new(RuntimeOverrides::default())),
         restart_tx: Arc::new(restart_tx),
     };

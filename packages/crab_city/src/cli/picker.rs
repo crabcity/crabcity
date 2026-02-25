@@ -11,6 +11,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::InstanceInfo;
+use crate::interconnect::CrabCityContext;
 
 pub enum PickerResult {
     Attach(String),
@@ -22,6 +23,8 @@ pub enum PickerResult {
     Kill(String),
     KillServer,
     Settings,
+    /// Open the federation connection manager (list/connect/disconnect remotes).
+    Connect,
     Quit,
 }
 
@@ -51,9 +54,17 @@ pub fn run_picker(
     instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
     selected_id: Option<&str>,
+    viewing_context: &CrabCityContext,
 ) -> Result<PickerResult> {
     match terminal {
-        Some(term) => picker_loop(term, base_url, instances, events, selected_id),
+        Some(term) => picker_loop(
+            term,
+            base_url,
+            instances,
+            events,
+            selected_id,
+            viewing_context,
+        ),
         None => {
             // No TTY — fall back to most recent instance or new
             Ok(match instances.last() {
@@ -70,6 +81,7 @@ fn picker_loop(
     mut instances: Vec<InstanceInfo>,
     events: mpsc::Receiver<PickerEvent>,
     selected_id: Option<&str>,
+    viewing_context: &CrabCityContext,
 ) -> Result<PickerResult> {
     let initial = selected_id
         .and_then(|id| instances.iter().position(|i| i.id == id))
@@ -144,14 +156,21 @@ fn picker_loop(
                 Line::raw(" type to rename · enter confirm · esc cancel · backspace clear name ")
             } else {
                 Line::raw(
-                    " ↑↓ navigate · enter select · r rename · x kill · s settings · Q kill server · q/esc quit ",
+                    " ↑↓ navigate · enter select · r rename · x kill · c connect · s settings · Q kill server · q/esc quit ",
                 )
+            };
+
+            let title = match viewing_context {
+                CrabCityContext::Local => " crab: select session ".to_string(),
+                CrabCityContext::Remote { host_name, .. } => {
+                    format!(" crab: {} ", host_name)
+                }
             };
 
             let list = List::new(items)
                 .block(
                     Block::default()
-                        .title(" crab: select session ")
+                        .title(title)
                         .title(
                             Line::styled(
                                 format!(" {} ", base_url),
@@ -284,6 +303,9 @@ fn picker_loop(
                     if let Some(inst) = instances.get(i) {
                         return Ok(PickerResult::Kill(inst.id.clone()));
                     }
+                }
+                KeyCode::Char('c') => {
+                    return Ok(PickerResult::Connect);
                 }
                 KeyCode::Char('s') => {
                     return Ok(PickerResult::Settings);

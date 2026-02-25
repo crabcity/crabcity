@@ -144,6 +144,10 @@ struct TransportContext {
     /// their connection handler and are cleaned up by the periodic eviction sweep.
     replay_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<ReplayBuffer>>>>>,
     max_history_bytes: usize,
+    /// Human-readable instance name (for tunnel Welcome messages).
+    instance_name: String,
+    /// This endpoint's node_id (ed25519 pubkey bytes), used for tunnel auth.
+    node_id: [u8; 32],
 }
 
 /// The iroh-based P2P transport layer.
@@ -165,6 +169,7 @@ impl IrohTransport {
         state_manager: Arc<GlobalStateManager>,
         instance_manager: Arc<InstanceManager>,
         server_config: Option<Arc<ServerConfig>>,
+        instance_name: String,
     ) -> Result<Self> {
         let relay_mode = match relay_url {
             Some(ref url) => RelayMode::Custom(iroh::RelayMap::from(url.clone())),
@@ -208,6 +213,7 @@ impl IrohTransport {
         // Disconnect channel: handlers send (public_key, reason) to request disconnection
         let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<(PublicKey, String)>(32);
 
+        let node_id = *endpoint.id().as_bytes();
         let transport_ctx = Arc::new(TransportContext {
             rpc_ctx,
             disconnect_tx,
@@ -216,6 +222,8 @@ impl IrohTransport {
             connections: connections.clone(),
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
             max_history_bytes,
+            instance_name,
+            node_id,
         });
 
         // Spawn the accept loop
@@ -301,6 +309,11 @@ impl IrohTransport {
     /// The endpoint address that clients use to connect to this instance.
     pub fn endpoint_addr(&self) -> EndpointAddr {
         EndpointAddr::new(self.endpoint.id())
+    }
+
+    /// The underlying iroh endpoint (shared with ConnectionManager for federation).
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 
     /// The node ID (ed25519 public key) of this endpoint.
@@ -434,8 +447,8 @@ impl IrohTransport {
                             ctx.clone(),
                         ));
                     } else {
-                        // No grant — client must redeem an invite as first message
-                        tokio::spawn(Self::invite_handler(
+                        // No grant — could be invite redemption or federation tunnel
+                        tokio::spawn(Self::unauthenticated_handler(
                             conn,
                             public_key,
                             conn_id,
@@ -892,7 +905,161 @@ impl IrohTransport {
         let _ = tx.send(resp).await;
     }
 
+    /// Route an unauthenticated connection: peek at the first message to decide
+    /// between federation tunnel (TunnelClientMessage::Hello) and invite redemption.
+    async fn unauthenticated_handler(
+        conn: iroh::endpoint::Connection,
+        public_key: PublicKey,
+        connection_id: String,
+        cancel: CancellationToken,
+        transport: Arc<TransportContext>,
+    ) {
+        let peer = public_key.fingerprint();
+
+        let (mut send, mut recv) = match conn.accept_bi().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                error!(peer = %peer, "failed to accept bidi stream: {}", e);
+                transport.connections.lock().await.remove(&connection_id);
+                return;
+            }
+        };
+
+        // Read raw frame and check the tag
+        let raw = match framing::read_raw_frame(&mut recv).await {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                info!(peer = %peer, "unauthenticated client disconnected");
+                transport.connections.lock().await.remove(&connection_id);
+                return;
+            }
+            Err(e) => {
+                error!(peer = %peer, "failed to read first frame: {}", e);
+                transport.connections.lock().await.remove(&connection_id);
+                return;
+            }
+        };
+
+        // Check if this is a tunnel Hello
+        if let Ok(tunnel_msg) =
+            serde_json::from_slice::<crate::interconnect::protocol::TunnelClientMessage>(&raw)
+        {
+            if let crate::interconnect::protocol::TunnelClientMessage::Hello { instance_name } =
+                tunnel_msg
+            {
+                info!(
+                    peer = %peer,
+                    remote = %instance_name,
+                    "federation tunnel Hello received"
+                );
+                transport.connections.lock().await.remove(&connection_id);
+
+                let tunnel_ctx = Arc::new(crate::interconnect::host::TunnelContext {
+                    repo: transport.rpc_ctx.repo.clone(),
+                    rpc_ctx: transport.rpc_ctx.clone(),
+                    state_manager: transport.state_manager.clone(),
+                    instance_manager: transport.instance_manager.clone(),
+                    instance_name: transport.instance_name.clone(),
+                    max_history_bytes: transport.max_history_bytes,
+                    host_node_id: transport.node_id,
+                });
+
+                crate::interconnect::host::handle_tunnel(
+                    send,
+                    recv,
+                    instance_name,
+                    cancel,
+                    tunnel_ctx,
+                )
+                .await;
+                return;
+            }
+        }
+
+        // Not a tunnel message — try as invite redemption (ClientMessage wrapped in envelope)
+        let rpc_ctx = &transport.rpc_ctx;
+        let mut seq = 0u64;
+
+        // Parse the already-read raw bytes as a ClientMessage envelope
+        match serde_json::from_slice::<serde_json::Value>(&raw) {
+            Ok(mut obj) => {
+                let request_id = obj
+                    .get("request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Strip transport fields
+                if let serde_json::Value::Object(ref mut map) = obj {
+                    map.remove("v");
+                    map.remove("seq");
+                    map.remove("request_id");
+                }
+
+                match serde_json::from_value::<ClientMessage>(obj) {
+                    Ok(ClientMessage::RedeemInvite {
+                        token,
+                        display_name,
+                        ..
+                    }) => {
+                        let resp = interconnect::handle_redeem_invite(
+                            rpc_ctx,
+                            &public_key,
+                            &token,
+                            &display_name,
+                        )
+                        .await;
+                        let is_error = matches!(resp, ServerMessage::Error { .. });
+                        if let Err(e) = framing::write_message(
+                            &mut send,
+                            &resp,
+                            &mut seq,
+                            request_id.as_deref(),
+                        )
+                        .await
+                        {
+                            error!(peer = %peer, "failed to send redeem response: {}", e);
+                        }
+                        if let Err(e) = send.finish() {
+                            debug!(peer = %peer, "send.finish error (non-fatal): {}", e);
+                        }
+                        tokio::task::yield_now().await;
+                        if is_error {
+                            conn.close(3u32.into(), b"invite redemption failed");
+                        } else {
+                            conn.close(0u32.into(), b"invite redeemed, please reconnect");
+                        }
+                    }
+                    Ok(_) => {
+                        let err = ServerMessage::Error {
+                            instance_id: None,
+                            message: "expected RedeemInvite as first message".into(),
+                        };
+                        let _ = framing::write_message(
+                            &mut send,
+                            &err,
+                            &mut seq,
+                            request_id.as_deref(),
+                        )
+                        .await;
+                        conn.close(3u32.into(), b"expected RedeemInvite");
+                    }
+                    Err(e) => {
+                        error!(peer = %peer, "failed to parse first message: {}", e);
+                        conn.close(3u32.into(), b"invalid message");
+                    }
+                }
+            }
+            Err(e) => {
+                error!(peer = %peer, "malformed JSON in first frame: {}", e);
+                conn.close(3u32.into(), b"invalid JSON");
+            }
+        }
+
+        transport.connections.lock().await.remove(&connection_id);
+    }
+
     /// Handle an unauthenticated connection: expect invite redemption as first message.
+    #[allow(dead_code)]
     async fn invite_handler(
         conn: iroh::endpoint::Connection,
         public_key: PublicKey,

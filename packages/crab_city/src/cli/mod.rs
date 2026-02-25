@@ -1,5 +1,6 @@
 pub mod attach;
 pub mod connect;
+pub mod connect_panel;
 pub mod daemon;
 pub mod invite;
 pub mod picker;
@@ -13,6 +14,7 @@ use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
 
 use crate::config::CrabCityConfig;
+use crate::interconnect::CrabCityContext;
 use attach::AttachOutcome;
 use daemon::{DaemonError, DaemonInfo};
 use picker::{PickerEvent, PickerResult};
@@ -124,6 +126,7 @@ async fn session_loop_inner(
     }
 
     let mut last_attached: Option<String> = None;
+    let mut viewing_context = CrabCityContext::Local;
 
     loop {
         debug!("session_loop: fetching instances");
@@ -143,112 +146,134 @@ async fn session_loop_inner(
             Err(e) => return Err(e.into()),
         };
 
-        let (instance_id, outcome) =
-            match run_live_picker(terminal, &daemon, instances, last_attached.as_deref()).await? {
-                PickerResult::Attach(id) => {
-                    info!(instance_id = %id, "attaching to instance");
-                    // Restore terminal before attaching (attach uses raw terminal I/O directly)
-                    if terminal.is_some() {
-                        ratatui::restore();
-                    }
-                    let outcome = match attach::attach(&daemon, &id).await {
-                        Ok(o) => o,
-                        Err(DaemonError::Unavailable) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            if try_rediscover(config, &mut daemon).await {
-                                continue;
-                            }
-                            eprintln!("[crab: server stopped]");
-                            return Ok(());
+        let (instance_id, outcome) = match run_live_picker(
+            terminal,
+            &daemon,
+            instances,
+            last_attached.as_deref(),
+            &viewing_context,
+        )
+        .await?
+        {
+            PickerResult::Attach(id) => {
+                info!(instance_id = %id, "attaching to instance");
+                // Restore terminal before attaching (attach uses raw terminal I/O directly)
+                if terminal.is_some() {
+                    ratatui::restore();
+                }
+                let outcome = match attach::attach(&daemon, &id).await {
+                    Ok(o) => o,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
                         }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
+                // Re-init terminal for the next picker iteration
+                if terminal.is_some() {
+                    *terminal = Some(ratatui::init());
+                }
+                (id, outcome)
+            }
+            PickerResult::NewInstance => {
+                if terminal.is_some() {
+                    ratatui::restore();
+                }
+                let cwd = std::env::current_dir()
+                    .context("Failed to get current directory")?
+                    .to_string_lossy()
+                    .to_string();
+                let instance = match create_instance(&daemon, None, Some(&cwd)).await {
+                    Ok(inst) => inst,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
+                let outcome = match attach::attach(&daemon, &instance.id).await {
+                    Ok(o) => o,
+                    Err(DaemonError::Unavailable) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        if try_rediscover(config, &mut daemon).await {
+                            continue;
+                        }
+                        eprintln!("[crab: server stopped]");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if terminal.is_some() {
+                            *terminal = Some(ratatui::init());
+                        }
+                        return Err(e.into());
+                    }
+                };
+                if terminal.is_some() {
+                    *terminal = Some(ratatui::init());
+                }
+                (instance.id, outcome)
+            }
+            PickerResult::Rename { id, custom_name } => {
+                info!(instance_id = %id, name = ?custom_name, "renaming instance");
+                rename_instance(&daemon, &id, custom_name.as_deref()).await;
+                continue;
+            }
+            PickerResult::Kill(id) => {
+                info!(instance_id = %id, "killing instance");
+                delete_instance(&daemon, &id).await;
+                continue;
+            }
+            PickerResult::KillServer => {
+                daemon::stop_daemon(&daemon);
+                return Ok(());
+            }
+            PickerResult::Connect => {
+                if let Some(term) = terminal {
+                    match connect_panel::run_connect_panel(term, &daemon, &viewing_context) {
+                        Ok(connect_panel::ConnectPanelResult::SwitchContext(ctx)) => {
+                            info!(context = ?ctx, "switching viewing context");
+                            viewing_context = ctx;
+                        }
+                        Ok(connect_panel::ConnectPanelResult::Back) => {}
                         Err(e) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            return Err(e.into());
+                            warn!("connect panel error: {}", e);
                         }
-                    };
-                    // Re-init terminal for the next picker iteration
-                    if terminal.is_some() {
-                        *terminal = Some(ratatui::init());
                     }
-                    (id, outcome)
                 }
-                PickerResult::NewInstance => {
-                    if terminal.is_some() {
-                        ratatui::restore();
-                    }
-                    let cwd = std::env::current_dir()
-                        .context("Failed to get current directory")?
-                        .to_string_lossy()
-                        .to_string();
-                    let instance = match create_instance(&daemon, None, Some(&cwd)).await {
-                        Ok(inst) => inst,
-                        Err(DaemonError::Unavailable) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            if try_rediscover(config, &mut daemon).await {
-                                continue;
-                            }
-                            eprintln!("[crab: server stopped]");
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            return Err(e.into());
-                        }
-                    };
-                    let outcome = match attach::attach(&daemon, &instance.id).await {
-                        Ok(o) => o,
-                        Err(DaemonError::Unavailable) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            if try_rediscover(config, &mut daemon).await {
-                                continue;
-                            }
-                            eprintln!("[crab: server stopped]");
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            if terminal.is_some() {
-                                *terminal = Some(ratatui::init());
-                            }
-                            return Err(e.into());
-                        }
-                    };
-                    if terminal.is_some() {
-                        *terminal = Some(ratatui::init());
-                    }
-                    (instance.id, outcome)
+                continue;
+            }
+            PickerResult::Settings => {
+                if let Some(term) = terminal {
+                    settings::run_settings(term, &daemon)?;
                 }
-                PickerResult::Rename { id, custom_name } => {
-                    info!(instance_id = %id, name = ?custom_name, "renaming instance");
-                    rename_instance(&daemon, &id, custom_name.as_deref()).await;
-                    continue;
-                }
-                PickerResult::Kill(id) => {
-                    info!(instance_id = %id, "killing instance");
-                    delete_instance(&daemon, &id).await;
-                    continue;
-                }
-                PickerResult::KillServer => {
-                    daemon::stop_daemon(&daemon);
-                    return Ok(());
-                }
-                PickerResult::Settings => {
-                    if let Some(term) = terminal {
-                        settings::run_settings(term, &daemon)?;
-                    }
-                    continue;
-                }
-                PickerResult::Quit => return Ok(()),
-            };
+                continue;
+            }
+            PickerResult::Quit => return Ok(()),
+        };
 
         match outcome {
             AttachOutcome::Detached => {
@@ -270,6 +295,7 @@ async fn run_live_picker(
     daemon: &DaemonInfo,
     instances: Vec<InstanceInfo>,
     selected_id: Option<&str>,
+    viewing_context: &CrabCityContext,
 ) -> Result<PickerResult> {
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -304,7 +330,14 @@ async fn run_live_picker(
         });
     }
 
-    picker::run_picker(terminal, &daemon.base_url(), instances, rx, selected_id)
+    picker::run_picker(
+        terminal,
+        &daemon.base_url(),
+        instances,
+        rx,
+        selected_id,
+        viewing_context,
+    )
 }
 
 /// Subset of server messages we care about in the CLI picker.

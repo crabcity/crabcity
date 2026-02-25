@@ -38,10 +38,18 @@ pub async fn invite_create_command(
     let capability = json["capability"].as_str().unwrap_or("???");
     let max_uses = json["max_uses"].as_u64().unwrap_or(0);
     let expires_at = json["expires_at"].as_str();
+    let instance_name = json["instance_name"].as_str();
 
     eprintln!();
-    eprintln!("Invite created:");
-    eprintln!("  Capability: {}", capability);
+    if let Some(name) = instance_name {
+        eprintln!("  Invite for {}", name);
+    } else {
+        eprintln!("  Invite created");
+    }
+    if let Some(lbl) = label {
+        eprintln!("  Label:      {}", lbl);
+    }
+    eprintln!("  Access:     {}", capability);
     eprintln!(
         "  Max uses:   {}",
         if max_uses == 0 {
@@ -55,17 +63,22 @@ pub async fn invite_create_command(
     }
     eprintln!();
 
-    // Print the token
-    eprintln!("Token:");
+    // Print the token (stdout for piping)
     println!("{}", token);
+
+    // Try to copy to clipboard (best-effort, silent failure)
+    if try_copy_to_clipboard(token) {
+        eprintln!("  (copied to clipboard)");
+    }
+
     eprintln!();
 
     // Print QR code using Unicode half-blocks
     print_qr(token);
 
     eprintln!();
-    eprintln!("Connect with:");
-    eprintln!("  crab connect {}", token);
+    eprintln!("  Connect with:");
+    eprintln!("    crab connect {}", token);
 
     Ok(())
 }
@@ -166,4 +179,58 @@ fn print_qr(data: &str) {
         .module_dimensions(2, 1)
         .build();
     eprintln!("{}", image);
+}
+
+/// Best-effort clipboard copy. Returns true if successful.
+fn try_copy_to_clipboard(text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        if let Ok(mut child) = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            return child.wait().is_ok_and(|s| s.success());
+        }
+        false
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        // Try wl-copy (Wayland) first, then xclip (X11)
+        for cmd in &["wl-copy", "xclip"] {
+            let args: &[&str] = if *cmd == "xclip" {
+                &["-selection", "clipboard"]
+            } else {
+                &[]
+            };
+            if let Ok(mut child) = Command::new(cmd)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                if child.wait().is_ok_and(|s| s.success()) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = text;
+        false
+    }
 }
