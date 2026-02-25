@@ -105,6 +105,9 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
         Ok(conversation) => {
             let mut turns = Vec::with_capacity(conversation.entries.len());
             for entry in &conversation.entries {
+                if super::format::is_tool_result_only(entry) {
+                    continue;
+                }
                 turns.push(
                     format_entry_with_attribution(
                         entry,
@@ -217,6 +220,9 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
         Ok(new_entries) => {
             let mut turns = Vec::with_capacity(new_entries.len());
             for entry in &new_entries {
+                if super::format::is_tool_result_only(entry) {
+                    continue;
+                }
                 turns.push(
                     format_entry_with_attribution(
                         entry,

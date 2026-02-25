@@ -6,6 +6,14 @@ use std::sync::Arc;
 use crate::repository;
 use crate::ws;
 
+/// Returns true if this entry is a tool-result-only user message (phantom turn).
+/// These carry tool output back to Claude but contain no human-authored text.
+pub fn is_tool_result_only(entry: &toolpath_claude::ConversationEntry) -> bool {
+    entry.message.as_ref().is_some_and(|msg| {
+        msg.role == MessageRole::User && msg.text().is_empty() && !msg.tool_results().is_empty()
+    })
+}
+
 /// Format a conversation entry for the frontend.
 /// Returns a formatted JSON value for ALL entries - no filtering.
 /// Unknown or unrecognized entries are included with type "unknown".
@@ -897,6 +905,71 @@ mod tests {
         assert!(content.contains("..."));
         assert!(content.starts_with("[result: "));
     }
+
+    // ── Phantom tool-result-only entry detection ─────────────────
+
+    #[test]
+    fn is_tool_result_only_true_for_phantom_entry() {
+        let entry = make_entry(
+            "tr1",
+            "user",
+            Some(make_msg(
+                MessageRole::User,
+                Some(MessageContent::Parts(vec![ContentPart::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: toolpath_claude::ToolResultContent::Text("file contents".into()),
+                    is_error: false,
+                }])),
+            )),
+        );
+        assert!(
+            is_tool_result_only(&entry),
+            "User entry with only tool_result parts should be detected as phantom"
+        );
+    }
+
+    #[test]
+    fn is_tool_result_only_false_for_text_entry() {
+        let entry = make_entry(
+            "u1",
+            "user",
+            Some(make_msg(
+                MessageRole::User,
+                Some(MessageContent::Text("Hello".into())),
+            )),
+        );
+        assert!(
+            !is_tool_result_only(&entry),
+            "User entry with text should NOT be detected as phantom"
+        );
+    }
+
+    #[test]
+    fn is_tool_result_only_false_for_assistant() {
+        let entry = make_entry(
+            "a1",
+            "assistant",
+            Some(make_msg(
+                MessageRole::Assistant,
+                Some(MessageContent::Parts(vec![ContentPart::Text {
+                    text: "response".into(),
+                }])),
+            )),
+        );
+        assert!(
+            !is_tool_result_only(&entry),
+            "Assistant entry should NOT be detected as phantom"
+        );
+    }
+
+    #[test]
+    fn is_tool_result_only_false_for_no_message() {
+        let entry = make_entry("x1", "user", None);
+        assert!(
+            !is_tool_result_only(&entry),
+            "Entry with no message should NOT be detected as phantom"
+        );
+    }
 }
 
 /// Tests that parse entries from JSONL (the same format Claude writes to disk)
@@ -1001,27 +1074,22 @@ mod jsonl_integration_tests {
     //
     // Real Claude JSONL uses snake_case for message fields:
     //   "stop_reason": "end_turn"
-    // But toolpath-claude 0.2 Message has #[serde(rename_all = "camelCase")]
-    // which expects "stopReason". This test documents the mismatch.
+    // toolpath-claude 0.3 (via the serde(alias) fix in 0.2.1) now correctly
+    // deserializes snake_case stop_reason.
 
     #[test]
-    fn jsonl_stop_reason_snake_case_is_lost() {
+    fn jsonl_stop_reason_snake_case_deserializes() {
         let entry = parse_entry(
             r#"{"type":"assistant","uuid":"a4","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn","stop_sequence":null}}"#,
         );
 
-        // The entry itself should parse fine
         let msg = entry.message.as_ref().expect("message should be Some");
         assert_eq!(msg.role, toolpath_claude::MessageRole::Assistant);
 
-        // BUG: stop_reason is always None because the JSONL uses snake_case
-        // but the Message struct expects camelCase ("stopReason").
-        // This means the inference engine never sees end_turn signals from
-        // the conversation watcher.
         assert_eq!(
-            msg.stop_reason, None,
-            "stop_reason is None due to snake_case/camelCase mismatch — \
-             if this starts failing, the upstream bug was fixed!"
+            msg.stop_reason.as_deref(),
+            Some("end_turn"),
+            "stop_reason should deserialize correctly from snake_case JSONL"
         );
     }
 
@@ -1173,6 +1241,35 @@ mod jsonl_integration_tests {
             title,
             Some("Fix the authenticati...".to_string()),
             "title() should return truncated first user message text"
+        );
+    }
+
+    // ── Phantom tool-result-only entry from JSONL ────────────────────
+
+    #[test]
+    fn jsonl_tool_result_only_entry_detected_as_phantom() {
+        let entry = parse_entry(
+            r#"{"type":"user","uuid":"tr1","timestamp":"2024-06-01T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"file contents"}]}}"#,
+        );
+
+        assert!(
+            is_tool_result_only(&entry),
+            "JSONL user entry with only tool_result parts should be detected as phantom"
+        );
+
+        // Verify it has no human-readable text
+        assert!(entry.message.as_ref().unwrap().text().is_empty());
+    }
+
+    #[test]
+    fn jsonl_user_with_text_and_tool_result_is_not_phantom() {
+        let entry = parse_entry(
+            r#"{"type":"user","uuid":"u1","timestamp":"2024-06-01T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"ok"},{"type":"text","text":"Now do this"}]}}"#,
+        );
+
+        assert!(
+            !is_tool_result_only(&entry),
+            "User entry with both text and tool_result should NOT be phantom"
         );
     }
 }

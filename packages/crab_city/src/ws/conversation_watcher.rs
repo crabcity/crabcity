@@ -145,9 +145,12 @@ pub async fn run_server_conversation_watcher(
                 entries.len()
             );
 
-            // Format all entries
+            // Format entries (skip phantom tool-result-only entries)
             let mut turns = Vec::with_capacity(entries.len());
             for e in &entries {
+                if crate::handlers::is_tool_result_only(e) {
+                    continue;
+                }
                 turns.push(
                     crate::handlers::format_entry_with_attribution(
                         e,
@@ -209,9 +212,12 @@ pub async fn run_server_conversation_watcher(
                             }
                         }
 
-                        // Format new entries
+                        // Format new entries (skip phantom tool-result-only entries)
                         let mut turns = Vec::with_capacity(new_entries.len());
                         for e in &new_entries {
+                            if crate::handlers::is_tool_result_only(e) {
+                                continue;
+                            }
                             turns.push(
                                 crate::handlers::format_entry_with_attribution(
                                     e,
