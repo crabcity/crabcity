@@ -711,7 +711,7 @@ pub async fn create_instance(opts: SpawnOptions) -> Result<InstanceHandle> {
 impl InstanceHandle {
     /// Spawn a test actor backed by a VirtualTerminal only (no real PTY).
     /// Returns the handle and a reference to the VT for injecting output.
-    fn spawn_test(
+    pub(crate) fn spawn_test(
         rows: u16,
         cols: u16,
         max_delta_bytes: usize,
