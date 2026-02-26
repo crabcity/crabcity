@@ -64,10 +64,20 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 	for (let i = 0; i < filteredTurns.length; i++) {
 		const turn = filteredTurns[i];
 
-		// Progress entries: absorb silently inside a tool group,
+		// Progress entries: collect agent progress inside a tool group,
 		// otherwise aggregate as before
 		if (turn.role === 'Progress' || turn.role === 'AgentProgress') {
-			if (pendingToolCell) continue;
+			if (pendingToolCell) {
+				if (turn.role === 'AgentProgress' && turn.content) {
+					if (!pendingToolCell.agentLog) pendingToolCell.agentLog = [];
+					pendingToolCell.agentLog.push({
+						content: turn.content,
+						agentId: turn.agent_id,
+						role: turn.agent_msg_role
+					});
+				}
+				continue;
+			}
 
 			// Check if previous cell is also progress - if so, merge
 			const prevCell = cells[cells.length - 1];
@@ -126,6 +136,8 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 					id: `${cell.id}-tool-${toolIndex}`,
 					name: toolName,
 					input: turn.tool_details?.[toolIndex]?.input ?? {},
+					output: turn.tool_details?.[toolIndex]?.result,
+					is_error: turn.tool_details?.[toolIndex]?.is_error,
 					status: 'complete',
 					timestamp: turn.timestamp,
 					canRerun: isRerunnable(toolName)
