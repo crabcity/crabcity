@@ -155,6 +155,15 @@ pub async fn handle_tunnel(
                                     );
                                 }
                             }
+                            TunnelClientMessage::RequestInstances => {
+                                let instances = ctx.instance_manager.list().await;
+                                let _ = out_tx
+                                    .send(TunnelServerMessage::UserMessage {
+                                        account_key: None,
+                                        message: ServerMessage::InstanceList { instances },
+                                    })
+                                    .await;
+                            }
                         }
                     }
                     Ok(None) => {

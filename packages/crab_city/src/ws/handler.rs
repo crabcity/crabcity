@@ -176,6 +176,37 @@ pub async fn handle_multiplexed_ws(
         }
     };
 
+    // Subscribe to remote events from federation tunnels.
+    // When the user switches to a remote context, messages from the remote host
+    // (InstanceList, Output, StateChange, etc.) are forwarded to this client.
+    let remote_event_task = {
+        let tx_remote = tx.clone();
+        let viewing_ctx = ctx.viewing_context.clone();
+        let conn_mgr = ctx.connection_manager.clone();
+        async move {
+            let Some(mgr) = conn_mgr else { return };
+            let mut remote_rx = mgr.subscribe();
+            loop {
+                match remote_rx.recv().await {
+                    Ok((_host_name, message)) => {
+                        // Only forward if viewing a remote context
+                        let ctx = viewing_ctx.read().await;
+                        if matches!(&*ctx, crate::interconnect::CrabCityContext::Remote { .. }) {
+                            drop(ctx);
+                            if tx_remote.send(message).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("Remote event broadcast lagged by {} messages", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+
     // Task to send messages to WebSocket
     let sender_task = async move {
         while let Some(msg) = rx.recv().await {
@@ -238,6 +269,7 @@ pub async fn handle_multiplexed_ws(
     tokio::select! {
         _ = state_broadcast_task => debug!("State broadcast task ended"),
         _ = lifecycle_task => debug!("Lifecycle task ended"),
+        _ = remote_event_task => debug!("Remote event task ended"),
         _ = sender_task => debug!("Sender task ended"),
         _ = input_task => debug!("Input task ended"),
     }

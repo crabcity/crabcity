@@ -35,6 +35,85 @@ fn hex_to_bytes_32(hex: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Check if the message should be forwarded to a remote host via the tunnel.
+///
+/// When `viewing_context` is `Remote`, instance-interaction messages (Focus, Input,
+/// Resize, TerminalVisible, TerminalHidden) are forwarded through the ConnectionManager
+/// instead of being handled locally. Returns `Some(DispatchResult::Handled)` if
+/// forwarded, `None` if the message should be handled locally.
+async fn try_forward_to_remote(
+    ctx: &ConnectionContext,
+    msg: &ClientMessage,
+) -> Option<DispatchResult> {
+    // Only forward instance-interaction messages
+    let should_forward = matches!(
+        msg,
+        ClientMessage::Focus { .. }
+            | ClientMessage::Input { .. }
+            | ClientMessage::Resize { .. }
+            | ClientMessage::TerminalVisible { .. }
+            | ClientMessage::TerminalHidden { .. }
+    );
+    if !should_forward {
+        return None;
+    }
+
+    let context = ctx.viewing_context.read().await;
+    let (host_node_id, _host_name) = match &*context {
+        crate::interconnect::CrabCityContext::Local => return None,
+        crate::interconnect::CrabCityContext::Remote {
+            host_node_id,
+            host_name,
+        } => (*host_node_id, host_name.clone()),
+    };
+    drop(context);
+
+    let conn_mgr = match &ctx.connection_manager {
+        Some(mgr) => mgr,
+        None => {
+            let _ = ctx
+                .tx
+                .send(ServerMessage::Error {
+                    instance_id: None,
+                    message: "federation not available".into(),
+                })
+                .await;
+            return Some(DispatchResult::Handled);
+        }
+    };
+
+    // Use the user's ID as the account key for tunnel routing
+    let account_key = match &ctx.user {
+        Some(user) => user.user_id.clone(),
+        None => {
+            let _ = ctx
+                .tx
+                .send(ServerMessage::Error {
+                    instance_id: None,
+                    message: "authentication required for remote access".into(),
+                })
+                .await;
+            return Some(DispatchResult::Handled);
+        }
+    };
+
+    if let Err(e) = conn_mgr
+        .forward_message(&host_node_id, &account_key, msg.clone())
+        .await
+    {
+        warn!(error = %e, "failed to forward message to remote host");
+        let _ = ctx
+            .tx
+            .send(ServerMessage::Error {
+                instance_id: None,
+                message: format!("failed to forward to remote: {e}"),
+            })
+            .await;
+    }
+
+    Some(DispatchResult::Handled)
+}
+
 /// Check access rights, sending an error message if denied.
 /// Returns true if access is granted.
 ///
@@ -149,6 +228,13 @@ pub(crate) async fn dispatch_client_message(
     ctx: &ConnectionContext,
     msg: ClientMessage,
 ) -> DispatchResult {
+    // Check if we should forward this message to a remote host instead of handling locally.
+    // Messages that interact with instances (Focus, Input, Resize, TerminalVisible, TerminalHidden)
+    // are forwarded when the viewing context is Remote.
+    if let Some(forwarded) = try_forward_to_remote(ctx, &msg).await {
+        return forwarded;
+    }
+
     match msg {
         ClientMessage::Focus {
             instance_id,
@@ -678,6 +764,13 @@ pub(crate) async fn dispatch_client_message(
                                             context_name: name,
                                         })
                                         .await;
+
+                                    // Request the remote host's instance list.
+                                    // The response comes back through the event broadcast
+                                    // and is forwarded to this client by the remote_event_task.
+                                    if let Err(e) = mgr.request_instances(&node_id).await {
+                                        warn!(error = %e, "failed to request remote instances");
+                                    }
                                 } else {
                                     let _ = ctx
                                         .tx

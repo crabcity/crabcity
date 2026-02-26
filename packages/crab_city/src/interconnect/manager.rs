@@ -223,6 +223,23 @@ impl ConnectionManager {
         Ok(())
     }
 
+    /// Request the remote host's instance list. The response comes back via
+    /// the event broadcast as a `ServerMessage::InstanceList`.
+    pub async fn request_instances(&self, host_node_id: &[u8; 32]) -> Result<()> {
+        let tunnels = self.tunnels.lock().await;
+        let tunnel = tunnels
+            .get(host_node_id)
+            .ok_or_else(|| anyhow::anyhow!("no tunnel to this host"))?;
+
+        tunnel
+            .tx
+            .send(TunnelClientMessage::RequestInstances)
+            .await
+            .context("tunnel send channel closed")?;
+
+        Ok(())
+    }
+
     /// Graceful shutdown: cancel all tunnels.
     pub async fn shutdown(&self) {
         self.cancel.cancel();

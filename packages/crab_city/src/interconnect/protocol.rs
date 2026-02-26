@@ -37,6 +37,10 @@ pub enum TunnelClientMessage {
 
     /// User disconnected from the home instance (informational).
     UserDisconnected { account_key: String },
+
+    /// Request the host's current instance list (no per-user auth required).
+    /// Used when a user switches context to this host.
+    RequestInstances,
 }
 
 /// Messages sent from the host instance back to the connecting (home) instance.
