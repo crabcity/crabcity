@@ -5,10 +5,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use toolpath_claude::{ClaudeConvo, ConversationWatcher};
+use toolpath_claude::ClaudeConvo;
+use toolpath_convo::ConversationProvider;
 use tracing::{debug, info, warn};
 
-use super::format::format_entry_with_attribution;
+use super::format::{format_entry_with_attribution, format_turn_with_attribution};
 use crate::AppState;
 
 pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -101,16 +102,13 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
         detected_session.clone()
     };
 
-    match convo_manager.read_conversation(working_dir, &session_id) {
-        Ok(conversation) => {
-            let mut turns = Vec::with_capacity(conversation.entries.len());
-            for entry in &conversation.entries {
-                if super::format::is_tool_result_only(entry) {
-                    continue;
-                }
+    match ConversationProvider::load_conversation(&convo_manager, working_dir, &session_id) {
+        Ok(view) => {
+            let mut turns = Vec::with_capacity(view.turns.len());
+            for turn in &view.turns {
                 turns.push(
-                    format_entry_with_attribution(
-                        entry,
+                    format_turn_with_attribution(
+                        turn,
                         &id,
                         Some(&state.repository),
                         Some(&state.global_state_manager),
@@ -125,8 +123,11 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
                 turns.len()
             );
             Json(serde_json::json!({
-                "conversation_id": conversation.session_id,
-                "turns": turns
+                "conversation_id": view.id,
+                "turns": turns,
+                "files_changed": view.files_changed,
+                "total_usage": view.total_usage,
+                "provider_id": view.provider_id,
             }))
             .into_response()
         }
@@ -209,7 +210,7 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
     let mut watchers = state.conversation_watchers.lock().await;
     let watcher = watchers.entry(id.clone()).or_insert_with(|| {
-        ConversationWatcher::new(
+        toolpath_claude::ConversationWatcher::new(
             ClaudeConvo::new(),
             instance.working_dir.clone(),
             session_id.clone(),
@@ -223,15 +224,28 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
                 if super::format::is_tool_result_only(entry) {
                     continue;
                 }
-                turns.push(
-                    format_entry_with_attribution(
-                        entry,
-                        &id,
-                        Some(&state.repository),
-                        Some(&state.global_state_manager),
-                    )
-                    .await,
-                );
+                if let Some(turn) = toolpath_claude::provider::to_turn(entry) {
+                    turns.push(
+                        format_turn_with_attribution(
+                            &turn,
+                            &id,
+                            Some(&state.repository),
+                            Some(&state.global_state_manager),
+                        )
+                        .await,
+                    );
+                } else {
+                    // Progress/unknown entries — fall back to entry-based formatting
+                    turns.push(
+                        format_entry_with_attribution(
+                            entry,
+                            &id,
+                            Some(&state.repository),
+                            Some(&state.global_state_manager),
+                        )
+                        .await,
+                    );
+                }
             }
 
             Json(serde_json::json!({
