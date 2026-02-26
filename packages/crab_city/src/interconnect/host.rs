@@ -39,6 +39,9 @@ pub struct TunnelContext {
     /// The host's node_id (ed25519 public key bytes). Used to verify
     /// identity_proof signatures from authenticating users.
     pub host_node_id: [u8; 32],
+    /// Name of the remote (connecting) instance. Used to annotate federated
+    /// user presence, e.g. "Alice (via Bob's Lab)".
+    pub remote_instance_name: String,
 }
 
 /// Per-user session state within a tunnel.
@@ -298,8 +301,11 @@ async fn handle_authenticate(
     // Determine capability from access rights
     let capability = determine_capability(&access);
 
-    // Build AuthUser for this federated user (reuse claimed_pk from proof verification)
-    let auth_user = AuthUser::from_grant(claimed_pk, display_name.to_string(), capability);
+    // Build AuthUser for this federated user (reuse claimed_pk from proof verification).
+    // Annotate the display name with the home instance name so presence shows provenance,
+    // e.g. "Alice (via Bob's Lab)".
+    let annotated_name = format!("{} (via {})", display_name, ctx.remote_instance_name);
+    let auth_user = AuthUser::from_grant(claimed_pk, annotated_name, capability);
 
     // Create a ConnectionContext for message dispatch
     let (user_tx, mut user_rx) = mpsc::channel::<ServerMessage>(100);
@@ -657,6 +663,7 @@ mod tests {
             instance_name: "Test Instance".into(),
             max_history_bytes: 64 * 1024,
             host_node_id: TEST_HOST_NODE_ID,
+            remote_instance_name: "Remote Lab".into(),
         });
         (ctx, repo)
     }

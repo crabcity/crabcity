@@ -260,6 +260,20 @@ async fn attach_session(ws_stream: WsStream, instance_id: &str) -> Result<Attach
                                     eprintln!("\r\n[crab: error: {}]", message);
                                 }
 
+                                // === Join notification (transient overlay) ===
+                                ServerMessage::MemberJoined { ref member } => {
+                                    if let Some(name) = member.get("display_name").and_then(|v| v.as_str()) {
+                                        if let Ok((_, cols)) = get_terminal_size() {
+                                            let text = format!("{} joined", name);
+                                            guard.show_overlay(&text, cols);
+                                            overlay_timer.as_mut().reset(
+                                                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                                            );
+                                            overlay_armed = true;
+                                        }
+                                    }
+                                }
+
                                 // === Ignored: control / lifecycle / multi-user ===
                                 // Exhaustive so the compiler catches new variants.
                                 ServerMessage::FocusAck { .. }
@@ -288,7 +302,6 @@ async fn attach_session(ws_stream: WsStream, instance_id: &str) -> Result<Attach
                                 | ServerMessage::InviteRevoked { .. }
                                 | ServerMessage::InviteList { .. }
                                 | ServerMessage::MembersList { .. }
-                                | ServerMessage::MemberJoined { .. }
                                 | ServerMessage::MemberUpdated { .. }
                                 | ServerMessage::MemberSuspended { .. }
                                 | ServerMessage::MemberReinstated { .. }

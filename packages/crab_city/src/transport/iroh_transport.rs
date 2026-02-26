@@ -963,6 +963,7 @@ impl IrohTransport {
                     instance_name: transport.instance_name.clone(),
                     max_history_bytes: transport.max_history_bytes,
                     host_node_id: transport.node_id,
+                    remote_instance_name: instance_name.clone(),
                 });
 
                 crate::interconnect::host::handle_tunnel(
