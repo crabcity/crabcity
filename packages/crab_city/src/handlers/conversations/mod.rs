@@ -7,7 +7,5 @@ pub use database::{
     add_comment, create_share, get_comments, get_conversation_by_id, get_shared_conversation,
     list_conversations, search_conversations_handler,
 };
-pub use format::{
-    format_entry_with_attribution, format_turn, format_turn_with_attribution, is_tool_result_only,
-};
+pub use format::{extract_title_from_turn, process_watcher_entries};
 pub use live::{get_conversation, poll_conversation};

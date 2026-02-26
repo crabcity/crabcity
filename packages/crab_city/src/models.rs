@@ -60,41 +60,62 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
+    /// Construct from a provider-agnostic Turn + supplemental data.
+    pub fn from_turn(
+        conversation_id: String,
+        turn: &toolpath_convo::Turn,
+        entry_type: String,
+        raw_json: String,
+    ) -> Self {
+        let role = match &turn.role {
+            toolpath_convo::Role::User => Some("user".to_string()),
+            toolpath_convo::Role::Assistant => Some("assistant".to_string()),
+            toolpath_convo::Role::System => Some("system".to_string()),
+            toolpath_convo::Role::Other(s) => Some(s.clone()),
+        };
+        let content = if turn.text.is_empty() {
+            None
+        } else {
+            Some(turn.text.clone())
+        };
+        Self {
+            id: None,
+            conversation_id,
+            entry_uuid: turn.id.clone(),
+            parent_uuid: turn.parent_id.clone(),
+            entry_type,
+            role,
+            content,
+            timestamp: turn.timestamp.clone(),
+            raw_json,
+            token_count: None,
+            model: turn.model.clone(),
+        }
+    }
+
+    /// Construct from a raw Claude entry (delegates to from_turn where possible).
     pub fn from_claude_entry(
         conversation_id: String,
         entry: &toolpath_claude::ConversationEntry,
     ) -> Self {
-        // Extract role and content from the message if present
-        let (role, content, model) = if let Some(msg) = &entry.message {
-            let role = match msg.role {
-                toolpath_claude::MessageRole::User => Some("user".to_string()),
-                toolpath_claude::MessageRole::Assistant => Some("assistant".to_string()),
-                toolpath_claude::MessageRole::System => Some("system".to_string()),
-            };
-
-            let text = msg.text();
-            let content = if text.is_empty() { None } else { Some(text) };
-
-            (role, content, msg.model.clone())
-        } else {
-            (None, None, None)
-        };
-
-        // Serialize the full entry as JSON
         let raw_json = serde_json::to_string(entry).unwrap_or_default();
-
-        Self {
-            id: None,
-            conversation_id,
-            entry_uuid: entry.uuid.clone(),
-            parent_uuid: entry.parent_uuid.clone(),
-            entry_type: entry.entry_type.clone(),
-            role,
-            content,
-            timestamp: entry.timestamp.clone(),
-            raw_json,
-            token_count: None, // Could extract from usage if needed
-            model,
+        if let Some(turn) = toolpath_claude::provider::to_turn(entry) {
+            Self::from_turn(conversation_id, &turn, entry.entry_type.clone(), raw_json)
+        } else {
+            // Progress/phantom entries — no Turn available
+            Self {
+                id: None,
+                conversation_id,
+                entry_uuid: entry.uuid.clone(),
+                parent_uuid: entry.parent_uuid.clone(),
+                entry_type: entry.entry_type.clone(),
+                role: None,
+                content: None,
+                timestamp: entry.timestamp.clone(),
+                raw_json,
+                token_count: None,
+                model: None,
+            }
         }
     }
 }
