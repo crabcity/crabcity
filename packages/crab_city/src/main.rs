@@ -112,6 +112,9 @@ enum Commands {
 
     /// Connect to a remote crab instance
     Connect(ConnectArgs),
+
+    /// List or switch between local and remote Crab City contexts
+    Switch(SwitchArgs),
 }
 
 #[derive(Parser)]
@@ -238,6 +241,12 @@ struct ConnectArgs {
     yes: bool,
 }
 
+#[derive(Parser)]
+struct SwitchArgs {
+    /// Remote name to switch to (omit to list, "home" for local)
+    target: Option<String>,
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub(crate) struct AppState {
@@ -330,6 +339,10 @@ async fn main() -> Result<()> {
                 args.yes,
             )
             .await
+        }
+        Some(Commands::Switch(args)) => {
+            let daemon = cli::daemon::require_running_daemon(&config).await?;
+            cli::switch::switch_command(&daemon, args.target.as_deref()).await
         }
         Some(Commands::Server(args)) => run_server(args, config).await,
     }

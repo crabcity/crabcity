@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod invite;
 pub mod picker;
 pub mod settings;
+pub mod switch;
 pub mod terminal;
 
 use anyhow::{Context, Result};
