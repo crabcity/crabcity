@@ -151,15 +151,28 @@ pub async fn run_server_conversation_watcher(
                 if crate::handlers::is_tool_result_only(e) {
                     continue;
                 }
-                turns.push(
-                    crate::handlers::format_entry_with_attribution(
-                        e,
-                        &instance_id,
-                        repo_ref,
-                        Some(&state_manager),
-                    )
-                    .await,
-                );
+                if let Some(turn) = toolpath_claude::provider::to_turn(e) {
+                    turns.push(
+                        crate::handlers::format_turn_with_attribution(
+                            &turn,
+                            &instance_id,
+                            repo_ref,
+                            Some(&state_manager),
+                        )
+                        .await,
+                    );
+                } else {
+                    // Progress/unknown entries — fall back to entry-based formatting
+                    turns.push(
+                        crate::handlers::format_entry_with_attribution(
+                            e,
+                            &instance_id,
+                            repo_ref,
+                            Some(&state_manager),
+                        )
+                        .await,
+                    );
+                }
             }
 
             // Store in shared state
@@ -218,15 +231,28 @@ pub async fn run_server_conversation_watcher(
                             if crate::handlers::is_tool_result_only(e) {
                                 continue;
                             }
-                            turns.push(
-                                crate::handlers::format_entry_with_attribution(
-                                    e,
-                                    &instance_id,
-                                    repo_ref,
-                                    Some(&state_manager),
-                                )
-                                .await,
-                            );
+                            if let Some(turn) = toolpath_claude::provider::to_turn(e) {
+                                turns.push(
+                                    crate::handlers::format_turn_with_attribution(
+                                        &turn,
+                                        &instance_id,
+                                        repo_ref,
+                                        Some(&state_manager),
+                                    )
+                                    .await,
+                                );
+                            } else {
+                                // Progress/unknown entries — fall back to entry-based formatting
+                                turns.push(
+                                    crate::handlers::format_entry_with_attribution(
+                                        e,
+                                        &instance_id,
+                                        repo_ref,
+                                        Some(&state_manager),
+                                    )
+                                    .await,
+                                );
+                            }
                         }
 
                         // Append to shared store
