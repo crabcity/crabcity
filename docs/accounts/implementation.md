@@ -110,10 +110,10 @@ Connect panel now:
 - `ConnectionContext` carries `viewing_context` + `connection_manager`
 - Dispatch handles SwitchContext: validates tunnel, sets context
 
-Remaining for full message proxying:
-- Route Focus/Input/Resize through tunnel when viewing_context is Remote
-- Forward remote ServerMessages to the local WebSocket
-- Authenticate local user on tunnel on context switch
+Message proxying now wired:
+- `try_forward_to_remote()` intercepts Focus/Input/Resize when Remote
+- WS handler subscribes to `ConnectionManager.subscribe()` for remote events
+- `RequestInstances` tunnel message fetches remote instance list on context switch
 
 ### Gap 4: `crab switch` command doesn't exist — DONE
 
@@ -158,7 +158,10 @@ Wire the picker to actually switch context and proxy messages.
 - [x] Picker context switch triggers ConnectionManager
 - [x] Message routing based on `CrabCityContext` (SwitchContext protocol)
 - [x] Status bar shows current context
-- [ ] Instance list shows remote instances when in remote context
+- [x] Instance list shows remote instances when in remote context
+- [x] Focus/Input/Resize forwarded through tunnel when viewing Remote
+- [x] Remote ServerMessages bridged to local WebSocket client
+- [ ] Per-user tunnel authentication (identity proof on context switch)
 - [ ] Chat, tasks, presence all come from remote host
 
 **Estimated: ~200 LOC**
