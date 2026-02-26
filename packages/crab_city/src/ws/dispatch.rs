@@ -45,7 +45,7 @@ async fn try_forward_to_remote(
     ctx: &ConnectionContext,
     msg: &ClientMessage,
 ) -> Option<DispatchResult> {
-    // Only forward instance-interaction messages
+    // Forward instance-interaction and chat messages when viewing a remote host.
     let should_forward = matches!(
         msg,
         ClientMessage::Focus { .. }
@@ -53,6 +53,14 @@ async fn try_forward_to_remote(
             | ClientMessage::Resize { .. }
             | ClientMessage::TerminalVisible { .. }
             | ClientMessage::TerminalHidden { .. }
+            | ClientMessage::ChatSend { .. }
+            | ClientMessage::ChatHistory { .. }
+            | ClientMessage::ChatForward { .. }
+            | ClientMessage::ChatTopics { .. }
+            | ClientMessage::Lobby { .. }
+            | ClientMessage::ConversationSync { .. }
+            | ClientMessage::TerminalLockRequest { .. }
+            | ClientMessage::TerminalLockRelease { .. }
     );
     if !should_forward {
         return None;
