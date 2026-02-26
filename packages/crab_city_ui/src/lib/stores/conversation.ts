@@ -55,19 +55,26 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 	// Filter out skip entries, then process
 	const filteredTurns = $turns.filter((turn) => !turn.skip && turn.role !== 'Skip');
 
+	// Forward accumulation: hold a pending tool-only cell group and extend it
+	// as long as we see tool-only assistant turns. Anything that isn't a
+	// meaningful conversation boundary (user, system, assistant-with-content)
+	// gets absorbed into the group. No backward scanning, no cell-type denylist.
+	let pendingToolCell: NotebookCell | null = null;
+
 	for (let i = 0; i < filteredTurns.length; i++) {
 		const turn = filteredTurns[i];
 
-		// For progress entries, aggregate consecutive ones
+		// Progress entries: absorb silently inside a tool group,
+		// otherwise aggregate as before
 		if (turn.role === 'Progress' || turn.role === 'AgentProgress') {
+			if (pendingToolCell) continue;
+
 			// Check if previous cell is also progress - if so, merge
 			const prevCell = cells[cells.length - 1];
 			if (prevCell && prevCell.type === 'progress') {
-				// Aggregate: increment count and update content
 				const currentCount = (prevCell.extra?.progressCount as number) ?? 1;
 				const items = (prevCell.extra?.progressItems as string[]) ?? [prevCell.content];
 
-				// Add this item if it's different from the last
 				const newItem = turn.content;
 				if (items[items.length - 1] !== newItem) {
 					items.push(newItem);
@@ -76,14 +83,13 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 				prevCell.extra = {
 					...prevCell.extra,
 					progressCount: currentCount + 1,
-					progressItems: items // Keep all items for explorer view
+					progressItems: items
 				};
 				prevCell.content = `${currentCount + 1} events`;
-				prevCell.timestamp = turn.timestamp; // Update to latest timestamp
+				prevCell.timestamp = turn.timestamp;
 				continue;
 			}
 
-			// First progress in a sequence
 			const cell: NotebookCell = {
 				id: turn.uuid ?? `turn-${i}`,
 				type: 'progress',
@@ -105,7 +111,7 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 			continue;
 		}
 
-		// Regular cell processing
+		// Build the cell
 		const cell: NotebookCell = {
 			id: turn.uuid ?? `turn-${i}`,
 			type: roleToCellType(turn.role),
@@ -114,13 +120,12 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 			collapsed: false
 		};
 
-		// If assistant message has tools, create tool cells
 		if (turn.role === 'Assistant' && turn.tools.length > 0) {
 			cell.toolCells = turn.tools.map(
 				(toolName, toolIndex): ToolCell => ({
 					id: `${cell.id}-tool-${toolIndex}`,
 					name: toolName,
-					input: {},
+					input: turn.tool_details?.[toolIndex]?.input ?? {},
 					status: 'complete',
 					timestamp: turn.timestamp,
 					canRerun: isRerunnable(toolName)
@@ -128,43 +133,55 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 			);
 		}
 
-		// Pass through extended thinking content
-		if (turn.thinking) {
-			cell.thinking = turn.thinking;
+		if (turn.thinking) cell.thinking = turn.thinking;
+		if (turn.attributed_to) cell.attributed_to = turn.attributed_to;
+		if (turn.task_id != null) cell.task_id = turn.task_id;
+		if (turn.entry_type) cell.entryType = turn.entry_type;
+		if (turn.extra) cell.extra = turn.extra;
+		if (turn.agent_id) cell.agentId = turn.agent_id;
+		if (turn.agent_prompt) cell.agentPrompt = turn.agent_prompt;
+		if (turn.agent_msg_role) cell.agentMsgRole = turn.agent_msg_role;
+
+		// Is this a tool-only assistant turn?
+		const isToolOnly =
+			cell.type === 'assistant' &&
+			cell.toolCells &&
+			cell.toolCells.length > 0 &&
+			!cell.content.trim() &&
+			!cell.thinking;
+
+		if (isToolOnly) {
+			if (pendingToolCell) {
+				// Extend the group
+				pendingToolCell.toolCells!.push(...cell.toolCells!);
+				pendingToolCell.timestamp = cell.timestamp;
+			} else {
+				// Start a new group
+				pendingToolCell = cell;
+			}
+			continue;
 		}
 
-		// Pass through multi-user attribution
-		if (turn.attributed_to) {
-			cell.attributed_to = turn.attributed_to;
+		// Non-tool-only cell: does it represent a real conversation boundary?
+		const breaksGroup =
+			cell.type === 'user' ||
+			cell.type === 'system' ||
+			(cell.type === 'assistant' && (cell.content.trim() || cell.thinking));
+
+		if (breaksGroup && pendingToolCell) {
+			cells.push(pendingToolCell);
+			pendingToolCell = null;
 		}
 
-		// Pass through structural task reference
-		if (turn.task_id != null) {
-			cell.task_id = turn.task_id;
+		// Outside a tool group, push normally. Inside one, absorb noise.
+		if (!pendingToolCell) {
+			cells.push(cell);
 		}
+	}
 
-		// Pass through entry type for unknown entries
-		if (turn.entry_type) {
-			cell.entryType = turn.entry_type;
-		}
-
-		// Pass through extra data for unknown entries
-		if (turn.extra) {
-			cell.extra = turn.extra;
-		}
-
-		// Pass through agent info for agent progress cells
-		if (turn.agent_id) {
-			cell.agentId = turn.agent_id;
-		}
-		if (turn.agent_prompt) {
-			cell.agentPrompt = turn.agent_prompt;
-		}
-		if (turn.agent_msg_role) {
-			cell.agentMsgRole = turn.agent_msg_role;
-		}
-
-		cells.push(cell);
+	// Flush any trailing tool group
+	if (pendingToolCell) {
+		cells.push(pendingToolCell);
 	}
 
 	const ms = performance.now() - t0;

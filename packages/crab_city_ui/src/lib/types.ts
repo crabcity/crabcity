@@ -36,6 +36,7 @@ export interface ConversationTurn {
 	content: string;
 	timestamp: string;
 	tools: string[];
+	tool_details?: Array<{ name: string; input: Record<string, unknown>; category?: string }>;
 	thinking?: string; // Extended thinking content from Claude
 	attributed_to?: { user_id: string; display_name: string };
 	task_id?: number; // Structural task reference (from backend attribution)
