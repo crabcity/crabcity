@@ -230,9 +230,43 @@ pub async fn format_turn_with_attribution(
     json
 }
 
+/// Process raw watcher entries into formatted JSON turns + state signals.
+///
+/// This is the single seam where ConversationEntry crosses into crab_city.
+/// It handles: phantom filtering, to_turn dispatch, and format routing.
+pub async fn process_watcher_entries(
+    entries: &[toolpath_claude::ConversationEntry],
+    instance_id: &str,
+    repo: Option<&Arc<repository::ConversationRepository>>,
+    state_manager: Option<&Arc<ws::GlobalStateManager>>,
+) -> Vec<serde_json::Value> {
+    let mut turns = Vec::with_capacity(entries.len());
+    for e in entries {
+        if is_tool_result_only(e) {
+            continue;
+        }
+        if let Some(turn) = toolpath_claude::provider::to_turn(e) {
+            turns.push(format_turn_with_attribution(&turn, instance_id, repo, state_manager).await);
+        } else {
+            // Progress/unknown entries — fall back to entry-based formatting
+            turns.push(format_entry_with_attribution(e, instance_id, repo, state_manager).await);
+        }
+    }
+    turns
+}
+
+/// Extract title from a Turn's text, truncated to `limit` chars.
+/// Returns None if the turn is not a user message or has no text.
+pub fn extract_title_from_turn(turn: &Turn, limit: usize) -> Option<String> {
+    if turn.role != Role::User || turn.text.is_empty() {
+        return None;
+    }
+    Some(turn.text.chars().take(limit).collect())
+}
+
 /// Returns true if this entry is a tool-result-only user message (phantom turn).
 /// These carry tool output back to Claude but contain no human-authored text.
-pub fn is_tool_result_only(entry: &toolpath_claude::ConversationEntry) -> bool {
+fn is_tool_result_only(entry: &toolpath_claude::ConversationEntry) -> bool {
     entry.message.as_ref().is_some_and(|msg| {
         msg.role == MessageRole::User && msg.text().is_empty() && !msg.tool_results().is_empty()
     })

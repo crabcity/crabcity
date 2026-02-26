@@ -9,7 +9,7 @@ use toolpath_claude::ClaudeConvo;
 use toolpath_convo::ConversationProvider;
 use tracing::{debug, info, warn};
 
-use super::format::{format_entry_with_attribution, format_turn_with_attribution};
+use super::format::{format_turn_with_attribution, process_watcher_entries};
 use crate::AppState;
 
 pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -219,34 +219,13 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
     match watcher.poll() {
         Ok(new_entries) => {
-            let mut turns = Vec::with_capacity(new_entries.len());
-            for entry in &new_entries {
-                if super::format::is_tool_result_only(entry) {
-                    continue;
-                }
-                if let Some(turn) = toolpath_claude::provider::to_turn(entry) {
-                    turns.push(
-                        format_turn_with_attribution(
-                            &turn,
-                            &id,
-                            Some(&state.repository),
-                            Some(&state.global_state_manager),
-                        )
-                        .await,
-                    );
-                } else {
-                    // Progress/unknown entries — fall back to entry-based formatting
-                    turns.push(
-                        format_entry_with_attribution(
-                            entry,
-                            &id,
-                            Some(&state.repository),
-                            Some(&state.global_state_manager),
-                        )
-                        .await,
-                    );
-                }
-            }
+            let turns = process_watcher_entries(
+                &new_entries,
+                &id,
+                Some(&state.repository),
+                Some(&state.global_state_manager),
+            )
+            .await;
 
             Json(serde_json::json!({
                 "new_turns": turns,

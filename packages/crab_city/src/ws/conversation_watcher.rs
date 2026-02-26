@@ -146,34 +146,13 @@ pub async fn run_server_conversation_watcher(
             );
 
             // Format entries (skip phantom tool-result-only entries)
-            let mut turns = Vec::with_capacity(entries.len());
-            for e in &entries {
-                if crate::handlers::is_tool_result_only(e) {
-                    continue;
-                }
-                if let Some(turn) = toolpath_claude::provider::to_turn(e) {
-                    turns.push(
-                        crate::handlers::format_turn_with_attribution(
-                            &turn,
-                            &instance_id,
-                            repo_ref,
-                            Some(&state_manager),
-                        )
-                        .await,
-                    );
-                } else {
-                    // Progress/unknown entries — fall back to entry-based formatting
-                    turns.push(
-                        crate::handlers::format_entry_with_attribution(
-                            e,
-                            &instance_id,
-                            repo_ref,
-                            Some(&state_manager),
-                        )
-                        .await,
-                    );
-                }
-            }
+            let turns = crate::handlers::process_watcher_entries(
+                &entries,
+                &instance_id,
+                repo_ref,
+                Some(&state_manager),
+            )
+            .await;
 
             // Store in shared state
             {
@@ -226,34 +205,13 @@ pub async fn run_server_conversation_watcher(
                         }
 
                         // Format new entries (skip phantom tool-result-only entries)
-                        let mut turns = Vec::with_capacity(new_entries.len());
-                        for e in &new_entries {
-                            if crate::handlers::is_tool_result_only(e) {
-                                continue;
-                            }
-                            if let Some(turn) = toolpath_claude::provider::to_turn(e) {
-                                turns.push(
-                                    crate::handlers::format_turn_with_attribution(
-                                        &turn,
-                                        &instance_id,
-                                        repo_ref,
-                                        Some(&state_manager),
-                                    )
-                                    .await,
-                                );
-                            } else {
-                                // Progress/unknown entries — fall back to entry-based formatting
-                                turns.push(
-                                    crate::handlers::format_entry_with_attribution(
-                                        e,
-                                        &instance_id,
-                                        repo_ref,
-                                        Some(&state_manager),
-                                    )
-                                    .await,
-                                );
-                            }
-                        }
+                        let turns = crate::handlers::process_watcher_entries(
+                            &new_entries,
+                            &instance_id,
+                            repo_ref,
+                            Some(&state_manager),
+                        )
+                        .await;
 
                         // Append to shared store
                         {

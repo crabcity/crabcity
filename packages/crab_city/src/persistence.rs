@@ -89,23 +89,17 @@ impl PersistenceService {
                         for entry in entries {
                             // Extract title from first user message
                             if first_user_message {
-                                if let Some(msg) = &entry.message {
-                                    if msg.is_user() {
+                                if let Some(turn) = toolpath_claude::provider::to_turn(&entry) {
+                                    if let Some(title) =
+                                        crate::handlers::extract_title_from_turn(&turn, 100)
+                                    {
                                         first_user_message = false;
-                                        let text = entry.text();
-                                        if !text.is_empty() {
-                                            let title: String = text.chars().take(100).collect();
-
-                                            if let Err(e) = service
-                                                .repository
-                                                .update_conversation_title(&conversation_id, &title)
-                                                .await
-                                            {
-                                                error!(
-                                                    "Failed to update conversation title: {}",
-                                                    e
-                                                );
-                                            }
+                                        if let Err(e) = service
+                                            .repository
+                                            .update_conversation_title(&conversation_id, &title)
+                                            .await
+                                        {
+                                            error!("Failed to update conversation title: {}", e);
                                         }
                                     }
                                 }

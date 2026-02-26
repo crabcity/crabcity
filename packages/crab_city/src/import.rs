@@ -319,16 +319,8 @@ impl ConversationImporter {
 
     /// Extract a title from a conversation entry (first user message text, truncated to 100 chars)
     fn extract_title(entry: &toolpath_claude::ConversationEntry) -> Option<String> {
-        let msg = entry.message.as_ref()?;
-        if !msg.is_user() {
-            return None;
-        }
-        let text = entry.text();
-        if text.is_empty() {
-            return None;
-        }
-        let truncated: String = text.chars().take(100).collect();
-        Some(truncated)
+        let turn = toolpath_claude::provider::to_turn(entry)?;
+        crate::handlers::extract_title_from_turn(&turn, 100)
     }
 }
 
