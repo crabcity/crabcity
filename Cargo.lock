@@ -522,7 +522,6 @@ dependencies = [
  "figment",
  "futures",
  "ignore",
- "maud",
  "mime_guess",
  "nix 0.29.0",
  "password-hash",

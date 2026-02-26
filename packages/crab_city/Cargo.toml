@@ -21,9 +21,6 @@ compositor = { path = "../compositor" }
 pty_manager = { path = "../pty_manager" }
 virtual_terminal = { path = "../virtual_terminal" }
 
-# HTML templating
-maud = { version = "0.27", features = ["axum"] }
-
 # Async utilities
 futures = "0.3"
 tokio-util = "0.7"

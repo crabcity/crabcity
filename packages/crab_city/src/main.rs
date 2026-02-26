@@ -35,8 +35,6 @@ mod notes;
 mod onboarding;
 mod persistence;
 mod repository;
-mod terminal;
-mod views;
 mod virtual_terminal;
 pub mod websocket_proxy;
 mod ws;
@@ -554,14 +552,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         };
 
         // Build routes
-        #[cfg(not(feature = "embedded-ui"))]
-        let app = Router::new()
-            .route("/", get(views::index_page))
-            .route("/settings", get(views::settings_page))
-            .route("/history", get(views::history_page))
-            .route("/conversation/{id}", get(views::conversation_detail_page));
-
-        #[cfg(feature = "embedded-ui")]
         let app = Router::new();
 
         let mut app = app

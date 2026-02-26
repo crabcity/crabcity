@@ -10,7 +10,6 @@ rust_binary(
         ["src/**/*.rs"],
         exclude = ["src/embedded_ui.rs"],
     ),
-    compile_data = ["src/terminal.js"],
     edition = "2024",
     deps = [
         "//packages/compositor",
@@ -25,7 +24,6 @@ rust_binary(
         "@crate_index//:figment",
         "@crate_index//:futures",
         "@crate_index//:ignore",
-        "@crate_index//:maud",
         "@crate_index//:nix",
         "@crate_index//:password-hash",
         "@crate_index//:rand",
@@ -71,7 +69,6 @@ rust_binary(
 rust_binary(
     name = "crab_embedded",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/terminal.js"],
     crate_features = ["embedded-ui"],
     edition = "2024",
     deps = [
@@ -88,7 +85,6 @@ rust_binary(
         "@crate_index//:figment",
         "@crate_index//:futures",
         "@crate_index//:ignore",
-        "@crate_index//:maud",
         "@crate_index//:mime_guess",
         "@crate_index//:nix",
         "@crate_index//:password-hash",
