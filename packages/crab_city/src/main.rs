@@ -809,6 +809,23 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/federation/connections",
                 get(handlers::list_connections_handler),
             )
+            // Remote Crab City management endpoints
+            .route(
+                "/api/remotes",
+                get(handlers::list_remotes_handler),
+            )
+            .route(
+                "/api/remotes/connect",
+                post(handlers::connect_remote_handler),
+            )
+            .route(
+                "/api/remotes/{host_node_id}",
+                delete(handlers::remove_remote_handler),
+            )
+            .route(
+                "/api/remotes/{host_node_id}/status",
+                get(handlers::remote_status_handler),
+            )
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))

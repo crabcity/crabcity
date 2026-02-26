@@ -1195,6 +1195,176 @@ pub async fn list_connections_handler(
     Ok(Json(json!(result)))
 }
 
+// =============================================================================
+// Remote Crab City management HTTP endpoints
+// =============================================================================
+
+/// GET /api/remotes — list saved remote Crab Cities from the database.
+pub async fn list_remotes_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let remotes = state
+        .repository
+        .list_remote_crab_cities(identity.public_key.as_bytes())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Enrich with live connection status if ConnectionManager is available
+    let connections = if let Some(ref mgr) = state.connection_manager {
+        mgr.list_connections().await
+    } else {
+        vec![]
+    };
+
+    let result: Vec<serde_json::Value> = remotes
+        .iter()
+        .map(|r| {
+            let node_hex = bytes_to_hex(&r.host_node_id);
+            let status = connections
+                .iter()
+                .find(|c| c.host_node_id[..] == r.host_node_id[..])
+                .map(|c| match &c.state {
+                    crate::interconnect::manager::ConnectionState::Connected => "connected",
+                    crate::interconnect::manager::ConnectionState::Disconnected { .. } => {
+                        "disconnected"
+                    }
+                    crate::interconnect::manager::ConnectionState::Reconnecting { .. } => {
+                        "reconnecting"
+                    }
+                })
+                .unwrap_or("disconnected");
+            json!({
+                "host_node_id": node_hex,
+                "host_name": r.host_name,
+                "granted_access": r.granted_access,
+                "auto_connect": r.auto_connect,
+                "status": status,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(result)))
+}
+
+/// POST /api/remotes/connect — trigger the ConnectionManager to connect to a saved remote.
+#[derive(Deserialize)]
+pub struct ConnectRemoteRequest {
+    pub host_node_id: String,
+}
+
+pub async fn connect_remote_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ConnectRemoteRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let conn_mgr = state
+        .connection_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let node_bytes = hex_to_bytes(&req.host_node_id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes
+        .try_into()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // Look up the saved remote to get the host name
+    let remote = state
+        .repository
+        .get_remote_crab_city(&node_id, identity.public_key.as_bytes())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    match conn_mgr.connect(node_id, &remote.host_name).await {
+        Ok(name) => Ok(Json(json!({ "connected": name }))),
+        Err(e) => Ok(Json(json!({ "error": e.to_string() }))),
+    }
+}
+
+/// DELETE /api/remotes/{host_node_id} — remove a saved remote and disconnect.
+pub async fn remove_remote_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(host_node_id_hex): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let identity = state
+        .identity
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let node_bytes = hex_to_bytes(&host_node_id_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes
+        .try_into()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // Disconnect tunnel if active
+    if let Some(ref mgr) = state.connection_manager {
+        let _ = mgr.disconnect(&node_id).await;
+    }
+
+    state
+        .repository
+        .remove_remote_crab_city(&node_id, identity.public_key.as_bytes())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(json!({ "removed": host_node_id_hex })))
+}
+
+/// GET /api/remotes/{host_node_id}/status — tunnel state for a specific remote.
+pub async fn remote_status_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(host_node_id_hex): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let conn_mgr = state
+        .connection_manager
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let node_bytes = hex_to_bytes(&host_node_id_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes
+        .try_into()
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let connections = conn_mgr.list_connections().await;
+    let conn = connections.iter().find(|c| c.host_node_id == node_id);
+
+    match conn {
+        Some(c) => {
+            let (state_str, detail) = match &c.state {
+                crate::interconnect::manager::ConnectionState::Connected => {
+                    ("connected", json!(null))
+                }
+                crate::interconnect::manager::ConnectionState::Disconnected { since } => {
+                    ("disconnected", json!({ "since_secs": since.elapsed().as_secs() }))
+                }
+                crate::interconnect::manager::ConnectionState::Reconnecting { attempt } => {
+                    ("reconnecting", json!({ "attempt": attempt }))
+                }
+            };
+            Ok(Json(json!({
+                "host_node_id": host_node_id_hex,
+                "host_name": c.host_name,
+                "state": state_str,
+                "detail": detail,
+                "authenticated_users": c.authenticated_users,
+            })))
+        }
+        None => Ok(Json(json!({
+            "host_node_id": host_node_id_hex,
+            "state": "disconnected",
+        }))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,11 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail};
 use iroh::Endpoint;
+use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::config::CrabCityConfig;
 use crate::identity::InstanceIdentity;
+use crate::repository::ConversationRepository;
 use crate::transport::connection_token::ConnectionToken;
 use crate::transport::framing;
 use crate::transport::iroh_transport::ALPN;
@@ -233,17 +235,19 @@ pub async fn connect_command(
         .await?
         .ok_or_else(|| anyhow::anyhow!("connection closed during invite redemption"))?;
 
-    match &response {
+    let granted_capability = match &response {
         ServerMessage::InviteRedeemed {
             capability,
             fingerprint,
             ..
         } => {
             eprintln!("Joined as {} ({})", fingerprint, capability);
+            Some(capability.clone())
         }
         ServerMessage::Error { message, .. } => {
             if message.contains("already have a grant") {
                 eprintln!("Already a member, reconnecting...");
+                None
             } else {
                 let friendly = format_server_error(message, instance_name.as_deref());
                 bail!("{}", friendly);
@@ -252,6 +256,20 @@ pub async fn connect_command(
         other => {
             bail!("Unexpected response during invite redemption: {:?}", other);
         }
+    };
+
+    // Persist this remote so the daemon can auto-connect on next startup
+    let host_name = instance_name.clone().unwrap_or_else(|| {
+        iroh::EndpointId::from_bytes(&node_id)
+            .map(|id| id.fmt_short().to_string())
+            .unwrap_or_else(|_| "unknown".into())
+    });
+    let granted_access = granted_capability.as_deref().unwrap_or("view");
+
+    if let Err(e) = persist_remote(config, &node_id, identity.public_key.as_bytes(), &host_name, granted_access).await {
+        eprintln!("Warning: failed to save remote (will need to reconnect manually): {}", e);
+    } else {
+        info!(host = %host_name, "remote saved — will auto-connect on next daemon start");
     }
 
     // Wait for server to close the connection (it sends "please reconnect")
@@ -534,5 +552,28 @@ pub async fn connect_command(
         eprintln!("\r\n[crab: disconnected]");
     }
 
+    Ok(())
+}
+
+/// Open the shared SQLite database and persist a remote Crab City entry.
+/// This allows the daemon's ConnectionManager to auto-connect on next startup.
+async fn persist_remote(
+    config: &CrabCityConfig,
+    host_node_id: &[u8; 32],
+    account_key: &[u8],
+    host_name: &str,
+    granted_access: &str,
+) -> Result<()> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&config.db_url())
+        .await
+        .context("failed to open database for remote persistence")?;
+
+    let repo = ConversationRepository::new(pool.clone());
+    repo.add_remote_crab_city(host_node_id, account_key, host_name, granted_access)
+        .await?;
+
+    pool.close().await;
     Ok(())
 }

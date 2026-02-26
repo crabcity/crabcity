@@ -23,7 +23,8 @@ pub use instances::{
     set_custom_name,
 };
 pub use interconnect::{
-    create_invite_handler, list_connections_handler, list_invites_handler, revoke_invite_handler,
+    connect_remote_handler, create_invite_handler, list_connections_handler, list_invites_handler,
+    list_remotes_handler, remote_status_handler, remove_remote_handler, revoke_invite_handler,
 };
 pub use notes::{create_note, delete_note, get_notes, update_note};
 pub use preview::preview_websocket_handler;
