@@ -972,9 +972,25 @@ async fn first_run_bootstrap(
         return;
     }
 
-    // First run — generate an owner invite
-    info!("First run detected — generating owner invite...");
+    // First run — grant the instance identity Owner access so it can issue invites
+    info!("First run detected — bootstrapping instance owner...");
 
+    if let Err(e) = repository
+        .create_grant(
+            identity.public_key.as_bytes(),
+            "owner",
+            "full",
+            "active",
+            None,
+            None,
+        )
+        .await
+    {
+        warn!("Failed to create owner grant: {}", e);
+        return;
+    }
+
+    // Also generate a one-time owner invite for remote joining
     let expires_at = Some(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

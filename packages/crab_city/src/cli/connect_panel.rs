@@ -58,7 +58,8 @@ pub fn run_connect_panel(
     daemon: &DaemonInfo,
     current_context: &CrabCityContext,
 ) -> Result<ConnectPanelResult> {
-    let client = reqwest::blocking::Client::new();
+    let client =
+        tokio::task::block_in_place(|| reqwest::blocking::Client::new());
     let connections = fetch_connections(&client, daemon)?;
     let remotes = fetch_remotes(&client, daemon)?;
 
@@ -253,26 +254,30 @@ fn fetch_connections(
     client: &reqwest::blocking::Client,
     daemon: &DaemonInfo,
 ) -> Result<Vec<FederationConnection>> {
-    let url = format!("{}/api/federation/connections", daemon.base_url());
-    let resp = client.get(&url).send()?;
-    if resp.status().is_success() {
-        Ok(resp.json()?)
-    } else {
-        Ok(vec![])
-    }
+    tokio::task::block_in_place(|| {
+        let url = format!("{}/api/federation/connections", daemon.base_url());
+        let resp = client.get(&url).send()?;
+        if resp.status().is_success() {
+            Ok(resp.json()?)
+        } else {
+            Ok(vec![])
+        }
+    })
 }
 
 fn fetch_remotes(
     client: &reqwest::blocking::Client,
     daemon: &DaemonInfo,
 ) -> Result<Vec<RemoteEntry>> {
-    let url = format!("{}/api/remotes", daemon.base_url());
-    let resp = client.get(&url).send()?;
-    if resp.status().is_success() {
-        Ok(resp.json()?)
-    } else {
-        Ok(vec![])
-    }
+    tokio::task::block_in_place(|| {
+        let url = format!("{}/api/remotes", daemon.base_url());
+        let resp = client.get(&url).send()?;
+        if resp.status().is_success() {
+            Ok(resp.json()?)
+        } else {
+            Ok(vec![])
+        }
+    })
 }
 
 fn trigger_connect(
@@ -280,10 +285,12 @@ fn trigger_connect(
     daemon: &DaemonInfo,
     host_node_id_hex: &str,
 ) -> Result<()> {
-    let url = format!("{}/api/remotes/connect", daemon.base_url());
-    let _ = client
-        .post(&url)
-        .json(&serde_json::json!({ "host_node_id": host_node_id_hex }))
-        .send()?;
-    Ok(())
+    tokio::task::block_in_place(|| {
+        let url = format!("{}/api/remotes/connect", daemon.base_url());
+        let _ = client
+            .post(&url)
+            .json(&serde_json::json!({ "host_node_id": host_node_id_hex }))
+            .send()?;
+        Ok(())
+    })
 }

@@ -123,7 +123,7 @@ impl Default for TransportFileConfig {
 }
 
 fn default_relay_bind_port() -> u16 {
-    4434
+    0 // OS picks a free port; set explicitly in config.toml to pin
 }
 
 fn default_use_public_relays() -> bool {
