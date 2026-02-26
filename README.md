@@ -3,51 +3,28 @@
 **WARNING: EXPERIMENTAL -- if you have fewer than 40 unique chromosomes, this
 isn't for you.  Not safe for humans (yet).  Star to learn more.**
 
-A terminal multiplexer and web-based manager for Claude Code instances with real-time collaboration.
+Make Claude multiplayer.  Make Claude better.
 
-Run multiple Claude Code sessions simultaneously, manage them from a web interface or TUI, share terminals with collaborators, and persist your entire conversation history in a searchable database.
+<!-- TODO: add screenshot -->
 
 ## Quick Start
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (1.91.0+, edition 2024)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI installed
-- [Bazel](https://bazel.build/) 8+ (for full builds) or Cargo (for development)
-
-### Build and run
-
 ```sh
-# Build with Cargo (fastest for local development)
+git clone https://github.com/anthropics/crab-city && cd crab-city
 cargo build -p crab_city
-
-# Start the server + TUI picker
 cargo run -p crab_city
 ```
 
-This starts the daemon on `127.0.0.1` with a random port, then opens a TUI picker where you can create and attach to Claude Code instances.
+This starts the server and opens a TUI picker where you can create and attach to
+Claude Code instances. Open `http://127.0.0.1:<port>` in a browser for the web
+UI.
 
-To start just the server (for the web UI):
+**Prerequisites:** [Rust 1.91+](https://rustup.rs/), [Claude Code
+CLI](https://docs.anthropic.com/en/docs/claude-code). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for full setup including Bazel and the
+frontend.
 
-```sh
-cargo run -p crab_city -- server
-```
-
-Then open `http://127.0.0.1:<port>` in your browser.
-
-### Build with Bazel (CI-equivalent)
-
-```sh
-# Build everything
-bazel build //packages/crab_city:crab
-
-# Run all tests
-bazel test //...
-```
-
-## How It Works
-
-Crab City has three layers:
+## What You Get
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -68,69 +45,88 @@ Crab City has three layers:
          SQLite (conversations, tasks, auth)
 ```
 
-Each Claude Code instance runs in its own PTY. The server manages instance lifecycle, multiplexes terminal output over a single WebSocket per client, detects Claude's state (idle/thinking/tool use) from conversation logs and terminal heuristics, and broadcasts state changes to all connected clients.
+Each Claude Code instance runs in its own PTY. The server manages lifecycle,
+multiplexes terminal output over WebSocket, detects Claude's state
+(idle/thinking/tool use) from conversation logs and terminal heuristics, and
+broadcasts changes to all connected clients.
 
-## CLI Usage
+## Three Ways to Use It
 
-The `crab` binary is both a server and a client:
+### TUI Picker (default)
 
 ```sh
-# Default: start daemon + open TUI picker
 crab
-
-# Start daemon in the foreground
-crab server
-
-# Attach to an instance by name or ID prefix
-crab attach swift-amber-falcon
-
-# List running instances
-crab list
-crab list --json
-
-# Kill a specific instance
-crab kill <name-or-id>
-
-# Stop the daemon and all instances
-crab kill-server
-
-# Manage authentication
-crab auth enable
-crab auth disable
-crab auth status
 ```
 
-### Server Options
+The default mode. A terminal UI where you can create, browse, and attach to
+instances. No browser required.
+
+### Web UI
 
 ```sh
-crab server \
-  --profile local \          # local | tunnel | server
-  --port 8080 \              # 0 = auto-select
-  --host 127.0.0.1 \
-  --import-all \             # import existing Claude conversations
-  --import-from ~/project \  # import from a specific project
-  --debug                    # enable debug logging
+crab server
 ```
 
-## Configuration
+Starts the server in the foreground. Open `http://127.0.0.1:<port>` for the full
+dashboard: live terminal emulator, conversation viewer, task board, and instance
+management.
 
-Crab City uses layered configuration. Each layer overrides the one below it:
+### CLI
 
+```sh
+crab list                        # show running instances
+crab attach swift-amber-falcon   # attach to an instance by name
+crab kill <name-or-id>           # stop an instance
+crab kill-server                 # stop the daemon and all instances
 ```
-CLI flags  >  env vars  >  config.toml  >  profile defaults  >  struct defaults
-```
 
-### Profiles
+## Multi-User Collaboration
+
+Crab City supports multiple users sharing the same set of Claude instances in
+real time:
+
+- **Shared terminals** — multiple users watch the same instance; a lock system
+  coordinates who can type
+- **Live presence** — see who's connected and what they're viewing
+- **Broadcast chat** — real-time messaging overlaid on instances
+- **Task board** — create and assign tasks tied to instances
+
+### Setting It Up
 
 Profiles set sensible defaults for common deployment scenarios:
 
 | Profile  | Host        | Auth | Use Case                        |
 |----------|-------------|------|---------------------------------|
-| `local`  | `127.0.0.1` | off  | Solo development                |
+| `local`  | `127.0.0.1` | off  | Solo development (default)      |
 | `tunnel` | `127.0.0.1` | on   | Tunneling (ngrok, cloudflared)  |
 | `server` | `0.0.0.0`   | on   | LAN or public deployment        |
 
-### Config File
+To enable multi-user access:
+
+```sh
+# 1. Start with a multi-user profile
+crab server --profile tunnel    # or --profile server
+
+# 2. Enable auth and create an admin account
+crab auth enable
+
+# 3. Share the URL with your team
+```
+
+The first user to register becomes the admin. Auth uses JWT sessions with a
+configurable TTL. Loopback requests (127.0.0.1) bypass auth so your local CLI
+always works.
+
+See [docs/configuration.md](docs/configuration.md) for the full config
+reference.
+
+## Configuration
+
+Configuration uses layers — each overrides the one below it:
+
+```
+CLI flags  >  env vars  >  config.toml  >  profile defaults  >  struct defaults
+```
 
 `~/.crabcity/config.toml`:
 
@@ -150,70 +146,20 @@ max_history_kb = 64
 hang_timeout_secs = 300
 ```
 
-### Environment Variables
-
-Every config field can be set via `CRAB_` prefixed environment variables with `__` as the section separator:
-
-```sh
-CRAB_AUTH__ENABLED=true
-CRAB_SERVER__PORT=8080
-CRAB_SERVER__MAX_BUFFER_MB=50
-```
-
-## Collaboration
-
-Crab City supports multiple users sharing the same set of Claude instances:
-
-- **Real-time presence** — see who's connected and what they're viewing
-- **Shared terminals** — multiple users can watch the same instance; a lock system coordinates who can type
-- **Broadcast chat** — real-time messaging overlaid on instances
-- **Task board** — create and assign tasks tied to instances
-
-All multi-user state is pushed to clients via WebSocket as full snapshots (not diffs), so clients can join or reconnect at any time and immediately have consistent state.
+Environment variables use the `CRAB_` prefix with `__` as the section separator
+(e.g. `CRAB_AUTH__ENABLED=true`). See
+[docs/configuration.md](docs/configuration.md) for the complete reference.
 
 ## Conversation History
 
-Crab City imports Claude conversation logs from `~/.claude/projects/` into a local SQLite database with full-text search:
+Crab City imports Claude conversation logs from `~/.claude/projects/` into a
+local SQLite database with full-text search. The web UI provides a searchable
+notebook-style conversation viewer with syntax-highlighted diffs and code
+blocks.
 
 ```sh
-# Import everything on startup
-crab server --import-all
-
-# Import a specific project
-crab server --import-from /path/to/project
-```
-
-The web UI provides a searchable notebook-style conversation viewer with syntax-highlighted diffs and code blocks.
-
-## Web UI
-
-The embedded SvelteKit web interface features:
-
-- Instance sidebar with live status indicators
-- xterm.js terminal emulator
-- Notebook-style conversation viewer
-- Task board with tags and filtering
-- Conversation history browser with search
-
-### Building the Web UI
-
-For development, the server runs without the embedded UI (it's behind a feature flag). To build with the UI embedded:
-
-```sh
-# Build the SvelteKit app
-cd packages/crab_city_ui
-pnpm install
-pnpm build
-cd ../..
-
-# Build the Rust binary with embedded UI
-CRAB_CITY_UI_PATH=packages/crab_city_ui/build cargo build -p crab_city --features embedded-ui
-```
-
-Or use Bazel, which handles everything automatically:
-
-```sh
-bazel build //packages/crab_city:crab
+crab server --import-all              # import everything on startup
+crab server --import-from ~/project   # import a specific project
 ```
 
 ## Project Structure
@@ -235,43 +181,20 @@ Each package has its own README with usage examples and API documentation.
 ## Development
 
 ```sh
-# Quick compile check
-cargo check -p crab_city
-
-# Run unit tests
-cargo test -p crab_city
-
-# Full CI build and test (includes format checks, edition 2024)
-bazel test //...
-
-# Format code (do not use rustfmt directly)
-bazel run //tools/format
+cargo check -p crab_city          # quick compile check
+cargo test -p crab_city           # run unit tests
+bazel test //...                  # full CI build + tests
+bazel run //tools/format          # format code (never use rustfmt directly)
 ```
 
-### Logging
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development guide.
 
-```sh
-# Default
-RUST_LOG=crab_city=info cargo run -p crab_city -- server
+## Documentation
 
-# Debug
-RUST_LOG=crab_city=debug cargo run -p crab_city -- server
-
-# Specific modules
-RUST_LOG=crab_city::ws=debug,crab_city::inference=trace cargo run -p crab_city -- server
-```
-
-### Data Directory
-
-All runtime data lives in `~/.crabcity/`:
-
-```
-~/.crabcity/
-├── config.toml          Configuration file
-├── crabcity.db          SQLite database
-├── exports/             Exported conversations
-└── logs/                Server logs
-```
+- [Configuration Reference](docs/configuration.md) — CLI options, profiles, config.toml, env vars
+- [Architecture](docs/architecture.md) — system design, WebSocket protocol, state detection
+- [Operations](docs/operations.md) — endpoints, metrics, troubleshooting, database management
+- [Contributing](CONTRIBUTING.md) — dev setup, building, testing, code style
 
 ## License
 
