@@ -16,10 +16,6 @@ jobs:
             runner: ubuntu-latest
             bazel_args: "--platforms=//bazel/config/platform/rust:linux_x86_64"
             asset: crab-linux-x86_64
-          - target: macos-x86_64
-            runner: macos-13
-            bazel_args: ""
-            asset: crab-macos-x86_64
           - target: macos-aarch64
             runner: macos-latest
             bazel_args: ""
@@ -117,15 +113,13 @@ jobs:
             | Platform | Binary |
             |----------|--------|
             | Linux x86_64 | [`crab-linux-x86_64`](https://github.com/crabcity/crabcity/releases/download/${{ github.ref_name }}/crab-linux-x86_64) |
-            | macOS Intel | [`crab-macos-x86_64`](https://github.com/crabcity/crabcity/releases/download/${{ github.ref_name }}/crab-macos-x86_64) |
-            | macOS Apple Silicon | [`crab-macos-aarch64`](https://github.com/crabcity/crabcity/releases/download/${{ github.ref_name }}/crab-macos-aarch64) |
+            | macOS (Apple Silicon) | [`crab-macos-aarch64`](https://github.com/crabcity/crabcity/releases/download/${{ github.ref_name }}/crab-macos-aarch64) |
 
             ## Manual install
 
             ```sh
             # Download the binary for your platform (adjust the asset name as needed)
             # Linux x86_64:       crab-linux-x86_64
-            # macOS Intel:        crab-macos-x86_64
             # macOS Apple Silicon: crab-macos-aarch64
             curl -fsSL https://github.com/crabcity/crabcity/releases/download/${{ github.ref_name }}/crab-PLATFORM -o crab
             chmod +x crab

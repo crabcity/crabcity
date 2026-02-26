@@ -43,6 +43,11 @@ case "$ARCH" in
   *) echo "Error: unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
+# macOS ships a universal aarch64 binary (runs on Intel via Rosetta 2)
+if [[ "$PLATFORM" == "macos" ]]; then
+  ARCH="aarch64"
+fi
+
 ASSET="crab-${PLATFORM}-${ARCH}"
 
 # Resolve version
