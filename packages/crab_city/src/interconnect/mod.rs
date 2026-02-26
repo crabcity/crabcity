@@ -8,6 +8,9 @@ pub mod host;
 pub mod manager;
 pub mod protocol;
 
+#[cfg(test)]
+mod e2e_tests;
+
 /// Which Crab City the user is currently viewing.
 ///
 /// `Local` means they're looking at their own instance's terminals/chat/tasks.

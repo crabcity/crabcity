@@ -147,6 +147,7 @@ _TEST_FILTERS = {
     "inference_test": "inference::",
     "cli_test": "cli::",
     "files_test": "files::",
+    "interconnect_test": "interconnect::",
 }
 
 [rust_test(
