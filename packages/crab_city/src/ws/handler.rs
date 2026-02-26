@@ -42,6 +42,7 @@ pub async fn handle_multiplexed_ws(
     repository: Arc<ConversationRepository>,
     identity: Option<Arc<InstanceIdentity>>,
     is_loopback: bool,
+    connection_manager: Option<Arc<crate::interconnect::manager::ConnectionManager>>,
 ) {
     // Track connection opened
     if let Some(ref m) = server_metrics {
@@ -104,6 +105,7 @@ pub async fn handle_multiplexed_ws(
         Some(repository.clone()),
         max_history_bytes,
         ClientType::Web,
+        connection_manager,
     ));
 
     // Build RPC context for interconnect dispatch

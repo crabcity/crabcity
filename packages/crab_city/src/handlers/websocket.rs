@@ -22,6 +22,7 @@ pub async fn multiplexed_websocket_handler(
     let metrics = state.metrics.clone();
     let repository = state.repository.clone();
     let identity = state.identity.clone();
+    let connection_manager = state.connection_manager.clone();
 
     let is_loopback = addr.ip().is_loopback();
 
@@ -35,6 +36,7 @@ pub async fn multiplexed_websocket_handler(
             repository,
             identity,
             is_loopback,
+            connection_manager,
         )
     })
 }

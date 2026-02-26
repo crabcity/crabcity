@@ -269,6 +269,15 @@ pub enum ClientMessage {
     VerifyEvents { from_id: i64, to_id: i64 },
     /// Get an event with its inclusion proof
     GetEventProof { event_id: i64 },
+
+    // === Context switching ===
+    /// Switch viewing context to a remote Crab City (or back to local).
+    /// When host_node_id is None, switches back to local context.
+    /// When host_node_id is provided (hex-encoded 32 bytes), switches to that remote.
+    SwitchContext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_node_id: Option<String>,
+    },
 }
 
 /// Messages sent FROM the server TO the client
@@ -491,6 +500,17 @@ pub enum ServerMessage {
         /// Seconds until lock expires (for UI countdown)
         #[serde(skip_serializing_if = "Option::is_none")]
         expires_in_secs: Option<u64>,
+    },
+
+    // === Context switching ===
+    /// Confirmation that viewing context was switched.
+    /// Sent after a successful SwitchContext client message.
+    ContextSwitched {
+        /// None = local, Some(hex) = remote host_node_id
+        #[serde(skip_serializing_if = "Option::is_none")]
+        host_node_id: Option<String>,
+        /// Human-readable name (e.g. "Bob's Workshop" or "local")
+        context_name: String,
     },
 }
 

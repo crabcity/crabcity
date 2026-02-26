@@ -32,6 +32,15 @@ struct FederationConnection {
     authenticated_users: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct RemoteEntry {
+    host_node_id: String,
+    host_name: String,
+    #[allow(dead_code)]
+    granted_access: String,
+    status: String,
+}
+
 fn hex_to_bytes_32(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
@@ -51,15 +60,31 @@ pub fn run_connect_panel(
 ) -> Result<ConnectPanelResult> {
     let client = reqwest::blocking::Client::new();
     let connections = fetch_connections(&client, daemon)?;
+    let remotes = fetch_remotes(&client, daemon)?;
 
-    // Build the list: [0] = local, [1..] = remotes
+    // Build the list: [0] = local, [1..] = remotes from saved entries (with live status)
     let mut contexts: Vec<CrabCityContext> = vec![CrabCityContext::Local];
-    for conn in &connections {
-        if let Some(node_id) = hex_to_bytes_32(&conn.host_node_id) {
+    let mut statuses: Vec<String> = vec!["local".into()];
+    for r in &remotes {
+        if let Some(node_id) = hex_to_bytes_32(&r.host_node_id) {
             contexts.push(CrabCityContext::Remote {
                 host_node_id: node_id,
-                host_name: conn.host_name.clone(),
+                host_name: r.host_name.clone(),
             });
+            statuses.push(r.status.clone());
+        }
+    }
+    // Also include any live connections not in saved remotes
+    for conn in &connections {
+        let already = remotes.iter().any(|r| r.host_node_id == conn.host_node_id);
+        if !already {
+            if let Some(node_id) = hex_to_bytes_32(&conn.host_node_id) {
+                contexts.push(CrabCityContext::Remote {
+                    host_node_id: node_id,
+                    host_name: conn.host_name.clone(),
+                });
+                statuses.push(conn.state.clone());
+            }
         }
     }
 
@@ -75,7 +100,7 @@ pub fn run_connect_panel(
 
         terminal.draw(|frame| {
             let area = frame.area();
-            let items = build_items(&contexts, &connections, current_context);
+            let items = build_items(&contexts, &statuses, &connections, current_context);
 
             let bottom_bar = Line::raw(" ↑↓ navigate · enter switch · esc back ");
 
@@ -85,7 +110,7 @@ pub fn run_connect_panel(
                         .title(" crab: connections ")
                         .title(
                             Line::styled(
-                                format!(" {} remote(s) ", connections.len()),
+                                format!(" {} remote(s) ", contexts.len() - 1),
                                 Style::default().add_modifier(Modifier::DIM),
                             )
                             .alignment(Alignment::Right),
@@ -121,6 +146,14 @@ pub fn run_connect_panel(
                 KeyCode::Enter => {
                     let i = state.selected().unwrap_or(0);
                     if let Some(ctx) = contexts.get(i) {
+                        // If selecting a disconnected remote, trigger connect first
+                        if let CrabCityContext::Remote { host_node_id, .. } = ctx {
+                            let status = statuses.get(i).map(|s| s.as_str()).unwrap_or("disconnected");
+                            if status != "connected" {
+                                let hex: String = host_node_id.iter().map(|b| format!("{b:02x}")).collect();
+                                let _ = trigger_connect(&client, daemon, &hex);
+                            }
+                        }
                         return Ok(ConnectPanelResult::SwitchContext(ctx.clone()));
                     }
                 }
@@ -132,12 +165,14 @@ pub fn run_connect_panel(
 
 fn build_items<'a>(
     contexts: &[CrabCityContext],
+    statuses: &[String],
     connections: &[FederationConnection],
     current: &CrabCityContext,
 ) -> Vec<ListItem<'a>> {
     contexts
         .iter()
-        .map(|ctx| {
+        .enumerate()
+        .map(|(idx, ctx)| {
             let is_current = ctx == current;
             let marker = if is_current { "● " } else { "  " };
 
@@ -166,12 +201,13 @@ fn build_items<'a>(
                     host_node_id,
                     host_name,
                 } => {
-                    // Find the connection info for status
-                    let conn = connections.iter().find(|c| {
-                        hex_to_bytes_32(&c.host_node_id).is_some_and(|id| &id == host_node_id)
-                    });
-                    let status = conn.map(|c| c.state.as_str()).unwrap_or("unknown");
-                    let users = conn
+                    let status = statuses.get(idx).map(|s| s.as_str()).unwrap_or("unknown");
+                    let users = connections
+                        .iter()
+                        .find(|c| {
+                            hex_to_bytes_32(&c.host_node_id)
+                                .is_some_and(|id| &id == host_node_id)
+                        })
                         .map(|c| c.authenticated_users.join(", "))
                         .unwrap_or_default();
 
@@ -221,4 +257,30 @@ fn fetch_connections(
     } else {
         Ok(vec![])
     }
+}
+
+fn fetch_remotes(
+    client: &reqwest::blocking::Client,
+    daemon: &DaemonInfo,
+) -> Result<Vec<RemoteEntry>> {
+    let url = format!("{}/api/remotes", daemon.base_url());
+    let resp = client.get(&url).send()?;
+    if resp.status().is_success() {
+        Ok(resp.json()?)
+    } else {
+        Ok(vec![])
+    }
+}
+
+fn trigger_connect(
+    client: &reqwest::blocking::Client,
+    daemon: &DaemonInfo,
+    host_node_id_hex: &str,
+) -> Result<()> {
+    let url = format!("{}/api/remotes/connect", daemon.base_url());
+    let _ = client
+        .post(&url)
+        .json(&serde_json::json!({ "host_node_id": host_node_id_hex }))
+        .send()?;
+    Ok(())
 }

@@ -305,6 +305,7 @@ async fn handle_authenticate(
         Some(Arc::new(ctx.repo.clone())),
         ctx.max_history_bytes,
         ClientType::Iroh,
+        None,
     ));
 
     // Spawn a task to forward this user's outbound messages through the tunnel

@@ -295,7 +295,8 @@ async fn attach_session(ws_stream: WsStream, instance_id: &str) -> Result<Attach
                                 | ServerMessage::MemberRemoved { .. }
                                 | ServerMessage::EventsResponse { .. }
                                 | ServerMessage::EventVerification { .. }
-                                | ServerMessage::EventProofResponse { .. } => {}
+                                | ServerMessage::EventProofResponse { .. }
+                                | ServerMessage::ContextSwitched { .. } => {}
                             }
                         }
                     }

@@ -24,6 +24,17 @@ use super::state_manager::{GlobalStateManager, TERMINAL_LOCK_TIMEOUT_SECS, Termi
 /// Prevents a malicious client from using the error path as an amplification vector.
 const MAX_ACCESS_DENIALS: u32 = 10;
 
+fn hex_to_bytes_32(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 /// Check access rights, sending an error message if denied.
 /// Returns true if access is granted.
 ///
@@ -78,6 +89,11 @@ pub(crate) struct ConnectionContext {
     pub client_type: ClientType,
     /// Counter for access-denied responses; after MAX_ACCESS_DENIALS, errors are silently dropped.
     pub deny_count: AtomicU32,
+    /// Current viewing context: Local or Remote { host_node_id }.
+    /// When Remote, qualifying messages should be forwarded through the ConnectionManager.
+    pub viewing_context: Arc<RwLock<crate::interconnect::CrabCityContext>>,
+    /// Federation connection manager for forwarding to remote hosts.
+    pub connection_manager: Option<Arc<crate::interconnect::manager::ConnectionManager>>,
 }
 
 impl ConnectionContext {
@@ -94,6 +110,7 @@ impl ConnectionContext {
         repository: Option<Arc<ConversationRepository>>,
         max_history_bytes: usize,
         client_type: ClientType,
+        connection_manager: Option<Arc<crate::interconnect::manager::ConnectionManager>>,
     ) -> Self {
         let (session_select_tx, session_select_rx) = mpsc::channel::<String>(1);
         Self {
@@ -110,6 +127,8 @@ impl ConnectionContext {
             session_select_rx: Arc::new(tokio::sync::Mutex::new(session_select_rx)),
             client_type,
             deny_count: AtomicU32::new(0),
+            viewing_context: Arc::new(RwLock::new(crate::interconnect::CrabCityContext::Local)),
+            connection_manager,
         }
     }
 }
@@ -616,6 +635,63 @@ pub(crate) async fn dispatch_client_message(
         | ClientMessage::QueryEvents { .. }
         | ClientMessage::VerifyEvents { .. }
         | ClientMessage::GetEventProof { .. }) => DispatchResult::Unhandled(msg),
+
+        // Context switching
+        ClientMessage::SwitchContext { host_node_id } => {
+            match host_node_id {
+                None => {
+                    // Switch back to local
+                    *ctx.viewing_context.write().await = crate::interconnect::CrabCityContext::Local;
+                    let _ = ctx.tx.send(ServerMessage::ContextSwitched {
+                        host_node_id: None,
+                        context_name: "local".into(),
+                    }).await;
+
+                    // Re-send local instance list
+                    let instances = ctx.instance_manager.list().await;
+                    let _ = ctx.tx.send(ServerMessage::InstanceList { instances }).await;
+                }
+                Some(hex) => {
+                    let bytes = hex_to_bytes_32(&hex);
+                    match bytes {
+                        Some(node_id) => {
+                            // Look up connection info
+                            if let Some(ref mgr) = ctx.connection_manager {
+                                let connections = mgr.list_connections().await;
+                                if let Some(conn) = connections.iter().find(|c| c.host_node_id == node_id) {
+                                    let name = conn.host_name.clone();
+                                    *ctx.viewing_context.write().await = crate::interconnect::CrabCityContext::Remote {
+                                        host_node_id: node_id,
+                                        host_name: name.clone(),
+                                    };
+                                    let _ = ctx.tx.send(ServerMessage::ContextSwitched {
+                                        host_node_id: Some(hex),
+                                        context_name: name,
+                                    }).await;
+                                } else {
+                                    let _ = ctx.tx.send(ServerMessage::Error {
+                                        instance_id: None,
+                                        message: "no active tunnel to that host".into(),
+                                    }).await;
+                                }
+                            } else {
+                                let _ = ctx.tx.send(ServerMessage::Error {
+                                    instance_id: None,
+                                    message: "federation not available".into(),
+                                }).await;
+                            }
+                        }
+                        None => {
+                            let _ = ctx.tx.send(ServerMessage::Error {
+                                instance_id: None,
+                                message: "invalid host_node_id hex".into(),
+                            }).await;
+                        }
+                    }
+                }
+            }
+            DispatchResult::Handled
+        }
     }
 }
 
@@ -842,6 +918,7 @@ mod tests {
             None,
             64 * 1024,
             ClientType::Web,
+            None,
         );
         (ctx, rx)
     }

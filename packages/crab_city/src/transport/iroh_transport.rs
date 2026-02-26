@@ -630,6 +630,7 @@ impl IrohTransport {
             repository,
             transport.max_history_bytes,
             ClientType::Iroh,
+            None,
         ));
 
         // Create this connection's replay buffer and register it in the global
