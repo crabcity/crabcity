@@ -2,12 +2,13 @@
 
 ## Current State
 
-The interconnect system is approximately 97% complete. All infrastructure is
+The interconnect system is approximately 99% complete. All infrastructure is
 implemented: transport, protocol, authentication, dispatch, persistence, CLI,
 HTTP endpoints, TUI context switching, full message forwarding (terminal I/O +
 chat + lobby + conversation sync + terminal lock), presence with remote user
-annotations, reconnection with exponential backoff, and join notifications.
-The remaining work is integration tests and a `/connect` TUI command.
+annotations, reconnection with exponential backoff, join notifications, and
+integration tests (7 e2e tests passing). The remaining work is a `/connect`
+TUI command and per-user tunnel auth.
 
 ## What's Built
 
@@ -47,7 +48,7 @@ for parser safety, state machine invariants, and capability algebra.
 | `interconnect/host.rs` | 1,113 | Complete — inbound tunnel handler, auth, dispatch |
 | `interconnect/manager.rs` | 710 | Complete — outbound tunnel management |
 | `interconnect/protocol.rs` | 450 | Complete — tunnel message types, read/write |
-| `interconnect/e2e_tests.rs` | 423 | Complete — 3 end-to-end federation tests |
+| `interconnect/e2e_tests.rs` | 770 | Complete — 7 end-to-end federation tests |
 | `interconnect/mod.rs` | 70 | Complete — CrabCityContext enum |
 
 ### Handlers & Dispatch (~2,920 LOC)
@@ -188,13 +189,14 @@ Wire the picker to actually switch context and proxy messages.
 
 Extend the e2e test suite to cover the full user flow.
 
-- [ ] Two-instance connect + authenticate + dispatch test
-- [ ] Multiple users on same tunnel, independent access
-- [ ] One user suspended, other unaffected
+- [x] Two-instance connect + authenticate + dispatch test (existing 3 tests)
+- [x] Multiple users on same tunnel, independent access
+- [x] One user suspended, other unaffected
 - [ ] Tunnel reconnection + re-authentication
-- [ ] Access gating: view user can't send input
+- [x] Access gating: view user can't send input
+- [x] RequestInstances returns host's instance list
 
-**Estimated: ~400 LOC test code**
+**~350 LOC added (7 tests total)**
 
 ## Dependency Graph
 
@@ -217,8 +219,8 @@ alongside everything.
 | 2: HTTP Endpoints | ~150 | **DONE** |
 | 3: TUI Context Switching | ~200 | **DONE** (except per-user tunnel auth) |
 | 4: Polish | ~250 | **DONE** (except `/connect` TUI commands) |
-| 5: Integration Tests | ~400 | Not started |
-| **Total remaining** | **~400** | |
+| 5: Integration Tests | ~350 | **DONE** (except reconnection test) |
+| **Total remaining** | **~50** | |
 
 ## Done Criteria
 
@@ -233,7 +235,7 @@ alongside everything.
 - [x] Access gating works (view-only can't send input)
 - [x] Tunnel reconnects after network interruption
 - [x] Multiple users on same tunnel authenticate independently
-- [ ] Integration tests pass (e2e flow tests)
+- [x] Integration tests pass (7 e2e tests)
 - [x] `bazel test //packages/crab_city:interconnect_test` passes
 - [ ] `bazel test //packages/crab_city:crab_city_tests` passes (needs full suite)
 
