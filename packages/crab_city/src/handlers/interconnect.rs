@@ -1272,9 +1272,7 @@ pub async fn connect_remote_handler(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let node_bytes = hex_to_bytes(&req.host_node_id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let node_id: [u8; 32] = node_bytes
-        .try_into()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // Look up the saved remote to get the host name
     let remote = state
@@ -1301,9 +1299,7 @@ pub async fn remove_remote_handler(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let node_bytes = hex_to_bytes(&host_node_id_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let node_id: [u8; 32] = node_bytes
-        .try_into()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
 
     // Disconnect tunnel if active
     if let Some(ref mgr) = state.connection_manager {
@@ -1330,9 +1326,7 @@ pub async fn remote_status_handler(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let node_bytes = hex_to_bytes(&host_node_id_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let node_id: [u8; 32] = node_bytes
-        .try_into()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let node_id: [u8; 32] = node_bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let connections = conn_mgr.list_connections().await;
     let conn = connections.iter().find(|c| c.host_node_id == node_id);
@@ -1343,9 +1337,10 @@ pub async fn remote_status_handler(
                 crate::interconnect::manager::ConnectionState::Connected => {
                     ("connected", json!(null))
                 }
-                crate::interconnect::manager::ConnectionState::Disconnected { since } => {
-                    ("disconnected", json!({ "since_secs": since.elapsed().as_secs() }))
-                }
+                crate::interconnect::manager::ConnectionState::Disconnected { since } => (
+                    "disconnected",
+                    json!({ "since_secs": since.elapsed().as_secs() }),
+                ),
                 crate::interconnect::manager::ConnectionState::Reconnecting { attempt } => {
                     ("reconnecting", json!({ "attempt": attempt }))
                 }

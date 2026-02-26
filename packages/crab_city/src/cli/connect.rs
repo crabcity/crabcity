@@ -266,8 +266,19 @@ pub async fn connect_command(
     });
     let granted_access = granted_capability.as_deref().unwrap_or("view");
 
-    if let Err(e) = persist_remote(config, &node_id, identity.public_key.as_bytes(), &host_name, granted_access).await {
-        eprintln!("Warning: failed to save remote (will need to reconnect manually): {}", e);
+    if let Err(e) = persist_remote(
+        config,
+        &node_id,
+        identity.public_key.as_bytes(),
+        &host_name,
+        granted_access,
+    )
+    .await
+    {
+        eprintln!(
+            "Warning: failed to save remote (will need to reconnect manually): {}",
+            e
+        );
     } else {
         info!(host = %host_name, "remote saved — will auto-connect on next daemon start");
     }

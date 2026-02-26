@@ -148,9 +148,13 @@ pub fn run_connect_panel(
                     if let Some(ctx) = contexts.get(i) {
                         // If selecting a disconnected remote, trigger connect first
                         if let CrabCityContext::Remote { host_node_id, .. } = ctx {
-                            let status = statuses.get(i).map(|s| s.as_str()).unwrap_or("disconnected");
+                            let status = statuses
+                                .get(i)
+                                .map(|s| s.as_str())
+                                .unwrap_or("disconnected");
                             if status != "connected" {
-                                let hex: String = host_node_id.iter().map(|b| format!("{b:02x}")).collect();
+                                let hex: String =
+                                    host_node_id.iter().map(|b| format!("{b:02x}")).collect();
                                 let _ = trigger_connect(&client, daemon, &hex);
                             }
                         }
@@ -205,8 +209,7 @@ fn build_items<'a>(
                     let users = connections
                         .iter()
                         .find(|c| {
-                            hex_to_bytes_32(&c.host_node_id)
-                                .is_some_and(|id| &id == host_node_id)
+                            hex_to_bytes_32(&c.host_node_id).is_some_and(|id| &id == host_node_id)
                         })
                         .map(|c| c.authenticated_users.join(", "))
                         .unwrap_or_default();

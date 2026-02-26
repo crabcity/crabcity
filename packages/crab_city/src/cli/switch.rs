@@ -62,7 +62,10 @@ pub async fn switch_command(daemon: &DaemonInfo, target: Option<&str>) -> Result
 
             match matches.len() {
                 0 => {
-                    eprintln!("No remote matching '{}'. Run `crab switch` to see available.", name);
+                    eprintln!(
+                        "No remote matching '{}'. Run `crab switch` to see available.",
+                        name
+                    );
                     std::process::exit(1);
                 }
                 1 => {

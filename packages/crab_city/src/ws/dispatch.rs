@@ -641,11 +641,15 @@ pub(crate) async fn dispatch_client_message(
             match host_node_id {
                 None => {
                     // Switch back to local
-                    *ctx.viewing_context.write().await = crate::interconnect::CrabCityContext::Local;
-                    let _ = ctx.tx.send(ServerMessage::ContextSwitched {
-                        host_node_id: None,
-                        context_name: "local".into(),
-                    }).await;
+                    *ctx.viewing_context.write().await =
+                        crate::interconnect::CrabCityContext::Local;
+                    let _ = ctx
+                        .tx
+                        .send(ServerMessage::ContextSwitched {
+                            host_node_id: None,
+                            context_name: "local".into(),
+                        })
+                        .await;
 
                     // Re-send local instance list
                     let instances = ctx.instance_manager.list().await;
@@ -658,34 +662,49 @@ pub(crate) async fn dispatch_client_message(
                             // Look up connection info
                             if let Some(ref mgr) = ctx.connection_manager {
                                 let connections = mgr.list_connections().await;
-                                if let Some(conn) = connections.iter().find(|c| c.host_node_id == node_id) {
+                                if let Some(conn) =
+                                    connections.iter().find(|c| c.host_node_id == node_id)
+                                {
                                     let name = conn.host_name.clone();
-                                    *ctx.viewing_context.write().await = crate::interconnect::CrabCityContext::Remote {
-                                        host_node_id: node_id,
-                                        host_name: name.clone(),
-                                    };
-                                    let _ = ctx.tx.send(ServerMessage::ContextSwitched {
-                                        host_node_id: Some(hex),
-                                        context_name: name,
-                                    }).await;
+                                    *ctx.viewing_context.write().await =
+                                        crate::interconnect::CrabCityContext::Remote {
+                                            host_node_id: node_id,
+                                            host_name: name.clone(),
+                                        };
+                                    let _ = ctx
+                                        .tx
+                                        .send(ServerMessage::ContextSwitched {
+                                            host_node_id: Some(hex),
+                                            context_name: name,
+                                        })
+                                        .await;
                                 } else {
-                                    let _ = ctx.tx.send(ServerMessage::Error {
-                                        instance_id: None,
-                                        message: "no active tunnel to that host".into(),
-                                    }).await;
+                                    let _ = ctx
+                                        .tx
+                                        .send(ServerMessage::Error {
+                                            instance_id: None,
+                                            message: "no active tunnel to that host".into(),
+                                        })
+                                        .await;
                                 }
                             } else {
-                                let _ = ctx.tx.send(ServerMessage::Error {
-                                    instance_id: None,
-                                    message: "federation not available".into(),
-                                }).await;
+                                let _ = ctx
+                                    .tx
+                                    .send(ServerMessage::Error {
+                                        instance_id: None,
+                                        message: "federation not available".into(),
+                                    })
+                                    .await;
                             }
                         }
                         None => {
-                            let _ = ctx.tx.send(ServerMessage::Error {
-                                instance_id: None,
-                                message: "invalid host_node_id hex".into(),
-                            }).await;
+                            let _ = ctx
+                                .tx
+                                .send(ServerMessage::Error {
+                                    instance_id: None,
+                                    message: "invalid host_node_id hex".into(),
+                                })
+                                .await;
                         }
                     }
                 }
