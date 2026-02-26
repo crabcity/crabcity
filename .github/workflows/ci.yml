@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Bazel repository cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-repo-cache
+          key: bazel-repo-${{ hashFiles('MODULE.bazel') }}
+          restore-keys: |
+            bazel-repo-
+
+      - name: Cache Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk-cache
+          key: bazel-disk-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            bazel-disk-
+
+      - name: Run tests
+        run: bazel test //... --disk_cache=~/.cache/bazel-disk-cache --repository_cache=~/.cache/bazel-repo-cache
