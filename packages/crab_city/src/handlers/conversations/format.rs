@@ -55,12 +55,28 @@ pub fn format_turn(turn: &Turn) -> serde_json::Value {
 
     let tool_names: Vec<&str> = turn.tool_uses.iter().map(|t| t.name.as_str()).collect();
 
+    let tool_details: Vec<serde_json::Value> = turn
+        .tool_uses
+        .iter()
+        .map(|t| {
+            let mut detail = serde_json::json!({
+                "name": t.name,
+                "input": t.input,
+            });
+            if let Some(c) = &t.category {
+                detail["category"] = serde_json::Value::String(category_str(c).to_string());
+            }
+            detail
+        })
+        .collect();
+
     let mut json = serde_json::json!({
         "uuid": turn.id,
         "role": role_str,
         "content": normalize_whitespace(&turn.text),
         "timestamp": turn.timestamp,
         "tools": tool_names,
+        "tool_details": tool_details,
     });
 
     // Thinking (if present)
@@ -2463,6 +2479,16 @@ mod turn_format_tests {
         assert_eq!(result["model"], "claude-opus-4-6");
         assert_eq!(result["tool_categories"]["Read"], "file_read");
         assert_eq!(result["tool_categories"]["Bash"], "shell");
+
+        // tool_details carries name, input, and category
+        let details = result["tool_details"].as_array().unwrap();
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0]["name"], "Read");
+        assert_eq!(details[0]["input"]["path"], "/foo");
+        assert_eq!(details[0]["category"], "file_read");
+        assert_eq!(details[1]["name"], "Bash");
+        assert_eq!(details[1]["input"]["command"], "ls");
+        assert_eq!(details[1]["category"], "shell");
     }
 
     // ── System message includes entry_type ──────────────────────────

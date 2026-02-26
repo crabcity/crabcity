@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ToolCell } from '$lib/types';
-	import { openFilePath } from '$lib/stores/files';
+	import { openFilePath, openExplorerWithSearch } from '$lib/stores/files';
 
 	interface Props {
 		toolCells: ToolCell[];
@@ -27,6 +27,22 @@
 		};
 		return icons[name] ?? '⚡';
 	}
+
+	/** Extract a human-readable detail string from tool input for non-file tools */
+	function getToolDetail(name: string, input: Record<string, unknown>): string | null {
+		let raw: string | null = null;
+		switch (name) {
+			case 'Bash': raw = input.command as string | null; break;
+			case 'Grep': raw = input.pattern as string | null; break;
+			case 'Glob': raw = input.pattern as string | null; break;
+			case 'WebFetch': raw = input.url as string | null; break;
+			case 'WebSearch': raw = input.query as string | null; break;
+			case 'Task': raw = input.description as string | null; break;
+			default: return null;
+		}
+		if (!raw) return null;
+		return raw.length > 40 ? raw.slice(0, 40) + '…' : raw;
+	}
 </script>
 
 <div class="cell-tools">
@@ -39,6 +55,7 @@
 		{#each toolCells as tool}
 			{@const isFileOp = tool.name === 'Read' || tool.name === 'Edit' || tool.name === 'Write'}
 			{@const filePath = isFileOp && tool.input?.file_path ? String(tool.input.file_path) : null}
+			{@const globPattern = tool.name === 'Glob' && tool.input?.pattern ? String(tool.input.pattern) : null}
 			{#if filePath}
 				<button
 					class="tool-badge file-tool"
@@ -49,10 +66,24 @@
 					<span class="tool-name">{tool.name}</span>
 					<span class="tool-file">{filePath.split('/').pop()}</span>
 				</button>
-			{:else}
-				<span class="tool-badge" class:rerunnable={tool.canRerun} title={tool.name}>
+			{:else if globPattern}
+				<button
+					class="tool-badge file-tool"
+					title="Search: {globPattern}"
+					onclick={() => openExplorerWithSearch(globPattern)}
+				>
 					<span class="tool-icon">{getToolIcon(tool.name)}</span>
 					<span class="tool-name">{tool.name}</span>
+					<span class="tool-detail">{globPattern.length > 40 ? globPattern.slice(0, 40) + '…' : globPattern}</span>
+				</button>
+			{:else}
+				{@const detail = getToolDetail(tool.name, tool.input)}
+				<span class="tool-badge" class:rerunnable={tool.canRerun} title={detail ? `${tool.name}: ${detail}` : tool.name}>
+					<span class="tool-icon">{getToolIcon(tool.name)}</span>
+					<span class="tool-name">{tool.name}</span>
+					{#if detail}
+						<span class="tool-detail">{detail}</span>
+					{/if}
 				</span>
 			{/if}
 		{/each}
@@ -141,7 +172,8 @@
 	}
 
 	/* File path label on file operation tools */
-	.tool-file {
+	.tool-file,
+	.tool-detail {
 		font-weight: 400;
 		font-size: 9px;
 		color: var(--text-muted);
