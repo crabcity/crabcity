@@ -672,4 +672,122 @@ mod tests {
         let r = dec.decode(&[0xE2, b'x']);
         assert_eq!(r, "\u{FFFD}\u{FFFD}x");
     }
+
+    // ── send_conversation_since ────────────────────────────────────────
+
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    use crate::instance_actor::InstanceHandle;
+    use crate::ws::state_manager::{GlobalStateManager, create_state_broadcast};
+
+    /// Helper: create a state manager with conversation turns pre-loaded.
+    async fn setup_state_with_turns(turns: Vec<serde_json::Value>) -> Arc<GlobalStateManager> {
+        let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        mgr.insert_test_tracker("inst-1", handle).await;
+        mgr.set_test_conversation_turns("inst-1", turns).await;
+        mgr
+    }
+
+    #[tokio::test]
+    async fn send_full_when_no_since_uuid() {
+        let turns = vec![
+            serde_json::json!({"uuid": "t1", "role": "user"}),
+            serde_json::json!({"uuid": "t2", "role": "assistant"}),
+        ];
+        let mgr = setup_state_with_turns(turns).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        send_conversation_since("inst-1", None, &mgr, &tx, None)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::ConversationFull { instance_id, turns } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(turns.len(), 2);
+            }
+            other => panic!("expected ConversationFull, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_update_since_known_uuid() {
+        let turns = vec![
+            serde_json::json!({"uuid": "t1", "role": "user"}),
+            serde_json::json!({"uuid": "t2", "role": "assistant"}),
+            serde_json::json!({"uuid": "t3", "role": "user"}),
+        ];
+        let mgr = setup_state_with_turns(turns).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        send_conversation_since("inst-1", Some("t1"), &mgr, &tx, None)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::ConversationUpdate { instance_id, turns } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(turns.len(), 2);
+                assert_eq!(turns[0]["uuid"], "t2");
+                assert_eq!(turns[1]["uuid"], "t3");
+            }
+            other => panic!("expected ConversationUpdate, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_full_when_since_uuid_unknown() {
+        let turns = vec![serde_json::json!({"uuid": "t1", "role": "user"})];
+        let mgr = setup_state_with_turns(turns).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        // Unknown UUID → full sync (all turns sent as Update)
+        send_conversation_since("inst-1", Some("nonexistent"), &mgr, &tx, None)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::ConversationUpdate { turns, .. } => {
+                assert_eq!(turns.len(), 1);
+                assert_eq!(turns[0]["uuid"], "t1");
+            }
+            other => panic!(
+                "expected ConversationUpdate for unknown UUID, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_nothing_when_since_is_last_uuid() {
+        let turns = vec![
+            serde_json::json!({"uuid": "t1", "role": "user"}),
+            serde_json::json!({"uuid": "t2", "role": "assistant"}),
+        ];
+        let mgr = setup_state_with_turns(turns).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        send_conversation_since("inst-1", Some("t2"), &mgr, &tx, None)
+            .await
+            .unwrap();
+
+        // Nothing should be sent — no new turns after t2
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn send_nothing_when_store_empty() {
+        let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        mgr.insert_test_tracker("inst-1", handle).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        send_conversation_since("inst-1", None, &mgr, &tx, None)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err());
+    }
 }

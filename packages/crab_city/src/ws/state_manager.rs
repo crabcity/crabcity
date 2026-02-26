@@ -770,6 +770,37 @@ impl GlobalStateManager {
 }
 
 #[cfg(test)]
+impl GlobalStateManager {
+    /// Insert a minimal tracker for testing conversation data flow.
+    /// Does NOT spawn any background tasks (watcher, state manager).
+    pub(crate) async fn insert_test_tracker(&self, instance_id: &str, handle: InstanceHandle) {
+        let tracker = InstanceTracker::new(
+            instance_id.to_string(),
+            handle,
+            "/tmp/test".to_string(),
+            Utc::now(),
+            true,
+        );
+        self.trackers
+            .write()
+            .await
+            .insert(instance_id.to_string(), tracker);
+    }
+
+    /// Write conversation turns directly into a tracker's store (for testing).
+    pub(crate) async fn set_test_conversation_turns(
+        &self,
+        instance_id: &str,
+        turns: Vec<serde_json::Value>,
+    ) {
+        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
+            let mut store = tracker.conversation_turns.write().await;
+            *store = turns;
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1467,6 +1498,91 @@ mod tests {
         assert_eq!(id, "inst-1");
         assert!(matches!(state, ClaudeState::Idle));
         assert!(!stale);
+    }
+
+    // =========================================================================
+    // Conversation store tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_conversation_snapshot_empty_without_tracker() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let turns = state_mgr.get_conversation_snapshot("nonexistent").await;
+        assert!(turns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_conversation_snapshot_roundtrip() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // Initially empty
+        assert!(
+            state_mgr
+                .get_conversation_snapshot("inst-1")
+                .await
+                .is_empty()
+        );
+
+        // Write turns
+        let turns = vec![
+            serde_json::json!({"uuid": "t1", "role": "user", "content": "hello"}),
+            serde_json::json!({"uuid": "t2", "role": "assistant", "content": "hi"}),
+        ];
+        state_mgr
+            .set_test_conversation_turns("inst-1", turns.clone())
+            .await;
+
+        // Read them back
+        let snapshot = state_mgr.get_conversation_snapshot("inst-1").await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0]["uuid"], "t1");
+        assert_eq!(snapshot[1]["uuid"], "t2");
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_conversation_receives_events() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // Subscribe BEFORE sending
+        let mut rx = state_mgr
+            .subscribe_conversation("inst-1")
+            .await
+            .expect("tracker exists");
+
+        // Manually broadcast a ConversationEvent via the tracker's channel
+        {
+            let trackers = state_mgr.trackers.read().await;
+            let tracker = trackers.get("inst-1").unwrap();
+            let _ = tracker.conversation_tx.send(ConversationEvent::Full {
+                instance_id: "inst-1".to_string(),
+                turns: vec![serde_json::json!({"uuid": "t1"})],
+            });
+        }
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            ConversationEvent::Full { instance_id, turns } => {
+                assert_eq!(instance_id, "inst-1");
+                assert_eq!(turns.len(), 1);
+                assert_eq!(turns[0]["uuid"], "t1");
+            }
+            _ => panic!("expected Full event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_conversation_nonexistent_returns_none() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        assert!(
+            state_mgr
+                .subscribe_conversation("nonexistent")
+                .await
+                .is_none()
+        );
     }
 
     // =========================================================================
