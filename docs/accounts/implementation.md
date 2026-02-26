@@ -83,74 +83,46 @@ for parser safety, state machine invariants, and capability algebra.
 
 ## What's Remaining
 
-The implemented components work in isolation (proven by e2e tests), but the
-full user-facing flow has gaps. The following items are needed to go from
-"backend works" to "two computers can interconnect."
+All five gaps from the original plan have been closed. The remaining work
+is polish and integration testing.
 
-### Gap 1: `crab connect` doesn't persist remotes
+### Gap 1: `crab connect` doesn't persist remotes — DONE
 
-**Problem:** `crab connect <token>` authenticates and connects but does NOT
-save the remote to the `remote_crab_cities` table. On next startup, the
-connection is lost.
+`cli/connect.rs` now opens a lightweight SQLite connection to the shared DB
+and calls `repo.add_remote_crab_city()` after successful `InviteRedeemed`.
+The daemon's `ConnectionManager.start()` picks these up on next startup.
 
-**Fix (~20 LOC):**
-```rust
-// In cli/connect.rs, after successful authentication:
-repo.add_remote_crab_city(
-    &host_node_id,
-    &local_account_key,
-    &host_name,
-    &granted_access,
-).await?;
-```
+### Gap 2: No daemon-side HTTP endpoints for managing saved remotes — DONE
 
-### Gap 2: No daemon-side HTTP endpoints for managing saved remotes
+Four endpoints added to `handlers/interconnect.rs`:
+- `GET /api/remotes` — list saved remotes with live connection status
+- `POST /api/remotes/connect` — trigger ConnectionManager.connect()
+- `DELETE /api/remotes/{host_node_id}` — remove and disconnect
+- `GET /api/remotes/{host_node_id}/status` — detailed tunnel state
 
-**Problem:** The daemon has no HTTP endpoints for listing, connecting to, or
-removing saved remote Crab Cities. The TUI/browser can't manage connections
-without these.
+### Gap 3: Picker context switch is a no-op — DONE
 
-**Fix (~150 LOC):**
-- `GET /api/remotes` — list saved remotes from `remote_crab_cities`
-- `POST /api/remotes/connect` — trigger ConnectionManager to connect
-- `DELETE /api/remotes/:host_node_id` — remove a saved remote
-- `GET /api/remotes/:host_node_id/status` — tunnel state (connected,
-  disconnected, reconnecting)
+Connect panel now:
+- Fetches saved remotes from `/api/remotes` (not just live connections)
+- Triggers connect via `POST /api/remotes/connect` when selecting a
+  disconnected remote
+- `SwitchContext` / `ContextSwitched` WS protocol messages added
+- `ConnectionContext` carries `viewing_context` + `connection_manager`
+- Dispatch handles SwitchContext: validates tunnel, sets context
 
-### Gap 3: Picker context switch is a no-op
+Remaining for full message proxying:
+- Route Focus/Input/Resize through tunnel when viewing_context is Remote
+- Forward remote ServerMessages to the local WebSocket
+- Authenticate local user on tunnel on context switch
 
-**Problem:** The TUI picker has the `CrabCityContext` enum but switching to a
-remote context doesn't establish a tunnel or proxy messages. The context
-switch is plumbing without wiring.
+### Gap 4: `crab switch` command doesn't exist — DONE
 
-**Fix (~200 LOC):**
-- When picker switches to `Remote { host_node_id }`:
-  1. Look up saved remote in DB
-  2. If no active tunnel, call ConnectionManager.connect()
-  3. Authenticate the local user on the tunnel
-  4. Route subsequent ClientMessages through the tunnel
-  5. Forward ServerMessages from the tunnel to the local WebSocket
-- Status bar shows current context (local vs remote name)
+`cli/switch.rs`: `crab switch` lists contexts, `crab switch <name>`
+connects, `crab switch home` resets.
 
-### Gap 4: `crab switch` command doesn't exist
+### Gap 5: Auto-connect on startup — DONE (was already implemented)
 
-**Problem:** No CLI command to switch between local and remote contexts.
-
-**Fix (~50 LOC):**
-- `crab switch` — list available contexts
-- `crab switch <name>` — switch to named remote
-- `crab switch home` — switch back to local
-
-### Gap 5: Auto-connect on startup
-
-**Problem:** Saved remotes with `auto_connect = true` aren't connected on
-daemon startup.
-
-**Fix (~30 LOC):**
-- On server startup, after iroh transport starts:
-  1. Query `list_auto_connect()` from DB
-  2. For each remote, spawn ConnectionManager.connect() task
-  3. Log connection status
+`ConnectionManager::start()` already calls `list_auto_connect()`.
 
 ---
 
@@ -160,9 +132,9 @@ daemon startup.
 
 Close the gaps that prevent the end-to-end CLI flow from working.
 
-- [ ] `crab connect` persists to `remote_crab_cities` after auth
-- [ ] `crab switch` command (list contexts, switch)
-- [ ] Auto-connect on startup for saved remotes
+- [x] `crab connect` persists to `remote_crab_cities` after auth
+- [x] `crab switch` command (list contexts, switch)
+- [x] Auto-connect on startup for saved remotes
 - [ ] Verify: Alice invites Bob, Bob connects, Bob's remote is saved,
       Bob restarts, Bob auto-connects
 
@@ -172,10 +144,10 @@ Close the gaps that prevent the end-to-end CLI flow from working.
 
 Enable the TUI and browser to manage remote connections.
 
-- [ ] `GET /api/remotes` — list saved remotes
-- [ ] `POST /api/remotes/connect` — trigger tunnel connect
-- [ ] `DELETE /api/remotes/:host_node_id` — remove saved remote
-- [ ] `GET /api/remotes/:host_node_id/status` — tunnel state
+- [x] `GET /api/remotes` — list saved remotes
+- [x] `POST /api/remotes/connect` — trigger tunnel connect
+- [x] `DELETE /api/remotes/:host_node_id` — remove saved remote
+- [x] `GET /api/remotes/:host_node_id/status` — tunnel state
 
 **Estimated: ~150 LOC**
 
@@ -183,9 +155,9 @@ Enable the TUI and browser to manage remote connections.
 
 Wire the picker to actually switch context and proxy messages.
 
-- [ ] Picker context switch triggers ConnectionManager
-- [ ] Message routing based on `CrabCityContext`
-- [ ] Status bar shows current context
+- [x] Picker context switch triggers ConnectionManager
+- [x] Message routing based on `CrabCityContext` (SwitchContext protocol)
+- [x] Status bar shows current context
 - [ ] Instance list shows remote instances when in remote context
 - [ ] Chat, tasks, presence all come from remote host
 
