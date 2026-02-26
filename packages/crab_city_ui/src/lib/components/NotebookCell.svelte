@@ -129,7 +129,7 @@
 		<CellContent {cell} {showRaw} cellType={cell.type} />
 
 		{#if hasTools && cell.toolCells}
-			<ToolBadges toolCells={cell.toolCells} />
+			<ToolBadges toolCells={cell.toolCells} agentLog={cell.agentLog} />
 		{/if}
 	</div>
 </div>

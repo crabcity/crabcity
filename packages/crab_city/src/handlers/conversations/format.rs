@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use toolpath_claude::MessageRole;
-use toolpath_convo::{Role, ToolCategory, Turn};
+use toolpath_convo::{Role, ToolCategory, ToolResult, Turn};
 use tracing::warn;
 
 use crate::repository;
@@ -65,6 +65,12 @@ pub fn format_turn(turn: &Turn) -> serde_json::Value {
             });
             if let Some(c) = &t.category {
                 detail["category"] = serde_json::Value::String(category_str(c).to_string());
+            }
+            if let Some(r) = &t.result {
+                detail["result"] = serde_json::Value::String(r.content.clone());
+                if r.is_error {
+                    detail["is_error"] = serde_json::Value::Bool(true);
+                }
             }
             detail
         })
@@ -249,26 +255,71 @@ pub async fn format_turn_with_attribution(
 /// Process raw watcher entries into formatted JSON turns + state signals.
 ///
 /// This is the single seam where ConversationEntry crosses into crab_city.
-/// It handles: phantom filtering, to_turn dispatch, and format routing.
+/// It handles: phantom filtering, cross-entry tool result merging,
+/// to_turn dispatch, and format routing.
 pub async fn process_watcher_entries(
     entries: &[toolpath_claude::ConversationEntry],
     instance_id: &str,
     repo: Option<&Arc<repository::ConversationRepository>>,
     state_manager: Option<&Arc<ws::GlobalStateManager>>,
 ) -> Vec<serde_json::Value> {
-    let mut turns = Vec::with_capacity(entries.len());
+    // First pass: build turns, collecting tool-result-only entries for merging.
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut formatted: Vec<serde_json::Value> = Vec::new();
+
+    // Track which indices in `formatted` came from Turn vs entry-based formatting.
+    // We only need to re-format Turn-based entries after merging.
+    enum FormattedSource {
+        Turn(usize), // index into `turns`
+        Entry,       // entry-based, no merging needed
+    }
+    let mut sources: Vec<FormattedSource> = Vec::new();
+
     for e in entries {
         if is_tool_result_only(e) {
+            // Merge tool results into preceding turns
+            if let Some(msg) = &e.message {
+                for tr in msg.tool_results() {
+                    for turn in turns.iter_mut().rev() {
+                        if let Some(inv) = turn
+                            .tool_uses
+                            .iter_mut()
+                            .find(|tu| tu.id == tr.tool_use_id && tu.result.is_none())
+                        {
+                            inv.result = Some(ToolResult {
+                                content: tr.content.text(),
+                                is_error: tr.is_error,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
             continue;
         }
         if let Some(turn) = toolpath_claude::provider::to_turn(e) {
-            turns.push(format_turn_with_attribution(&turn, instance_id, repo, state_manager).await);
+            let idx = turns.len();
+            turns.push(turn);
+            // Placeholder — will be replaced after merging
+            formatted.push(serde_json::Value::Null);
+            sources.push(FormattedSource::Turn(idx));
         } else {
             // Progress/unknown entries — fall back to entry-based formatting
-            turns.push(format_entry_with_attribution(e, instance_id, repo, state_manager).await);
+            formatted
+                .push(format_entry_with_attribution(e, instance_id, repo, state_manager).await);
+            sources.push(FormattedSource::Entry);
         }
     }
-    turns
+
+    // Second pass: format turns (now with merged tool results)
+    for (i, source) in sources.iter().enumerate() {
+        if let FormattedSource::Turn(idx) = source {
+            formatted[i] =
+                format_turn_with_attribution(&turns[*idx], instance_id, repo, state_manager).await;
+        }
+    }
+
+    formatted
 }
 
 /// Extract title from a Turn's text, truncated to `limit` chars.
@@ -2458,14 +2509,20 @@ mod turn_format_tests {
                 id: "tu1".to_string(),
                 name: "Read".to_string(),
                 input: json!({"path": "/foo"}),
-                result: None,
+                result: Some(toolpath_convo::ToolResult {
+                    content: "file contents here".to_string(),
+                    is_error: false,
+                }),
                 category: Some(ToolCategory::FileRead),
             },
             ToolInvocation {
                 id: "tu2".to_string(),
                 name: "Bash".to_string(),
                 input: json!({"command": "ls"}),
-                result: None,
+                result: Some(toolpath_convo::ToolResult {
+                    content: "No such file".to_string(),
+                    is_error: true,
+                }),
                 category: Some(ToolCategory::Shell),
             },
         ];
@@ -2480,15 +2537,22 @@ mod turn_format_tests {
         assert_eq!(result["tool_categories"]["Read"], "file_read");
         assert_eq!(result["tool_categories"]["Bash"], "shell");
 
-        // tool_details carries name, input, and category
+        // tool_details carries name, input, category, and result
         let details = result["tool_details"].as_array().unwrap();
         assert_eq!(details.len(), 2);
         assert_eq!(details[0]["name"], "Read");
         assert_eq!(details[0]["input"]["path"], "/foo");
         assert_eq!(details[0]["category"], "file_read");
+        assert_eq!(details[0]["result"], "file contents here");
+        assert!(
+            details[0].get("is_error").is_none(),
+            "is_error should be omitted when false"
+        );
         assert_eq!(details[1]["name"], "Bash");
         assert_eq!(details[1]["input"]["command"], "ls");
         assert_eq!(details[1]["category"], "shell");
+        assert_eq!(details[1]["result"], "No such file");
+        assert_eq!(details[1]["is_error"], true);
     }
 
     // ── System message includes entry_type ──────────────────────────

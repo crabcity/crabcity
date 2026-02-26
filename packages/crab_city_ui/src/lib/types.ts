@@ -36,7 +36,7 @@ export interface ConversationTurn {
 	content: string;
 	timestamp: string;
 	tools: string[];
-	tool_details?: Array<{ name: string; input: Record<string, unknown>; category?: string }>;
+	tool_details?: Array<{ name: string; input: Record<string, unknown>; category?: string; result?: string; is_error?: boolean }>;
 	thinking?: string; // Extended thinking content from Claude
 	attributed_to?: { user_id: string; display_name: string };
 	task_id?: number; // Structural task reference (from backend attribution)
@@ -245,6 +245,7 @@ export interface ToolCell {
 	name: string;
 	input: Record<string, unknown>;
 	output?: string;
+	is_error?: boolean;
 	status: 'pending' | 'running' | 'complete' | 'error';
 	timestamp: string;
 	// For re-execution
@@ -278,6 +279,8 @@ export interface NotebookCell {
 	// For progress entries
 	progressType?: 'hook' | 'agent';
 	hookEvent?: string;
+	// Agent progress absorbed during tool groups (sub-agent activity log)
+	agentLog?: Array<{ content: string; agentId?: string; role?: string }>;
 }
 
 // Pagination and search types
