@@ -1,3 +1,5 @@
+import { updateVoiceMetrics, recordVoiceTranscription, recordVoiceError } from '$lib/stores/metrics';
+
 export type VoiceBackend = 'prompt-api' | 'web-speech' | 'none';
 
 export interface VoiceSessionCallbacks {
@@ -45,6 +47,7 @@ export function createVoiceSession(
 	backend: VoiceBackend,
 	callbacks: VoiceSessionCallbacks,
 ): VoiceSession {
+	updateVoiceMetrics({ backend });
 	if (backend === 'prompt-api') {
 		return createPromptApiSession(callbacks);
 	}
@@ -65,6 +68,7 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 	let chunks: Blob[] = [];
 	let active = false;
 	let destroyed = false;
+	let transcribeStart = 0;
 
 	// Eagerly create the language model session
 	LanguageModel.create({ expectedInputs: [{ type: 'audio' }] })
@@ -75,7 +79,10 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 			}
 			session = s;
 		})
-		.catch((err) => cb.onError(`Failed to create Prompt API session: ${err}`));
+		.catch((err) => {
+			cb.onError(`Failed to create Prompt API session: ${err}`);
+			recordVoiceError();
+		});
 
 	return {
 		backend: 'prompt-api',
@@ -99,11 +106,13 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 					};
 					recorder.start();
 					cb.onStateChange('listening');
+					updateVoiceMetrics({ state: 'listening' });
 				})
 				.catch((err) => {
 					active = false;
 					cb.onError(`Microphone access denied: ${err}`);
 					cb.onStateChange('idle');
+					recordVoiceError();
 				});
 		},
 
@@ -120,10 +129,13 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 
 					if (chunks.length === 0) {
 						cb.onStateChange('idle');
+						updateVoiceMetrics({ state: 'idle' });
 						return;
 					}
 
 					cb.onStateChange('transcribing');
+					updateVoiceMetrics({ state: 'transcribing' });
+					transcribeStart = performance.now();
 
 					try {
 						const blob = new Blob(chunks, { type: 'audio/webm' });
@@ -150,11 +162,15 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 							},
 						]);
 
+						const elapsed = Math.round(performance.now() - transcribeStart);
 						cb.onFinal(response.trim());
+						recordVoiceTranscription(elapsed);
 					} catch (err) {
 						cb.onError(`Transcription failed: ${err}`);
+						recordVoiceError();
 					} finally {
 						cb.onStateChange('idle');
+						updateVoiceMetrics({ state: 'idle' });
 					}
 				};
 				recorder.stop();
@@ -163,6 +179,7 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 				mediaStream = null;
 				recorder = null;
 				cb.onStateChange('idle');
+				updateVoiceMetrics({ state: 'idle' });
 			}
 		},
 
@@ -201,6 +218,7 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 		const lastResult = event.results[event.results.length - 1];
 		if (lastResult.isFinal) {
 			cb.onFinal(transcript);
+			recordVoiceTranscription();
 		} else {
 			cb.onInterim(transcript);
 		}
@@ -210,10 +228,12 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 		console.error('Speech recognition error:', event.error);
 		cb.onError(event.error);
 		cb.onStateChange('idle');
+		recordVoiceError();
 	};
 
 	recognition.onend = () => {
 		cb.onStateChange('idle');
+		updateVoiceMetrics({ state: 'idle' });
 	};
 
 	return {
@@ -222,6 +242,7 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 		start() {
 			recognition.start();
 			cb.onStateChange('listening');
+			updateVoiceMetrics({ state: 'listening' });
 		},
 
 		stop() {

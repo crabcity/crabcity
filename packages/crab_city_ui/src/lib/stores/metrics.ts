@@ -37,11 +37,20 @@ export interface WebSocketMetrics {
 	lastLatencyMs: number;
 }
 
+export interface VoiceMetrics {
+	backend: 'prompt-api' | 'web-speech' | 'none';
+	state: 'idle' | 'listening' | 'transcribing';
+	transcriptionCount: number;
+	errorCount: number;
+	lastTranscribeMs: number;
+}
+
 export interface Metrics {
 	virtualList: VirtualListMetrics;
 	terminal: TerminalMetrics;
 	avatar: AvatarMetrics;
 	websocket: WebSocketMetrics;
+	voice: VoiceMetrics;
 }
 
 // =============================================================================
@@ -71,6 +80,13 @@ function initialMetrics(): Metrics {
 			messagesPerSecond: 0,
 			reconnectCount: 0,
 			lastLatencyMs: 0
+		},
+		voice: {
+			backend: 'none',
+			state: 'idle',
+			transcriptionCount: 0,
+			errorCount: 0,
+			lastTranscribeMs: 0
 		}
 	};
 }
@@ -161,6 +177,31 @@ export function recordWebSocketLatency(latencyMs: number): void {
 	_metrics.update((m) => ({
 		...m,
 		websocket: { ...m.websocket, lastLatencyMs: latencyMs }
+	}));
+}
+
+export function updateVoiceMetrics(data: Partial<VoiceMetrics>): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: { ...m.voice, ...data }
+	}));
+}
+
+export function recordVoiceTranscription(latencyMs?: number): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: {
+			...m.voice,
+			transcriptionCount: m.voice.transcriptionCount + 1,
+			...(latencyMs !== undefined ? { lastTranscribeMs: latencyMs } : {})
+		}
+	}));
+}
+
+export function recordVoiceError(): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: { ...m.voice, state: 'idle' as const, errorCount: m.voice.errorCount + 1 }
 	}));
 }
 

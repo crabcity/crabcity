@@ -4,14 +4,57 @@
 	 *
 	 * Toggle with Ctrl+Shift+D (or Cmd+Shift+D on Mac).
 	 * Shows real-time metrics for debugging performance issues.
+	 * Drag by title bar to reposition.
 	 */
 
 	import { metrics, debugPanelVisible, avatarHitRate } from '$lib/stores/metrics';
+
+	let panelEl: HTMLDivElement | undefined = $state();
+	let position: { x: number; y: number } | null = $state<{ x: number; y: number } | null>(null);
+	let dragging = $state(false);
+	let dragOffset = { x: 0, y: 0 };
+
+	function onPointerDown(e: PointerEvent) {
+		if (!panelEl) return;
+		dragging = true;
+		const rect = panelEl.getBoundingClientRect();
+		dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+	}
+
+	function onPointerMove(e: PointerEvent) {
+		if (!dragging || !panelEl) return;
+		const maxX = window.innerWidth - panelEl.offsetWidth;
+		const maxY = window.innerHeight - panelEl.offsetHeight;
+		position = {
+			x: Math.max(0, Math.min(e.clientX - dragOffset.x, maxX)),
+			y: Math.max(0, Math.min(e.clientY - dragOffset.y, maxY)),
+		};
+	}
+
+	function onPointerUp() {
+		dragging = false;
+	}
+
+	const panelStyle = $derived(
+		position ? `left: ${position.x}px; top: ${position.y}px;` : ''
+	);
 </script>
 
 {#if $debugPanelVisible}
-	<div class="debug-panel">
-		<h4>Performance Metrics</h4>
+	<div
+		class="debug-panel"
+		class:dragged={position !== null}
+		style={panelStyle}
+		bind:this={panelEl}
+	>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<h4
+			class:grabbing={dragging}
+			onpointerdown={onPointerDown}
+			onpointermove={onPointerMove}
+			onpointerup={onPointerUp}
+		>Performance Metrics</h4>
 
 		<section>
 			<h5>VirtualList</h5>
@@ -77,6 +120,34 @@
 			</div>
 		</section>
 
+		<section>
+			<h5>Voice Input</h5>
+			<div class="metric">
+				<span class="label">Backend</span>
+				<span class="value">{$metrics.voice.backend}</span>
+			</div>
+			<div class="metric">
+				<span class="label">State</span>
+				<span class="value">{$metrics.voice.state}</span>
+			</div>
+			<div class="metric">
+				<span class="label">Transcriptions</span>
+				<span class="value">{$metrics.voice.transcriptionCount}</span>
+			</div>
+			<div class="metric">
+				<span class="label">Errors</span>
+				<span class="value" class:warning={$metrics.voice.errorCount > 0}>
+					{$metrics.voice.errorCount}
+				</span>
+			</div>
+			{#if $metrics.voice.backend === 'prompt-api' && $metrics.voice.lastTranscribeMs > 0}
+				<div class="metric">
+					<span class="label">Last transcribe</span>
+					<span class="value">{$metrics.voice.lastTranscribeMs}ms</span>
+				</div>
+			{/if}
+		</section>
+
 		<div class="hint">Press Ctrl+Shift+D to close</div>
 	</div>
 {/if}
@@ -98,6 +169,11 @@
 		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
 	}
 
+	.debug-panel.dragged {
+		bottom: auto;
+		right: auto;
+	}
+
 	h4 {
 		margin: 0 0 8px;
 		font-size: 11px;
@@ -105,6 +181,13 @@
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
 		color: var(--amber-400, #fbbf24);
+		cursor: grab;
+		user-select: none;
+		touch-action: none;
+	}
+
+	h4.grabbing {
+		cursor: grabbing;
 	}
 
 	section {
