@@ -44,6 +44,15 @@ jobs:
       - name: Build
         run: >
           bazel build //packages/crab_city:crab_embedded
+          --compilation_mode opt
+          ${{ matrix.bazel_args }}
+          --disk_cache=~/.cache/bazel-disk-cache
+          --repository_cache=~/.cache/bazel-repo-cache
+
+      - name: Verify embedded UI assets
+        run: >
+          bazel test //packages/crab_city_ui/crate:embed_test
+          --compilation_mode opt
           ${{ matrix.bazel_args }}
           --disk_cache=~/.cache/bazel-disk-cache
           --repository_cache=~/.cache/bazel-repo-cache

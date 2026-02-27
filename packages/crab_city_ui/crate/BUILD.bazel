@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 rust_library(
     name = "crab_city_ui_crate",
@@ -18,6 +18,12 @@ rust_library(
     deps = [
         "@crate_index//:rust-embed",
     ],
+)
+
+rust_test(
+    name = "embed_test",
+    crate = ":crab_city_ui_crate",
+    tags = ["no-sandbox"],
 )
 
 # Test binary to verify embedded assets
