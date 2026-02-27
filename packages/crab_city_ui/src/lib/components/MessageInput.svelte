@@ -4,6 +4,7 @@
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
 	import { onMount } from 'svelte';
+	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
 
 	let message = $state('');
 	let inputEl: HTMLTextAreaElement;
@@ -31,63 +32,48 @@
 	// Voice input state
 	let speechSupported = $state(false);
 	let isListening = $state(false);
-	let recognition: SpeechRecognition | null = null;
+	let isTranscribing = $state(false);
+	let voiceSession: VoiceSession | null = null;
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
 
-	// Check for Web Speech API support and initialize
 	onMount(() => {
-		const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-		if (SpeechRecognition) {
+		detectVoiceBackend().then((backend) => {
+			if (backend === 'none') return;
 			speechSupported = true;
-			recognition = new SpeechRecognition();
-			recognition.continuous = true;
-			recognition.interimResults = true;
-			recognition.lang = 'en-US';
-
-			recognition.onresult = (event) => {
-				const transcript = Array.from(event.results)
-					.map(result => result[0].transcript)
-					.join(' ');
-
-				// Always show current transcript (interim or final) appended to pre-voice message
-				const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
-				message = messageBeforeVoice + separator + transcript;
-
-				// When final, update the base so next voice session builds from here
-				if (event.results[event.results.length - 1].isFinal) {
+			voiceSession = createVoiceSession(backend, {
+				onInterim(text) {
+					const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
+					message = messageBeforeVoice + separator + text;
+				},
+				onFinal(text) {
+					const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
+					message = messageBeforeVoice + separator + text;
 					messageBeforeVoice = message;
-				}
-			};
-
-			recognition.onerror = (event) => {
-				console.error('Speech recognition error:', event.error);
-				isListening = false;
-			};
-
-			recognition.onend = () => {
-				isListening = false;
-			};
-		}
+				},
+				onError(err) {
+					console.error('Voice input error:', err);
+				},
+				onStateChange(state) {
+					isListening = state === 'listening';
+					isTranscribing = state === 'transcribing';
+				},
+			});
+		});
 
 		return () => {
-			if (recognition) {
-				recognition.abort();
-			}
+			voiceSession?.destroy();
 		};
 	});
 
 	function toggleVoiceInput() {
-		if (!recognition) return;
+		if (!voiceSession) return;
 
 		if (isListening) {
-			recognition.stop();
-			isListening = false;
+			voiceSession.stop();
 		} else {
-			// Capture current message so we can append voice transcript to it
 			messageBeforeVoice = message;
-			recognition.start();
-			isListening = true;
+			voiceSession.start();
 		}
 	}
 
@@ -95,9 +81,8 @@
 		if (!message.trim()) return;
 
 		// Stop voice input if active
-		if (isListening && recognition) {
-			recognition.stop();
-			isListening = false;
+		if (isListening && voiceSession) {
+			voiceSession.stop();
 		}
 
 		// If a task was staged, append a structural tag and send with task_id
@@ -120,9 +105,8 @@
 	function handleAddToQueue() {
 		if (!message.trim() || !$currentInstanceId) return;
 
-		if (isListening && recognition) {
-			recognition.stop();
-			isListening = false;
+		if (isListening && voiceSession) {
+			voiceSession.stop();
 		}
 
 		quickAddTask($currentInstanceId, message.trim());
@@ -213,12 +197,17 @@
 			<button
 				class="voice-btn"
 				class:listening={isListening}
+				class:transcribing={isTranscribing}
 				onclick={toggleVoiceInput}
-				aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-				title={isListening ? 'Stop listening' : 'Voice input'}
+				disabled={isTranscribing}
+				aria-label={isTranscribing ? 'Transcribing...' : isListening ? 'Stop voice input' : 'Start voice input'}
+				title={isTranscribing ? 'Transcribing...' : isListening ? 'Stop listening' : 'Voice input'}
 			>
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					{#if isListening}
+					{#if isTranscribing}
+						<!-- Spinner while transcribing -->
+						<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
+					{:else if isListening}
 						<!-- Stop icon when listening -->
 						<rect x="6" y="6" width="12" height="12" rx="1" />
 					{:else}
@@ -386,6 +375,17 @@
 		border-color: var(--status-red);
 		color: var(--status-red-text);
 		animation: pulse-glow 1.5s ease-in-out infinite;
+	}
+
+	.voice-btn.transcribing {
+		background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
+		border-color: var(--amber-600);
+		color: var(--amber-400);
+		cursor: wait;
+	}
+
+	.voice-btn.transcribing svg {
+		animation: spin 1s linear infinite;
 	}
 
 	@keyframes pulse-glow {
