@@ -32,6 +32,7 @@ jobs:
           key: bazel-repo-${{ matrix.target }}-${{ hashFiles('MODULE.bazel') }}
           restore-keys: |
             bazel-repo-${{ matrix.target }}-
+          save-always: true
 
       - name: Cache Bazel disk cache
         uses: actions/cache@v4
@@ -40,6 +41,7 @@ jobs:
           key: bazel-disk-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml') }}
           restore-keys: |
             bazel-disk-${{ matrix.target }}-
+          save-always: true
 
       - name: Build
         run: >
