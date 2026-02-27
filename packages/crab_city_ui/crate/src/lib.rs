@@ -13,3 +13,24 @@ pub use rust_embed::Embed;
 #[derive(Embed)]
 #[folder = "$CRAB_CITY_UI_PATH"]
 pub struct Assets;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_assets_not_empty() {
+        assert!(
+            Assets::iter().count() > 0,
+            "rust-embed embedded zero files — the SvelteKit build output is missing"
+        );
+    }
+
+    #[test]
+    fn index_html_present() {
+        assert!(
+            Assets::get("index.html").is_some(),
+            "index.html not found in embedded assets — SPA entry point is missing"
+        );
+    }
+}
