@@ -6,7 +6,7 @@
 	import { voiceBackendOverride } from '$lib/stores/metrics';
 	import { onMount } from 'svelte';
 	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
-
+	import VoiceVisualizer from './VoiceVisualizer.svelte';
 
 	let message = $state('');
 	let inputEl: HTMLTextAreaElement;
@@ -39,6 +39,8 @@
 	let voiceSession: VoiceSession | null = $state(null);
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
+	// Shared frequency buffer for visualizer — written by voice analyser, read by canvas RAF
+	const frequencyBuffer = new Uint8Array(256);
 
 	// Voice mode indicators
 	let isHybrid = $derived(voiceSession?.backend === 'hybrid');
@@ -68,6 +70,9 @@
 			},
 			onVolumeChange(level: number) {
 				voiceLevel = level;
+			},
+			onFrequencyData(data: Uint8Array) {
+				frequencyBuffer.set(data);
 			},
 		};
 	}
@@ -107,6 +112,7 @@
 		if (isListening) {
 			voiceSession.stop();
 		} else {
+			frequencyBuffer.fill(0);
 			messageBeforeVoice = message;
 			voiceSession.start();
 		}
@@ -238,7 +244,7 @@
 		</div>
 	{/if}
 	{#if isListening}
-		<div class="voice-level-bar" style="--voice-level: {voiceLevel};"></div>
+		<VoiceVisualizer data={frequencyBuffer} />
 	{/if}
 	<div class="input-row">
 		<textarea
@@ -406,13 +412,6 @@
 	.voice-wrapper {
 		position: relative;
 		flex-shrink: 0;
-	}
-
-	.voice-level-bar {
-		height: 6px;
-		background: linear-gradient(90deg, var(--status-red) 0%, var(--status-red) calc(var(--voice-level) * 100%), transparent calc(var(--voice-level) * 100%));
-		opacity: calc(0.4 + var(--voice-level) * 0.6);
-		transition: opacity 0.05s;
 	}
 
 	.voice-btn,

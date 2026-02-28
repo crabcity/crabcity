@@ -9,6 +9,7 @@ export interface VoiceSessionCallbacks {
 	onError: (err: string) => void;
 	onStateChange: (state: 'listening' | 'transcribing' | 'idle') => void;
 	onVolumeChange?: (level: number) => void;
+	onFrequencyData?: (data: Uint8Array) => void;
 }
 
 export interface VoiceSession {
@@ -113,14 +114,20 @@ interface VolumeAnalyser {
 	destroy(): void;
 }
 
-function createVolumeAnalyser(stream: MediaStream, onLevel: (n: number) => void): VolumeAnalyser {
+function createVolumeAnalyser(
+	stream: MediaStream,
+	onLevel: (n: number) => void,
+	onFrequencyData?: (data: Uint8Array) => void,
+): VolumeAnalyser {
 	const audioCtx = new AudioContext();
 	const source = audioCtx.createMediaStreamSource(stream);
 	const analyser = audioCtx.createAnalyser();
-	analyser.fftSize = 256;
+	analyser.fftSize = 512;
+	analyser.smoothingTimeConstant = 0.6;
 	source.connect(analyser);
 
 	const buffer = new Uint8Array(analyser.fftSize);
+	const freqBuffer = new Uint8Array(analyser.frequencyBinCount);
 	let rafId = 0;
 	let alive = true;
 
@@ -136,6 +143,12 @@ function createVolumeAnalyser(stream: MediaStream, onLevel: (n: number) => void)
 		const rms = Math.sqrt(sum / buffer.length);
 		// Normalize to 0-1 (speech RMS rarely exceeds ~0.5)
 		onLevel(Math.min(1, rms * 3));
+
+		if (onFrequencyData) {
+			analyser.getByteFrequencyData(freqBuffer);
+			onFrequencyData(freqBuffer);
+		}
+
 		rafId = requestAnimationFrame(tick);
 	}
 	rafId = requestAnimationFrame(tick);
@@ -213,7 +226,7 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 					};
 					recorder.start();
 					if (cb.onVolumeChange) {
-						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange);
+						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange, cb.onFrequencyData);
 					}
 					cb.onStateChange('listening');
 					updateVoiceMetrics({ state: 'listening' });
@@ -437,7 +450,7 @@ function createHybridSession(cb: VoiceSessionCallbacks): VoiceSession {
 					};
 					recorder.start();
 					if (cb.onVolumeChange) {
-						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange);
+						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange, cb.onFrequencyData);
 					}
 				})
 				.catch((err) => {
@@ -608,7 +621,7 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 					.getUserMedia({ audio: true })
 					.then((stream) => {
 						mediaStream = stream;
-						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange!);
+						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange!, cb.onFrequencyData);
 					})
 					.catch(() => {
 						// Volume meter unavailable — not critical
