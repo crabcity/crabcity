@@ -6,7 +6,7 @@
 	import { voiceBackendOverride } from '$lib/stores/metrics';
 	import { onMount } from 'svelte';
 	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
-	import BaudMeter from './BaudMeter.svelte';
+
 
 	let message = $state('');
 	let inputEl: HTMLTextAreaElement;
@@ -237,6 +237,9 @@
 			{/if}
 		</div>
 	{/if}
+	{#if isListening}
+		<div class="voice-level-bar" style="--voice-level: {voiceLevel};"></div>
+	{/if}
 	<div class="input-row">
 		<textarea
 			bind:this={inputEl}
@@ -275,9 +278,6 @@
 						{/if}
 					</svg>
 				</button>
-				{#if isListening}
-					<span class="voice-meter"><BaudMeter level={voiceLevel} color="var(--status-red)" /></span>
-				{/if}
 			</div>
 		{/if}
 		{#if $isActive}
@@ -408,11 +408,11 @@
 		flex-shrink: 0;
 	}
 
-	.voice-meter {
-		position: absolute;
-		top: -3px;
-		right: -3px;
-		pointer-events: none;
+	.voice-level-bar {
+		height: 6px;
+		background: linear-gradient(90deg, var(--status-red) 0%, var(--status-red) calc(var(--voice-level) * 100%), transparent calc(var(--voice-level) * 100%));
+		opacity: calc(0.4 + var(--voice-level) * 0.6);
+		transition: opacity 0.05s;
 	}
 
 	.voice-btn,

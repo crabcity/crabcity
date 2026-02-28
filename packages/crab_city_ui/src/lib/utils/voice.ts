@@ -553,6 +553,9 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 	recognition.interimResults = true;
 	recognition.lang = 'en-US';
 
+	let mediaStream: MediaStream | null = null;
+	let volumeAnalyser: VolumeAnalyser | null = null;
+
 	recognition.onresult = (event: SpeechRecognitionEvent) => {
 		const transcript = Array.from(event.results)
 			.map((result) => result[0].transcript)
@@ -578,7 +581,15 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 		recordVoiceError(event.error);
 	};
 
+	function cleanupMic() {
+		volumeAnalyser?.destroy();
+		volumeAnalyser = null;
+		mediaStream?.getTracks().forEach((t) => t.stop());
+		mediaStream = null;
+	}
+
 	recognition.onend = () => {
+		cleanupMic();
 		cb.onStateChange('idle');
 		updateVoiceMetrics({ state: 'idle' });
 	};
@@ -590,14 +601,29 @@ function createWebSpeechSession(cb: VoiceSessionCallbacks): VoiceSession {
 			recognition.start();
 			cb.onStateChange('listening');
 			updateVoiceMetrics({ state: 'listening' });
+
+			// Acquire mic for volume meter only
+			if (cb.onVolumeChange) {
+				navigator.mediaDevices
+					.getUserMedia({ audio: true })
+					.then((stream) => {
+						mediaStream = stream;
+						volumeAnalyser = createVolumeAnalyser(stream, cb.onVolumeChange!);
+					})
+					.catch(() => {
+						// Volume meter unavailable — not critical
+					});
+			}
 		},
 
 		stop() {
+			cleanupMic();
 			recognition.stop();
 			// onend callback will fire onStateChange('idle')
 		},
 
 		destroy() {
+			cleanupMic();
 			recognition.abort();
 		},
 	};
