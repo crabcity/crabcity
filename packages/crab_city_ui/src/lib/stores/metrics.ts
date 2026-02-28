@@ -37,11 +37,21 @@ export interface WebSocketMetrics {
 	lastLatencyMs: number;
 }
 
+export interface VoiceMetrics {
+	backend: 'hybrid' | 'prompt-api' | 'web-speech' | 'none';
+	state: 'idle' | 'listening' | 'transcribing';
+	transcriptionCount: number;
+	errorCount: number;
+	errors: string[];
+	lastTranscribeMs: number;
+}
+
 export interface Metrics {
 	virtualList: VirtualListMetrics;
 	terminal: TerminalMetrics;
 	avatar: AvatarMetrics;
 	websocket: WebSocketMetrics;
+	voice: VoiceMetrics;
 }
 
 // =============================================================================
@@ -71,6 +81,14 @@ function initialMetrics(): Metrics {
 			messagesPerSecond: 0,
 			reconnectCount: 0,
 			lastLatencyMs: 0
+		},
+		voice: {
+			backend: 'none',
+			state: 'idle',
+			transcriptionCount: 0,
+			errorCount: 0,
+			errors: [],
+			lastTranscribeMs: 0
 		}
 	};
 }
@@ -164,6 +182,36 @@ export function recordWebSocketLatency(latencyMs: number): void {
 	}));
 }
 
+export function updateVoiceMetrics(data: Partial<VoiceMetrics>): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: { ...m.voice, ...data }
+	}));
+}
+
+export function recordVoiceTranscription(latencyMs?: number): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: {
+			...m.voice,
+			transcriptionCount: m.voice.transcriptionCount + 1,
+			...(latencyMs !== undefined ? { lastTranscribeMs: latencyMs } : {})
+		}
+	}));
+}
+
+export function recordVoiceError(message: string): void {
+	_metrics.update((m) => ({
+		...m,
+		voice: {
+			...m.voice,
+			state: 'idle' as const,
+			errorCount: m.voice.errorCount + 1,
+			errors: [...m.voice.errors, message].slice(-20)
+		}
+	}));
+}
+
 // =============================================================================
 // Derived Values
 // =============================================================================
@@ -186,6 +234,13 @@ export const debugPanelVisible = writable(false);
 export function toggleDebugPanel(): void {
 	debugPanelVisible.update((v) => !v);
 }
+
+// =============================================================================
+// Voice Backend Override
+// =============================================================================
+
+/** When set, overrides auto-detection in detectVoiceBackend(). null = auto. */
+export const voiceBackendOverride = writable<'hybrid' | 'prompt-api' | 'web-speech' | null>(null);
 
 // =============================================================================
 // Reset

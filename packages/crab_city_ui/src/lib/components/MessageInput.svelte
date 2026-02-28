@@ -3,7 +3,10 @@
 	import { isActive } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
+	import { voiceBackendOverride } from '$lib/stores/metrics';
 	import { onMount } from 'svelte';
+	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
+	import VoiceVisualizer from './VoiceVisualizer.svelte';
 
 	let message = $state('');
 	let inputEl: HTMLTextAreaElement;
@@ -31,63 +34,87 @@
 	// Voice input state
 	let speechSupported = $state(false);
 	let isListening = $state(false);
-	let recognition: SpeechRecognition | null = null;
+	let isTranscribing = $state(false);
+	let voiceLevel = $state(0);
+	let voiceSession: VoiceSession | null = $state(null);
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
+	// Shared frequency buffer for visualizer — written by voice analyser, read by canvas RAF
+	const frequencyBuffer = new Uint8Array(256);
 
-	// Check for Web Speech API support and initialize
-	onMount(() => {
-		const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-		if (SpeechRecognition) {
-			speechSupported = true;
-			recognition = new SpeechRecognition();
-			recognition.continuous = true;
-			recognition.interimResults = true;
-			recognition.lang = 'en-US';
+	// Voice mode indicators
+	let isHybrid = $derived(voiceSession?.backend === 'hybrid');
+	let isPromptApi = $derived(voiceSession?.backend === 'prompt-api');
+	let showDraftBanner = $derived(isListening && isHybrid);
+	let showCorrectingBanner = $derived(isTranscribing && (isHybrid || isPromptApi));
+	let showRecordingBanner = $derived(isListening && isPromptApi);
 
-			recognition.onresult = (event) => {
-				const transcript = Array.from(event.results)
-					.map(result => result[0].transcript)
-					.join(' ');
-
-				// Always show current transcript (interim or final) appended to pre-voice message
+	function voiceCallbacks() {
+		return {
+			onInterim(text: string) {
 				const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
-				message = messageBeforeVoice + separator + transcript;
+				message = messageBeforeVoice + separator + text;
+			},
+			onFinal(text: string) {
+				const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
+				message = messageBeforeVoice + separator + text;
+				messageBeforeVoice = message;
+			},
+			onError(err: string) {
+				console.error('Voice input error:', err);
+			},
+			onStateChange(state: 'listening' | 'transcribing' | 'idle') {
+				isListening = state === 'listening';
+				isTranscribing = state === 'transcribing';
+				if (state === 'idle') voiceLevel = 0;
+			},
+			onVolumeChange(level: number) {
+				voiceLevel = level;
+			},
+			onFrequencyData(data: Uint8Array) {
+				frequencyBuffer.set(data);
+			},
+		};
+	}
 
-				// When final, update the base so next voice session builds from here
-				if (event.results[event.results.length - 1].isFinal) {
-					messageBeforeVoice = message;
-				}
-			};
+	function initVoiceSession() {
+		voiceSession?.destroy();
+		voiceSession = null;
+		detectVoiceBackend().then((backend) => {
+			if (backend === 'none') {
+				speechSupported = false;
+				return;
+			}
+			speechSupported = true;
+			voiceSession = createVoiceSession(backend, voiceCallbacks());
+		});
+	}
 
-			recognition.onerror = (event) => {
-				console.error('Speech recognition error:', event.error);
-				isListening = false;
-			};
+	onMount(() => {
+		initVoiceSession();
 
-			recognition.onend = () => {
-				isListening = false;
-			};
-		}
+		// React to backend override changes (skip initial emit)
+		let firstEmit = true;
+		const unsub = voiceBackendOverride.subscribe(() => {
+			if (firstEmit) { firstEmit = false; return; }
+			initVoiceSession();
+		});
 
 		return () => {
-			if (recognition) {
-				recognition.abort();
-			}
+			unsub();
+			voiceSession?.destroy();
 		};
 	});
 
 	function toggleVoiceInput() {
-		if (!recognition) return;
+		if (!voiceSession) return;
 
 		if (isListening) {
-			recognition.stop();
-			isListening = false;
+			voiceSession.stop();
 		} else {
-			// Capture current message so we can append voice transcript to it
+			frequencyBuffer.fill(0);
 			messageBeforeVoice = message;
-			recognition.start();
-			isListening = true;
+			voiceSession.start();
 		}
 	}
 
@@ -95,9 +122,8 @@
 		if (!message.trim()) return;
 
 		// Stop voice input if active
-		if (isListening && recognition) {
-			recognition.stop();
-			isListening = false;
+		if (isListening && voiceSession) {
+			voiceSession.stop();
 		}
 
 		// If a task was staged, append a structural tag and send with task_id
@@ -120,9 +146,8 @@
 	function handleAddToQueue() {
 		if (!message.trim() || !$currentInstanceId) return;
 
-		if (isListening && recognition) {
-			recognition.stop();
-			isListening = false;
+		if (isListening && voiceSession) {
+			voiceSession.stop();
 		}
 
 		quickAddTask($currentInstanceId, message.trim());
@@ -182,6 +207,24 @@
 			</button>
 		</div>
 	{/if}
+	{#if showDraftBanner}
+		<div class="voice-draft-banner">
+			<span class="voice-draft-label">DRAFT</span>
+			<span class="voice-draft-hint">stop to get corrected transcription</span>
+		</div>
+	{:else if showRecordingBanner}
+		<div class="voice-draft-banner">
+			<span class="voice-draft-label">RECORDING</span>
+			<span class="voice-draft-hint">transcription on stop</span>
+		</div>
+	{:else if showCorrectingBanner}
+		<div class="voice-draft-banner correcting">
+			<svg class="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
+			</svg>
+			<span class="voice-correcting-label">transcribing&hellip;</span>
+		</div>
+	{/if}
 	{#if showBanner}
 		<div class="status-banner" class:warning={isDisconnected} class:info={isReconnecting && !isDisconnected}>
 			{#if isDisconnected}
@@ -200,6 +243,9 @@
 			{/if}
 		</div>
 	{/if}
+	{#if isListening}
+		<VoiceVisualizer data={frequencyBuffer} />
+	{/if}
 	<div class="input-row">
 		<textarea
 			bind:this={inputEl}
@@ -208,28 +254,37 @@
 			oninput={() => inputEl && autoResize(inputEl)}
 			placeholder={isDisconnected ? "Type here — will send when reconnected..." : "Message Claude..."}
 			rows="1"
+			class:voice-draft={showDraftBanner}
+			class:voice-correcting={showCorrectingBanner}
 		></textarea>
 		{#if speechSupported}
-			<button
-				class="voice-btn"
-				class:listening={isListening}
-				onclick={toggleVoiceInput}
-				aria-label={isListening ? 'Stop voice input' : 'Start voice input'}
-				title={isListening ? 'Stop listening' : 'Voice input'}
-			>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					{#if isListening}
-						<!-- Stop icon when listening -->
-						<rect x="6" y="6" width="12" height="12" rx="1" />
-					{:else}
-						<!-- Microphone icon -->
-						<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-						<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-						<line x1="12" y1="19" x2="12" y2="23" />
-						<line x1="8" y1="23" x2="16" y2="23" />
-					{/if}
-				</svg>
-			</button>
+			<div class="voice-wrapper">
+				<button
+					class="voice-btn"
+					class:listening={isListening}
+					class:transcribing={isTranscribing}
+					onclick={toggleVoiceInput}
+					disabled={isTranscribing}
+					aria-label={isTranscribing ? 'Transcribing...' : isListening ? 'Stop voice input' : 'Start voice input'}
+					title={isTranscribing ? 'Transcribing...' : isListening ? 'Stop listening' : 'Voice input'}
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						{#if isTranscribing}
+							<!-- Spinner while transcribing -->
+							<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
+						{:else if isListening}
+							<!-- Stop icon when listening -->
+							<rect x="6" y="6" width="12" height="12" rx="1" />
+						{:else}
+							<!-- Microphone icon -->
+							<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+							<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+							<line x1="12" y1="19" x2="12" y2="23" />
+							<line x1="8" y1="23" x2="16" y2="23" />
+						{/if}
+					</svg>
+				</button>
+			</div>
 		{/if}
 		{#if $isActive}
 			<button
@@ -354,6 +409,11 @@
 		color: var(--text-muted);
 	}
 
+	.voice-wrapper {
+		position: relative;
+		flex-shrink: 0;
+	}
+
 	.voice-btn,
 	.send-btn {
 		display: flex;
@@ -386,6 +446,17 @@
 		border-color: var(--status-red);
 		color: var(--status-red-text);
 		animation: pulse-glow 1.5s ease-in-out infinite;
+	}
+
+	.voice-btn.transcribing {
+		background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
+		border-color: var(--amber-600);
+		color: var(--amber-400);
+		cursor: wait;
+	}
+
+	.voice-btn.transcribing svg {
+		animation: spin 1s linear infinite;
 	}
 
 	@keyframes pulse-glow {
@@ -454,6 +525,62 @@
 	@keyframes queue-flash {
 		0% { background: var(--amber-600); border-color: var(--amber-400); }
 		100% { background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%); }
+	}
+
+	/* Voice draft indicators */
+	.voice-draft-banner {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 16px;
+		background: var(--tint-active-strong);
+		border-bottom: 1px solid var(--amber-600);
+		animation: staged-slide-in 0.2s ease-out;
+	}
+
+	.voice-draft-banner.correcting {
+		background: var(--tint-active-strong);
+	}
+
+	.voice-draft-banner svg {
+		width: 12px;
+		height: 12px;
+		flex-shrink: 0;
+		color: var(--amber-400);
+	}
+
+	.voice-draft-label {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--amber-400);
+	}
+
+	.voice-draft-hint {
+		font-size: 10px;
+		font-style: italic;
+		color: var(--text-muted);
+		letter-spacing: 0.02em;
+	}
+
+	.voice-correcting-label {
+		font-size: 10px;
+		font-style: italic;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+		color: var(--amber-400);
+	}
+
+	textarea.voice-draft,
+	textarea.voice-correcting {
+		font-style: italic;
+		color: var(--text-muted);
+	}
+
+	textarea.voice-draft {
+		border-style: dashed;
+		border-color: var(--amber-600);
 	}
 
 	/* Mobile responsive */
