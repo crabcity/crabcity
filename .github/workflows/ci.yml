@@ -35,4 +35,4 @@ jobs:
           save-always: true
 
       - name: Run tests
-        run: bazel test //... --disk_cache=~/.cache/bazel-disk-cache --repository_cache=~/.cache/bazel-repo-cache
+        run: bazel test //... --disk_cache=~/.cache/bazel-disk-cache --repository_cache=~/.cache/bazel-repo-cache --test_output=errors
