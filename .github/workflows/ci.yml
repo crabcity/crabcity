@@ -16,23 +16,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache Bazel repository cache
-        uses: actions/cache@v4
+      - name: Restore Bazel repository cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-repo-cache
           key: bazel-repo-${{ hashFiles('MODULE.bazel') }}
           restore-keys: |
             bazel-repo-
-          save-always: true
 
-      - name: Cache Bazel disk cache
-        uses: actions/cache@v4
+      - name: Restore Bazel disk cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk-cache
           key: bazel-disk-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml') }}
           restore-keys: |
             bazel-disk-
-          save-always: true
 
       - name: Run tests
         run: bazel test //... --disk_cache=~/.cache/bazel-disk-cache --repository_cache=~/.cache/bazel-repo-cache --test_output=errors
+
+      - name: Save Bazel repository cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-repo-cache
+          key: bazel-repo-${{ hashFiles('MODULE.bazel') }}
+
+      - name: Save Bazel disk cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk-cache
+          key: bazel-disk-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml') }}
