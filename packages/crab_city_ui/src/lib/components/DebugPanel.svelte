@@ -24,7 +24,7 @@
 	});
 
 	function setBackendOverride(backend: VoiceBackend | null) {
-		voiceBackendOverride.set(backend);
+		voiceBackendOverride.set(backend === 'none' ? null : backend);
 	}
 
 	function onPointerDown(e: PointerEvent) {

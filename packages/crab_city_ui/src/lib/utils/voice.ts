@@ -32,7 +32,7 @@ export async function detectVoiceBackend(): Promise<VoiceBackend> {
 	// Check Prompt API with audio support
 	if (typeof LanguageModel !== 'undefined') {
 		try {
-			const availability = await LanguageModel.availability({
+			const availability: string = await LanguageModel.availability({
 				expectedInputs: [{ type: 'audio' }],
 			});
 			console.debug('[voice] Prompt API audio availability:', availability);
@@ -68,7 +68,7 @@ export async function availableVoiceBackends(): Promise<VoiceBackend[]> {
 	let hasPromptApi = false;
 	if (typeof LanguageModel !== 'undefined') {
 		try {
-			const availability = await LanguageModel.availability({
+			const availability: string = await LanguageModel.availability({
 				expectedInputs: [{ type: 'audio' }],
 			});
 			if (availability !== 'unavailable' && availability !== 'no') {

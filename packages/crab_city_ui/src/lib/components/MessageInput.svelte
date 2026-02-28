@@ -36,7 +36,7 @@
 	let isListening = $state(false);
 	let isTranscribing = $state(false);
 	let voiceLevel = $state(0);
-	let voiceSession: VoiceSession | null = $state(null);
+	let voiceSession = $state<VoiceSession | null>(null);
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
 	// Shared frequency buffer for visualizer — written by voice analyser, read by canvas RAF
