@@ -7,12 +7,25 @@
 	 * Drag by title bar to reposition.
 	 */
 
-	import { metrics, debugPanelVisible, avatarHitRate } from '$lib/stores/metrics';
+	import { metrics, debugPanelVisible, avatarHitRate, voiceBackendOverride } from '$lib/stores/metrics';
+	import { availableVoiceBackends, type VoiceBackend } from '$lib/utils/voice';
+	import { onMount } from 'svelte';
 
 	let panelEl: HTMLDivElement | undefined = $state();
 	let position: { x: number; y: number } | null = $state<{ x: number; y: number } | null>(null);
 	let dragging = $state(false);
 	let dragOffset = { x: 0, y: 0 };
+	let errorsExpanded = $state(false);
+
+	// Available backends for the switcher
+	let backends = $state<VoiceBackend[]>([]);
+	onMount(() => {
+		availableVoiceBackends().then((b) => { backends = b; });
+	});
+
+	function setBackendOverride(backend: VoiceBackend | null) {
+		voiceBackendOverride.set(backend);
+	}
 
 	function onPointerDown(e: PointerEvent) {
 		if (!panelEl) return;
@@ -126,6 +139,22 @@
 				<span class="label">Backend</span>
 				<span class="value">{$metrics.voice.backend}</span>
 			</div>
+			{#if backends.length > 0}
+				<div class="backend-switcher">
+					<button
+						class="backend-btn"
+						class:active={$voiceBackendOverride === null}
+						onclick={() => setBackendOverride(null)}
+					>auto</button>
+					{#each backends as b}
+						<button
+							class="backend-btn"
+							class:active={$voiceBackendOverride === b}
+							onclick={() => setBackendOverride(b)}
+						>{b}</button>
+					{/each}
+				</div>
+			{/if}
 			<div class="metric">
 				<span class="label">State</span>
 				<span class="value">{$metrics.voice.state}</span>
@@ -136,11 +165,22 @@
 			</div>
 			<div class="metric">
 				<span class="label">Errors</span>
-				<span class="value" class:warning={$metrics.voice.errorCount > 0}>
-					{$metrics.voice.errorCount}
-				</span>
+				{#if $metrics.voice.errorCount > 0}
+					<button class="error-toggle" onclick={() => errorsExpanded = !errorsExpanded}>
+						{$metrics.voice.errorCount} {errorsExpanded ? '▾' : '▸'}
+					</button>
+				{:else}
+					<span class="value">0</span>
+				{/if}
 			</div>
-			{#if $metrics.voice.backend === 'prompt-api' && $metrics.voice.lastTranscribeMs > 0}
+			{#if errorsExpanded && $metrics.voice.errors.length > 0}
+				<ul class="error-log">
+					{#each $metrics.voice.errors as error}
+						<li>{error}</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if ($metrics.voice.backend === 'prompt-api' || $metrics.voice.backend === 'hybrid') && $metrics.voice.lastTranscribeMs > 0}
 				<div class="metric">
 					<span class="label">Last transcribe</span>
 					<span class="value">{$metrics.voice.lastTranscribeMs}ms</span>
@@ -227,6 +267,61 @@
 
 	.value.warning {
 		color: var(--red-400, #f87171);
+	}
+
+	.error-toggle {
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		color: var(--red-400, #f87171);
+		font: inherit;
+		font-weight: 500;
+	}
+
+	.error-log {
+		list-style: none;
+		margin: 4px 0 0;
+		padding: 0;
+		max-height: 6em;
+		overflow-y: auto;
+		font-size: 9px;
+		color: var(--red-400, #f87171);
+	}
+
+	.error-log li {
+		padding: 1px 0;
+		word-break: break-all;
+	}
+
+	.backend-switcher {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+		margin: 4px 0 2px;
+	}
+
+	.backend-btn {
+		background: none;
+		border: 1px solid var(--surface-border, #333);
+		border-radius: 3px;
+		padding: 1px 6px;
+		cursor: pointer;
+		color: var(--text-muted, #666);
+		font: inherit;
+		font-size: 9px;
+		transition: all 0.1s ease;
+	}
+
+	.backend-btn:hover {
+		border-color: var(--amber-600, #d97706);
+		color: var(--text-secondary, #999);
+	}
+
+	.backend-btn.active {
+		border-color: var(--amber-500, #f59e0b);
+		color: var(--amber-400, #fbbf24);
+		background: rgba(245, 158, 11, 0.1);
 	}
 
 	.hint {

@@ -38,10 +38,11 @@ export interface WebSocketMetrics {
 }
 
 export interface VoiceMetrics {
-	backend: 'prompt-api' | 'web-speech' | 'none';
+	backend: 'hybrid' | 'prompt-api' | 'web-speech' | 'none';
 	state: 'idle' | 'listening' | 'transcribing';
 	transcriptionCount: number;
 	errorCount: number;
+	errors: string[];
 	lastTranscribeMs: number;
 }
 
@@ -86,6 +87,7 @@ function initialMetrics(): Metrics {
 			state: 'idle',
 			transcriptionCount: 0,
 			errorCount: 0,
+			errors: [],
 			lastTranscribeMs: 0
 		}
 	};
@@ -198,10 +200,15 @@ export function recordVoiceTranscription(latencyMs?: number): void {
 	}));
 }
 
-export function recordVoiceError(): void {
+export function recordVoiceError(message: string): void {
 	_metrics.update((m) => ({
 		...m,
-		voice: { ...m.voice, state: 'idle' as const, errorCount: m.voice.errorCount + 1 }
+		voice: {
+			...m.voice,
+			state: 'idle' as const,
+			errorCount: m.voice.errorCount + 1,
+			errors: [...m.voice.errors, message].slice(-20)
+		}
 	}));
 }
 
@@ -227,6 +234,13 @@ export const debugPanelVisible = writable(false);
 export function toggleDebugPanel(): void {
 	debugPanelVisible.update((v) => !v);
 }
+
+// =============================================================================
+// Voice Backend Override
+// =============================================================================
+
+/** When set, overrides auto-detection in detectVoiceBackend(). null = auto. */
+export const voiceBackendOverride = writable<'hybrid' | 'prompt-api' | 'web-speech' | null>(null);
 
 // =============================================================================
 // Reset

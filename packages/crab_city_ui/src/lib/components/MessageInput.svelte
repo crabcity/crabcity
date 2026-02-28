@@ -3,8 +3,10 @@
 	import { isActive } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
+	import { voiceBackendOverride } from '$lib/stores/metrics';
 	import { onMount } from 'svelte';
 	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
+	import BaudMeter from './BaudMeter.svelte';
 
 	let message = $state('');
 	let inputEl: HTMLTextAreaElement;
@@ -33,35 +35,61 @@
 	let speechSupported = $state(false);
 	let isListening = $state(false);
 	let isTranscribing = $state(false);
+	let voiceLevel = $state(0);
 	let voiceSession: VoiceSession | null = null;
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
 
-	onMount(() => {
+	function voiceCallbacks() {
+		return {
+			onInterim(text: string) {
+				const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
+				message = messageBeforeVoice + separator + text;
+			},
+			onFinal(text: string) {
+				const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
+				message = messageBeforeVoice + separator + text;
+				messageBeforeVoice = message;
+			},
+			onError(err: string) {
+				console.error('Voice input error:', err);
+			},
+			onStateChange(state: 'listening' | 'transcribing' | 'idle') {
+				isListening = state === 'listening';
+				isTranscribing = state === 'transcribing';
+				if (state === 'idle') voiceLevel = 0;
+			},
+			onVolumeChange(level: number) {
+				voiceLevel = level;
+			},
+		};
+	}
+
+	function initVoiceSession() {
+		voiceSession?.destroy();
+		voiceSession = null;
 		detectVoiceBackend().then((backend) => {
-			if (backend === 'none') return;
+			if (backend === 'none') {
+				speechSupported = false;
+				return;
+			}
 			speechSupported = true;
-			voiceSession = createVoiceSession(backend, {
-				onInterim(text) {
-					const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
-					message = messageBeforeVoice + separator + text;
-				},
-				onFinal(text) {
-					const separator = messageBeforeVoice && !messageBeforeVoice.endsWith(' ') ? ' ' : '';
-					message = messageBeforeVoice + separator + text;
-					messageBeforeVoice = message;
-				},
-				onError(err) {
-					console.error('Voice input error:', err);
-				},
-				onStateChange(state) {
-					isListening = state === 'listening';
-					isTranscribing = state === 'transcribing';
-				},
-			});
+			voiceSession = createVoiceSession(backend, voiceCallbacks());
+		});
+	}
+
+	onMount(() => {
+		initVoiceSession();
+
+		// React to backend override changes (skip initial emit)
+		let firstEmit = true;
+		const unsub = voiceBackendOverride.subscribe(() => {
+			if (firstEmit) { firstEmit = false; return; }
+			initVoiceSession();
 		});
 
 		return () => {
+			unsub();
 			voiceSession?.destroy();
 		};
 	});
@@ -194,31 +222,36 @@
 			rows="1"
 		></textarea>
 		{#if speechSupported}
-			<button
-				class="voice-btn"
-				class:listening={isListening}
-				class:transcribing={isTranscribing}
-				onclick={toggleVoiceInput}
-				disabled={isTranscribing}
-				aria-label={isTranscribing ? 'Transcribing...' : isListening ? 'Stop voice input' : 'Start voice input'}
-				title={isTranscribing ? 'Transcribing...' : isListening ? 'Stop listening' : 'Voice input'}
-			>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					{#if isTranscribing}
-						<!-- Spinner while transcribing -->
-						<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
-					{:else if isListening}
-						<!-- Stop icon when listening -->
-						<rect x="6" y="6" width="12" height="12" rx="1" />
-					{:else}
-						<!-- Microphone icon -->
-						<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-						<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-						<line x1="12" y1="19" x2="12" y2="23" />
-						<line x1="8" y1="23" x2="16" y2="23" />
-					{/if}
-				</svg>
-			</button>
+			<div class="voice-wrapper">
+				<button
+					class="voice-btn"
+					class:listening={isListening}
+					class:transcribing={isTranscribing}
+					onclick={toggleVoiceInput}
+					disabled={isTranscribing}
+					aria-label={isTranscribing ? 'Transcribing...' : isListening ? 'Stop voice input' : 'Start voice input'}
+					title={isTranscribing ? 'Transcribing...' : isListening ? 'Stop listening' : 'Voice input'}
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						{#if isTranscribing}
+							<!-- Spinner while transcribing -->
+							<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
+						{:else if isListening}
+							<!-- Stop icon when listening -->
+							<rect x="6" y="6" width="12" height="12" rx="1" />
+						{:else}
+							<!-- Microphone icon -->
+							<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+							<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+							<line x1="12" y1="19" x2="12" y2="23" />
+							<line x1="8" y1="23" x2="16" y2="23" />
+						{/if}
+					</svg>
+				</button>
+				{#if isListening}
+					<span class="voice-meter"><BaudMeter level={voiceLevel} color="var(--status-red)" /></span>
+				{/if}
+			</div>
 		{/if}
 		{#if $isActive}
 			<button
@@ -341,6 +374,18 @@
 
 	textarea::placeholder {
 		color: var(--text-muted);
+	}
+
+	.voice-wrapper {
+		position: relative;
+		flex-shrink: 0;
+	}
+
+	.voice-meter {
+		position: absolute;
+		top: -3px;
+		right: -3px;
+		pointer-events: none;
 	}
 
 	.voice-btn,
