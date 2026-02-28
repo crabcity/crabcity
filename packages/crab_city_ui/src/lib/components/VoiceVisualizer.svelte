@@ -16,9 +16,9 @@
 	let canvas: HTMLCanvasElement;
 	let container: HTMLDivElement;
 
-	const BAR_COUNT = 48;
-	const BAR_GAP = 1.5;
-	const BAR_RADIUS = 1.5;
+	const BAR_COUNT = 64;
+	const BAR_GAP = 1;
+	const BAR_RADIUS = 1;
 
 	// Smoothed values for fluid animation
 	const smoothed = new Float32Array(BAR_COUNT);
@@ -50,15 +50,19 @@
 
 			ctx.clearRect(0, 0, w, h);
 
-			const barW = (w - BAR_GAP * (BAR_COUNT - 1)) / BAR_COUNT;
 			const binCount = data.length || 256;
+			// Voice lives in ~80-4kHz — use bottom 40% of bins
+			const usableBins = Math.floor(binCount * 0.4);
 
 			for (let i = 0; i < BAR_COUNT; i++) {
-				// Sqrt-scale frequency mapping: more bars for bass/voice range
-				const t0 = i / BAR_COUNT;
-				const t1 = (i + 1) / BAR_COUNT;
-				const startBin = Math.floor(t0 * t0 * binCount);
-				const endBin = Math.max(startBin + 1, Math.floor(t1 * t1 * binCount));
+				// Compute x from left edge, barEnd from right — no accumulation error
+				const x = (i / BAR_COUNT) * w;
+				const xNext = ((i + 1) / BAR_COUNT) * w;
+				const thisBarW = xNext - x - BAR_GAP;
+
+				// Linear mapping across the usable voice range
+				const startBin = Math.floor((i / BAR_COUNT) * usableBins);
+				const endBin = Math.max(startBin + 1, Math.floor(((i + 1) / BAR_COUNT) * usableBins));
 
 				// Average the bins for this bar
 				let sum = 0;
@@ -76,7 +80,6 @@
 
 				const val = smoothed[i];
 				const barH = Math.max(0, val * h * 0.92);
-				const x = i * (barW + BAR_GAP);
 				const y = h - barH;
 
 				if (barH > 1) {
@@ -93,7 +96,7 @@
 
 					ctx.fillStyle = grad;
 					ctx.beginPath();
-					ctx.roundRect(x, y, barW, barH, [BAR_RADIUS, BAR_RADIUS, 0, 0]);
+					ctx.roundRect(x, y, thisBarW, barH, [BAR_RADIUS, BAR_RADIUS, 0, 0]);
 					ctx.fill();
 
 					ctx.shadowBlur = 0;
@@ -115,7 +118,7 @@
 					ctx.shadowBlur = 4;
 					ctx.shadowColor = 'rgba(254, 243, 199, 0.5)';
 					ctx.fillStyle = 'rgba(254, 243, 199, 0.8)';
-					ctx.fillRect(x, peakY - 2, barW, 2);
+					ctx.fillRect(x, peakY - 2, thisBarW, 2);
 					ctx.shadowBlur = 0;
 				}
 			}
@@ -145,7 +148,9 @@
 <style>
 	.visualizer {
 		width: 100%;
+		min-width: 0;
 		height: 32px;
+		align-self: stretch;
 	}
 
 	canvas {
