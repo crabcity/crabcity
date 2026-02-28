@@ -23,7 +23,10 @@
 	const BAR_GAP = 1;
 	const ROWS = 12; // discrete phosphor segments per column
 	const ROW_GAP = 1; // gap between segments for hardware look
-	const DECAY = 0.97; // per-frame phosphor decay (slow, warm fade)
+	// Reverse-log decay: holds bright, then accelerates into darkness
+	// Rate interpolates from DECAY_LO (dim → fast fade) to DECAY_HI (bright → slow fade)
+	const DECAY_HI = 0.995;
+	const DECAY_LO = 0.94;
 
 	// 2D phosphor grid: each cell has its own brightness 0–1
 	const phosphor: Float32Array[] = Array.from(
@@ -72,7 +75,9 @@
 				for (let b = startBin; b < endBin && b < binCount; b++) {
 					sum += data[b] ?? 0;
 				}
-				const target = sum / (endBin - startBin) / 255;
+				const raw = sum / (endBin - startBin) / 255;
+				// Boost + compress: sqrt gives more headroom at low levels
+				const target = Math.min(1, Math.sqrt(raw) * 1.15);
 				const litRows = Math.floor(target * ROWS);
 				const tipRow = litRows > 0 ? ROWS - litRows : -1;
 
@@ -84,7 +89,9 @@
 					if (isLit) {
 						col[r] = Math.max(col[r], 0.3 + target * 0.7);
 					} else {
-						col[r] *= DECAY;
+						// Reverse-log: slow when bright, accelerates as it dims
+						const rate = DECAY_LO + (DECAY_HI - DECAY_LO) * col[r];
+						col[r] *= rate;
 					}
 
 					const brightness = col[r];
@@ -96,28 +103,26 @@
 					const cy = r * (cellH + ROW_GAP);
 					const isTip = r === tipRow;
 
+					// Position in column: 0 = bottom, 1 = top
+					const pos = 1 - r / (ROWS - 1);
+
+					// Gradient by position: bottom=brown ember, mid=warm orange, top=hot amber
+					// Lerp RGB base colors across the column
+					const baseR = Math.floor(160 + pos * 85);  // 160 → 245
+					const baseG = Math.floor(65 + pos * 115);  // 65 → 180
+					const baseB = Math.floor(10 + pos * 100);  // 10 → 110
+
 					if (isTip) {
-						// Hot tip — bright white-amber leading edge
+						// Hot tip — extra bright leading edge
 						ctx.shadowBlur = 8 + brightness * 14;
-						ctx.shadowColor = `rgba(255, 180, 40, ${brightness * 0.7})`;
-						ctx.fillStyle = `rgba(255, 235, 180, ${0.8 + brightness * 0.2})`;
-					} else if (brightness > 0.7) {
-						// Hot phosphor — bright amber-orange glow
-						ctx.shadowBlur = 6 + brightness * 10;
-						ctx.shadowColor = `rgba(245, 140, 20, ${brightness * 0.6})`;
-						const g = Math.floor(130 + brightness * 50);
-						ctx.fillStyle = `rgba(255, ${g}, 20, ${brightness})`;
-					} else if (brightness > 0.3) {
-						// Warm orange
-						ctx.shadowBlur = 3;
-						ctx.shadowColor = `rgba(200, 90, 6, ${brightness * 0.3})`;
-						const g = Math.floor(70 + brightness * 60);
-						ctx.fillStyle = `rgba(230, ${g}, 8, ${brightness * 0.85})`;
+						ctx.shadowColor = `rgba(${baseR}, ${Math.min(baseG + 30, 210)}, ${Math.min(baseB + 20, 130)}, ${brightness * 0.7})`;
+						ctx.fillStyle = `rgba(${Math.min(baseR + 10, 255)}, ${Math.min(baseG + 40, 220)}, ${Math.min(baseB + 30, 140)}, ${0.8 + brightness * 0.2})`;
 					} else {
-						// Dying phosphor — deep orange ember
-						ctx.shadowBlur = 0;
-						const alpha = brightness * 2.5;
-						ctx.fillStyle = `rgba(140, 45, 3, ${alpha})`;
+						// Phosphor glow scales with brightness
+						const glow = Math.min(brightness * 8, 6);
+						ctx.shadowBlur = glow;
+						ctx.shadowColor = `rgba(${baseR}, ${Math.floor(baseG * 0.7)}, ${Math.floor(baseB * 0.5)}, ${brightness * 0.4})`;
+						ctx.fillStyle = `rgba(${baseR}, ${baseG}, ${baseB}, ${brightness * 0.9})`;
 					}
 
 					ctx.fillRect(x, cy, lineW, cellH);
