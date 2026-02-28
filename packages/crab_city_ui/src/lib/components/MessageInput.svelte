@@ -36,14 +36,16 @@
 	let isListening = $state(false);
 	let isTranscribing = $state(false);
 	let voiceLevel = $state(0);
-	let voiceSession: VoiceSession | null = null;
+	let voiceSession: VoiceSession | null = $state(null);
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
 
-	// Hybrid voice draft indicators
+	// Voice mode indicators
 	let isHybrid = $derived(voiceSession?.backend === 'hybrid');
+	let isPromptApi = $derived(voiceSession?.backend === 'prompt-api');
 	let showDraftBanner = $derived(isListening && isHybrid);
-	let showCorrectingBanner = $derived(isTranscribing && isHybrid);
+	let showCorrectingBanner = $derived(isTranscribing && (isHybrid || isPromptApi));
+	let showRecordingBanner = $derived(isListening && isPromptApi);
 
 	function voiceCallbacks() {
 		return {
@@ -204,12 +206,17 @@
 			<span class="voice-draft-label">DRAFT</span>
 			<span class="voice-draft-hint">stop to get corrected transcription</span>
 		</div>
+	{:else if showRecordingBanner}
+		<div class="voice-draft-banner">
+			<span class="voice-draft-label">RECORDING</span>
+			<span class="voice-draft-hint">transcription on stop</span>
+		</div>
 	{:else if showCorrectingBanner}
 		<div class="voice-draft-banner correcting">
 			<svg class="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
 			</svg>
-			<span class="voice-correcting-label">correcting transcription&hellip;</span>
+			<span class="voice-correcting-label">transcribing&hellip;</span>
 		</div>
 	{/if}
 	{#if showBanner}
