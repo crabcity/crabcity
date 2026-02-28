@@ -360,19 +360,15 @@ function createHybridSession(cb: VoiceSessionCallbacks): VoiceSession {
 		return sessionPromise;
 	}
 
-	// Wire up Web Speech callbacks for live streaming
+	// Wire up Web Speech callbacks for live streaming.
+	// Always emit as interim — in hybrid mode, Web Speech results are drafts.
+	// Only the Prompt API correction produces the true final transcript.
 	recognition.onresult = (event: SpeechRecognitionEvent) => {
 		const transcript = Array.from(event.results)
 			.map((result) => result[0].transcript)
 			.join(' ');
 
-		const lastResult = event.results[event.results.length - 1];
-		if (lastResult.isFinal) {
-			cb.onFinal(transcript);
-			recordVoiceTranscription();
-		} else {
-			cb.onInterim(transcript);
-		}
+		cb.onInterim(transcript);
 	};
 
 	recognition.onerror = (event: SpeechRecognitionErrorEvent) => {

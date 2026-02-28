@@ -40,6 +40,11 @@
 	// Track the message content before voice input started, so we can append interim results
 	let messageBeforeVoice = '';
 
+	// Hybrid voice draft indicators
+	let isHybrid = $derived(voiceSession?.backend === 'hybrid');
+	let showDraftBanner = $derived(isListening && isHybrid);
+	let showCorrectingBanner = $derived(isTranscribing && isHybrid);
+
 	function voiceCallbacks() {
 		return {
 			onInterim(text: string) {
@@ -194,6 +199,19 @@
 			</button>
 		</div>
 	{/if}
+	{#if showDraftBanner}
+		<div class="voice-draft-banner">
+			<span class="voice-draft-label">DRAFT</span>
+			<span class="voice-draft-hint">stop to get corrected transcription</span>
+		</div>
+	{:else if showCorrectingBanner}
+		<div class="voice-draft-banner correcting">
+			<svg class="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83" />
+			</svg>
+			<span class="voice-correcting-label">correcting transcription&hellip;</span>
+		</div>
+	{/if}
 	{#if showBanner}
 		<div class="status-banner" class:warning={isDisconnected} class:info={isReconnecting && !isDisconnected}>
 			{#if isDisconnected}
@@ -220,6 +238,8 @@
 			oninput={() => inputEl && autoResize(inputEl)}
 			placeholder={isDisconnected ? "Type here — will send when reconnected..." : "Message Claude..."}
 			rows="1"
+			class:voice-draft={showDraftBanner}
+			class:voice-correcting={showCorrectingBanner}
 		></textarea>
 		{#if speechSupported}
 			<div class="voice-wrapper">
@@ -499,6 +519,62 @@
 	@keyframes queue-flash {
 		0% { background: var(--amber-600); border-color: var(--amber-400); }
 		100% { background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%); }
+	}
+
+	/* Voice draft indicators */
+	.voice-draft-banner {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 16px;
+		background: var(--tint-active-strong);
+		border-bottom: 1px solid var(--amber-600);
+		animation: staged-slide-in 0.2s ease-out;
+	}
+
+	.voice-draft-banner.correcting {
+		background: var(--tint-active-strong);
+	}
+
+	.voice-draft-banner svg {
+		width: 12px;
+		height: 12px;
+		flex-shrink: 0;
+		color: var(--amber-400);
+	}
+
+	.voice-draft-label {
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--amber-400);
+	}
+
+	.voice-draft-hint {
+		font-size: 10px;
+		font-style: italic;
+		color: var(--text-muted);
+		letter-spacing: 0.02em;
+	}
+
+	.voice-correcting-label {
+		font-size: 10px;
+		font-style: italic;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+		color: var(--amber-400);
+	}
+
+	textarea.voice-draft,
+	textarea.voice-correcting {
+		font-style: italic;
+		color: var(--text-muted);
+	}
+
+	textarea.voice-draft {
+		border-style: dashed;
+		border-color: var(--amber-600);
 	}
 
 	/* Mobile responsive */
