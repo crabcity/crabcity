@@ -65,6 +65,9 @@ done
 
 [[ "${COVERAGE_HTML:-0}" == "1" ]] && _html=1
 
+# shellcheck disable=SC2086  # intentional word-splitting on $_bazel_extra
+_bazel_extra="${BAZEL_EXTRA_ARGS:-}"
+
 if [[ $_help -eq 1 ]]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# *//'
     exit 0
@@ -131,7 +134,7 @@ if [[ $_skip_tests -eq 0 ]]; then
     trap 'rm -f "$_stats" "$_bazel_log"' EXIT
 
     # shellcheck disable=SC2086
-    if ! bazel coverage $_targets >"$_bazel_log" 2>&1; then
+    if ! bazel coverage $_targets $_bazel_extra >"$_bazel_log" 2>&1; then
         cat "$_bazel_log" >&2
         exit 1
     fi

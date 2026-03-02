@@ -3,15 +3,16 @@
 # Run quality gates for the repository.
 #
 # Usage:
-#   scripts/quality_gates.sh [gate ...]
+#   scripts/quality_gates.sh [[-]gate ...]
 #
 # Gates: format, clippy, test, coverage
-# No args runs all gates. Named args run only those gates.
+# No args runs all gates. Prefix with - to exclude a gate.
+# When coverage runs, test is skipped (coverage subsumes it).
 #
 # Examples:
-#   scripts/quality_gates.sh              # all gates
+#   scripts/quality_gates.sh              # all gates (format clippy coverage)
 #   scripts/quality_gates.sh test         # just tests
-#   scripts/quality_gates.sh format test  # two gates
+#   scripts/quality_gates.sh -coverage    # format clippy test
 #
 
 set -uo pipefail
@@ -24,6 +25,9 @@ else
     _grn='' _red='' _bld='' _dim='' _rst=''
 fi
 
+# shellcheck disable=SC2086  # intentional word-splitting on $_bazel_extra
+_bazel_extra="${BAZEL_EXTRA_ARGS:-}"
+
 # ── Temp dir for captured output ──────────────────────────────────────────────
 
 _tmpdir=$(mktemp -d)
@@ -34,26 +38,15 @@ trap 'rm -rf "$_tmpdir"' EXIT
 _all_gates=(format clippy test coverage)
 
 gate_format() {
-    bazel run //tools/format -- --mode=check 2>&1
+    bazel run //tools/format $_bazel_extra -- --mode=check 2>&1
 }
 
 gate_clippy() {
-    local output
-    output=$(bazel build //packages/... //tools/... --config=clippy --keep_going 2>&1 || true)
-
-    # Extract clippy errors (same approach as tools/lint/lint.sh)
-    local errors
-    errors=$(echo "$output" | grep -A50 "^error: field\|^error: unused\|^error: this\|^error\[" \
-        | grep -v "^error: aborting\|^ERROR:\|^--$" || true)
-
-    if [[ -n "$errors" ]]; then
-        echo "$errors"
-        return 1
-    fi
+    cargo clippy --all 2>&1
 }
 
 gate_test() {
-    bazel test //... --test_output=errors 2>&1
+    bazel test //... --test_output=errors $_bazel_extra 2>&1
 }
 
 gate_coverage() {
@@ -84,22 +77,31 @@ run_gate() {
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 
+_valid_gate() {
+    local name=$1
+    for g in "${_all_gates[@]}"; do [[ "$name" == "$g" ]] && return 0; done
+    return 1
+}
+
 gates=()
+excludes=()
 for arg in "$@"; do
-    # Validate gate name
-    found=0
-    for g in "${_all_gates[@]}"; do
-        if [[ "$arg" == "$g" ]]; then
-            found=1
-            break
+    if [[ "$arg" == -* ]]; then
+        name="${arg#-}"
+        if ! _valid_gate "$name"; then
+            echo "Unknown gate: $name"
+            echo "Valid gates: ${_all_gates[*]}"
+            exit 2
         fi
-    done
-    if [[ $found -eq 0 ]]; then
-        echo "Unknown gate: $arg"
-        echo "Valid gates: ${_all_gates[*]}"
-        exit 2
+        excludes+=("$name")
+    else
+        if ! _valid_gate "$arg"; then
+            echo "Unknown gate: $arg"
+            echo "Valid gates: ${_all_gates[*]}"
+            exit 2
+        fi
+        gates+=("$arg")
     fi
-    gates+=("$arg")
 done
 
 # Default: all gates
@@ -107,12 +109,33 @@ if [[ ${#gates[@]} -eq 0 ]]; then
     gates=("${_all_gates[@]}")
 fi
 
+# Apply exclusions
+if [[ ${#excludes[@]} -gt 0 ]]; then
+    filtered=()
+    for g in "${gates[@]}"; do
+        excluded=0
+        for e in "${excludes[@]}"; do
+            [[ "$g" == "$e" ]] && excluded=1 && break
+        done
+        [[ $excluded -eq 0 ]] && filtered+=("$g")
+    done
+    gates=("${filtered[@]}")
+fi
+
+# Coverage subsumes test — skip test when both are present
+_has_gate() { for g in "${gates[@]}"; do [[ "$g" == "$1" ]] && return 0; done; return 1; }
+if _has_gate test && _has_gate coverage; then
+    filtered=()
+    for g in "${gates[@]}"; do [[ "$g" != "test" ]] && filtered+=("$g"); done
+    gates=("${filtered[@]}")
+fi
+
 # ── Run gates ─────────────────────────────────────────────────────────────────
 
 passed=0
 total=${#gates[@]}
 
-echo "${_bld}Running ${total} quality gate(s)${_rst}"
+echo "${_bld}Running: ${gates[*]}${_rst} ${_dim}(skip with -gate, e.g. -coverage)${_rst}"
 echo ""
 
 for gate in "${gates[@]}"; do
