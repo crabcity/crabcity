@@ -33,7 +33,7 @@ jobs:
             bazel-disk-
 
       - name: Run quality gates
-        run: scripts/quality_gates.sh
+        run: scripts/quality_gates.sh --verbose
         env:
           BAZEL_EXTRA_ARGS: "--disk_cache=${HOME}/.cache/bazel-disk-cache --repository_cache=${HOME}/.cache/bazel-repo-cache"
 

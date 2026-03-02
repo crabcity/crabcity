@@ -3,16 +3,20 @@
 # Run quality gates for the repository.
 #
 # Usage:
-#   scripts/quality_gates.sh [[-]gate ...]
+#   scripts/quality_gates.sh [--verbose] [[-]gate ...]
 #
 # Gates: format, clippy, test, coverage
 # No args runs all gates. Prefix with - to exclude a gate.
 # When coverage runs, test is skipped (coverage subsumes it).
 #
+# Options:
+#   --verbose    Stream all output (useful for CI)
+#
 # Examples:
 #   scripts/quality_gates.sh              # all gates (format clippy coverage)
 #   scripts/quality_gates.sh test         # just tests
 #   scripts/quality_gates.sh -coverage    # format clippy test
+#   scripts/quality_gates.sh --verbose    # all gates, full output
 #
 
 set -uo pipefail
@@ -38,7 +42,7 @@ trap 'rm -rf "$_tmpdir"' EXIT
 _all_gates=(format clippy test coverage)
 
 gate_format() {
-    bazel run //tools/format $_bazel_extra -- --mode=check 2>&1
+    bazel run //tools/format:format.check $_bazel_extra 2>&1
 }
 
 gate_clippy() {
@@ -57,21 +61,35 @@ gate_coverage() {
 
 run_gate() {
     local name=$1
-    local logfile="$_tmpdir/$name.log"
 
-    printf "%s: " "$name"
-
-    local start=$SECONDS
-    if "gate_$name" > "$logfile" 2>&1; then
-        local elapsed=$(( SECONDS - start ))
-        echo "${_grn}PASS${_rst} (${elapsed}s)"
-        return 0
+    if [[ $_verbose -eq 1 ]]; then
+        echo "${_bld}── $name ──${_rst}"
+        local start=$SECONDS
+        if "gate_$name"; then
+            local elapsed=$(( SECONDS - start ))
+            echo "${_grn}PASS${_rst}: $name (${elapsed}s)"
+            echo ""
+            return 0
+        else
+            local elapsed=$(( SECONDS - start ))
+            echo "${_red}FAIL${_rst}: $name (${elapsed}s)"
+            echo ""
+            return 1
+        fi
     else
-        local elapsed=$(( SECONDS - start ))
-        echo "${_red}FAIL${_rst} (${elapsed}s)"
-        # Show last 50 lines of output, indented
-        tail -50 "$logfile" | sed 's/^/    /'
-        return 1
+        local logfile="$_tmpdir/$name.log"
+        printf "%s: " "$name"
+        local start=$SECONDS
+        if "gate_$name" > "$logfile" 2>&1; then
+            local elapsed=$(( SECONDS - start ))
+            echo "${_grn}PASS${_rst} (${elapsed}s)"
+            return 0
+        else
+            local elapsed=$(( SECONDS - start ))
+            echo "${_red}FAIL${_rst} (${elapsed}s)"
+            tail -50 "$logfile" | sed 's/^/    /'
+            return 1
+        fi
     fi
 }
 
@@ -83,10 +101,14 @@ _valid_gate() {
     return 1
 }
 
+_verbose=0
 gates=()
 excludes=()
 for arg in "$@"; do
-    if [[ "$arg" == -* ]]; then
+    if [[ "$arg" == "--verbose" ]]; then
+        _verbose=1
+        continue
+    elif [[ "$arg" == -* ]]; then
         name="${arg#-}"
         if ! _valid_gate "$name"; then
             echo "Unknown gate: $name"
