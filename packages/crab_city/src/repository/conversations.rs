@@ -264,7 +264,7 @@ impl ConversationRepository {
         .bind(&comment.author)
         .bind(&comment.content)
         .bind(comment.created_at)
-        .bind(&comment.updated_at)
+        .bind(comment.updated_at)
         .execute(&self.pool)
         .await
         .context("Failed to add comment")?;

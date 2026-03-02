@@ -26,7 +26,7 @@ impl ConversationRepository {
             .bind(&entry.content)
             .bind(&entry.timestamp)
             .bind(&entry.raw_json)
-            .bind(&entry.token_count)
+            .bind(entry.token_count)
             .bind(&entry.model)
             .execute(&mut *tx)
             .await?;

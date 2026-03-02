@@ -24,20 +24,18 @@ pub enum AttachOutcome {
 pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutcome, DaemonError> {
     // 1. Fetch and display scrollback (best-effort, unchanged)
     let output_url = format!("{}/api/instances/{}/output", daemon.base_url(), instance_id);
-    if let Ok(resp) = reqwest::get(&output_url).await {
-        if resp.status().is_success() {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if let Some(lines) = body.get("lines").and_then(|v| v.as_array()) {
-                    let mut stdout = std::io::stdout().lock();
-                    for line in lines {
-                        if let Some(s) = line.as_str() {
-                            let _ = stdout.write_all(s.as_bytes());
-                        }
-                    }
-                    let _ = stdout.flush();
-                }
+    if let Ok(resp) = reqwest::get(&output_url).await
+        && resp.status().is_success()
+        && let Ok(body) = resp.json::<serde_json::Value>().await
+        && let Some(lines) = body.get("lines").and_then(|v| v.as_array())
+    {
+        let mut stdout = std::io::stdout().lock();
+        for line in lines {
+            if let Some(s) = line.as_str() {
+                let _ = stdout.write_all(s.as_bytes());
             }
         }
+        let _ = stdout.flush();
     }
 
     // 2. Connect WebSocket — the Unavailable boundary
@@ -71,9 +69,7 @@ async fn attach_session(
     if let Ok((rows, cols)) = get_terminal_size() {
         let msg = WsMessage::Resize { rows, cols };
         let json = serde_json::to_string(&msg)?;
-        ws_write
-            .send(tungstenite::Message::Text(json.into()))
-            .await?;
+        ws_write.send(tungstenite::Message::Text(json)).await?;
         guard.show_overlay(OVERLAY_TEXT, cols);
         overlay_timer
             .as_mut()
@@ -143,7 +139,7 @@ async fn attach_session(
                             data: String::from_utf8_lossy(&data[..pos]).to_string(),
                         };
                         let json = serde_json::to_string(&msg)?;
-                        let _ = ws_write.send(tungstenite::Message::Text(json.into())).await;
+                        let _ = ws_write.send(tungstenite::Message::Text(json)).await;
                     }
                     detached = true;
                     break;
@@ -153,7 +149,7 @@ async fn attach_session(
                     data: String::from_utf8_lossy(&data).to_string(),
                 };
                 let json = serde_json::to_string(&msg)?;
-                if ws_write.send(tungstenite::Message::Text(json.into())).await.is_err() {
+                if ws_write.send(tungstenite::Message::Text(json)).await.is_err() {
                     break;
                 }
             }
@@ -162,18 +158,11 @@ async fn attach_session(
             Some(msg) = ws_read.next() => {
                 match msg {
                     Ok(tungstenite::Message::Text(text)) => {
-                        if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                            match ws_msg {
-                                WsMessage::Output { data } => {
-                                    let mut stdout = std::io::stdout().lock();
-                                    let _ = stdout.write_all(data.as_bytes());
-                                    let _ = stdout.write_all(guard.overlay_paint_bytes());
-                                    let _ = stdout.flush();
-                                }
-                                _ => {
-                                    // Ignore conversation updates, state changes, etc.
-                                }
-                            }
+                        if let Ok(WsMessage::Output { data }) = serde_json::from_str::<WsMessage>(&text) {
+                            let mut stdout = std::io::stdout().lock();
+                            let _ = stdout.write_all(data.as_bytes());
+                            let _ = stdout.write_all(guard.overlay_paint_bytes());
+                            let _ = stdout.flush();
                         }
                     }
                     Ok(tungstenite::Message::Close(_)) | Err(_) => {
@@ -188,7 +177,7 @@ async fn attach_session(
                 if let Ok((rows, cols)) = get_terminal_size() {
                     let msg = WsMessage::Resize { rows, cols };
                     let json = serde_json::to_string(&msg)?;
-                    let _ = ws_write.send(tungstenite::Message::Text(json.into())).await;
+                    let _ = ws_write.send(tungstenite::Message::Text(json)).await;
                     guard.repaint_overlay(cols);
                 }
             }

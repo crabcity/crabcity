@@ -40,10 +40,11 @@ impl ConversationRepository {
         // might match the WRONG attribution. Content matching avoids this entirely.
 
         // 1. Try content-based match within the time window
-        if let Some(content) = entry_content {
-            if !content.trim().is_empty() {
-                // Fetch candidates within the time window
-                let rows = sqlx::query(
+        if let Some(content) = entry_content
+            && !content.trim().is_empty()
+        {
+            // Fetch candidates within the time window
+            let rows = sqlx::query(
                     r#"
                     SELECT id, instance_id, user_id, display_name, timestamp, entry_uuid, content_preview, task_id
                     FROM input_attributions
@@ -57,33 +58,30 @@ impl ConversationRepository {
                 .fetch_all(&self.pool)
                 .await?;
 
-                // Find the first row whose content_preview matches
-                for r in &rows {
-                    let preview: Option<String> = r.get("content_preview");
-                    if let Some(ref preview) = preview {
-                        if attribution_content_matches(preview, content) {
-                            let attr_id: i64 = r.get("id");
-                            // Claim it
-                            sqlx::query(
-                                "UPDATE input_attributions SET entry_uuid = ? WHERE id = ?",
-                            )
-                            .bind(entry_uuid)
-                            .bind(attr_id)
-                            .execute(&self.pool)
-                            .await?;
+            // Find the first row whose content_preview matches
+            for r in &rows {
+                let preview: Option<String> = r.get("content_preview");
+                if let Some(ref preview) = preview
+                    && attribution_content_matches(preview, content)
+                {
+                    let attr_id: i64 = r.get("id");
+                    // Claim it
+                    sqlx::query("UPDATE input_attributions SET entry_uuid = ? WHERE id = ?")
+                        .bind(entry_uuid)
+                        .bind(attr_id)
+                        .execute(&self.pool)
+                        .await?;
 
-                            return Ok(Some(InputAttribution {
-                                id: r.get("id"),
-                                instance_id: r.get("instance_id"),
-                                user_id: r.get("user_id"),
-                                display_name: r.get("display_name"),
-                                timestamp: r.get("timestamp"),
-                                entry_uuid: Some(entry_uuid.to_string()),
-                                content_preview: r.get("content_preview"),
-                                task_id: r.get("task_id"),
-                            }));
-                        }
-                    }
+                    return Ok(Some(InputAttribution {
+                        id: r.get("id"),
+                        instance_id: r.get("instance_id"),
+                        user_id: r.get("user_id"),
+                        display_name: r.get("display_name"),
+                        timestamp: r.get("timestamp"),
+                        entry_uuid: Some(entry_uuid.to_string()),
+                        content_preview: r.get("content_preview"),
+                        task_id: r.get("task_id"),
+                    }));
                 }
             }
         }

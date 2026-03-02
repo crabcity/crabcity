@@ -74,10 +74,10 @@ impl PathResolver {
         let mut projects = Vec::new();
         for entry in std::fs::read_dir(&projects_dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                if let Some(name) = entry.file_name().to_str() {
-                    projects.push(unsanitize_project_path(name));
-                }
+            if entry.file_type()?.is_dir()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                projects.push(unsanitize_project_path(name));
             }
         }
         Ok(projects)
@@ -93,10 +93,10 @@ impl PathResolver {
         for entry in std::fs::read_dir(&project_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    sessions.push(stem.to_string());
-                }
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                sessions.push(stem.to_string());
             }
         }
         Ok(sessions)
@@ -109,7 +109,7 @@ impl PathResolver {
 
 fn sanitize_project_path(path: &str) -> String {
     // Claude Code converts both '/' and '_' to '-' when creating project directories
-    path.replace('/', "-").replace('_', "-")
+    path.replace(['/', '_'], "-")
 }
 
 fn unsanitize_project_path(sanitized: &str) -> String {

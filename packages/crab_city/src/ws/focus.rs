@@ -138,6 +138,7 @@ pub async fn send_conversation_since(
 }
 
 /// Handle focus switch to a new instance - runs until cancelled or error
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_focus(
     instance_id: String,
     _since_uuid: Option<String>,
@@ -191,18 +192,17 @@ pub async fn handle_focus(
 
     // Send terminal history (bounded by config)
     let history = handle.get_recent_output(max_history_bytes).await;
-    if !history.is_empty() {
-        if tx
+    if !history.is_empty()
+        && tx
             .send(ServerMessage::OutputHistory {
                 instance_id: instance_id.clone(),
                 data: history.join(""),
             })
             .await
             .is_err()
-        {
-            warn!(instance = %instance_id, "Failed to send OutputHistory - channel closed");
-            return;
-        }
+    {
+        warn!(instance = %instance_id, "Failed to send OutputHistory - channel closed");
+        return;
     }
 
     // Note: claude_state is already sent in FocusAck to prevent race conditions.
@@ -294,14 +294,13 @@ pub async fn handle_focus(
                 match result {
                     Ok(event) => {
                         let data = decoder.decode(&event.data);
-                        if !data.is_empty() {
-                            if tx_output.send(ServerMessage::Output {
+                        if !data.is_empty()
+                            && tx_output.send(ServerMessage::Output {
                                 instance_id: instance_id_output.clone(),
                                 data,
                             }).await.is_err() {
                                 break;
                             }
-                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         decoder.clear();

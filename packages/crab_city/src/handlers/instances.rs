@@ -27,22 +27,22 @@ pub async fn list_instances(
 ) -> Json<Vec<ClaudeInstance>> {
     let all_instances = state.instance_manager.list().await;
 
-    if state.auth_config.enabled {
-        if let MaybeAuthUser(Some(ref user)) = maybe_user {
-            if user.is_admin {
-                return Json(all_instances);
-            }
-            let permitted = state
-                .repository
-                .list_user_instance_ids(&user.user_id)
-                .await
-                .unwrap_or_default();
-            let filtered = all_instances
-                .into_iter()
-                .filter(|i| permitted.contains(&i.id))
-                .collect();
-            return Json(filtered);
+    if state.auth_config.enabled
+        && let MaybeAuthUser(Some(ref user)) = maybe_user
+    {
+        if user.is_admin {
+            return Json(all_instances);
         }
+        let permitted = state
+            .repository
+            .list_user_instance_ids(&user.user_id)
+            .await
+            .unwrap_or_default();
+        let filtered = all_instances
+            .into_iter()
+            .filter(|i| permitted.contains(&i.id))
+            .collect();
+        return Json(filtered);
     }
 
     Json(all_instances)
@@ -86,18 +86,18 @@ pub async fn create_instance(
                     .await;
             }
 
-            if state.auth_config.enabled {
-                if let MaybeAuthUser(Some(ref user)) = maybe_user {
-                    let perm = crate::models::InstancePermission {
-                        instance_id: instance.id.clone(),
-                        user_id: user.user_id.clone(),
-                        role: "owner".to_string(),
-                        granted_at: chrono::Utc::now().timestamp(),
-                        granted_by: None,
-                    };
-                    if let Err(e) = state.repository.create_instance_permission(&perm).await {
-                        tracing::warn!("Failed to set instance owner: {}", e);
-                    }
+            if state.auth_config.enabled
+                && let MaybeAuthUser(Some(ref user)) = maybe_user
+            {
+                let perm = crate::models::InstancePermission {
+                    instance_id: instance.id.clone(),
+                    user_id: user.user_id.clone(),
+                    role: "owner".to_string(),
+                    granted_at: chrono::Utc::now().timestamp(),
+                    granted_by: None,
+                };
+                if let Err(e) = state.repository.create_instance_permission(&perm).await {
+                    tracing::warn!("Failed to set instance owner: {}", e);
                 }
             }
 
@@ -150,18 +150,17 @@ pub async fn delete_instance(
     maybe_user: MaybeAuthUser,
     Path(id): Path<String>,
 ) -> StatusCode {
-    if state.auth_config.enabled {
-        if let MaybeAuthUser(Some(ref user)) = maybe_user {
-            if !user.is_admin {
-                match state
-                    .repository
-                    .check_instance_permission(&id, &user.user_id)
-                    .await
-                {
-                    Ok(Some(perm)) if perm.role == "owner" => {}
-                    _ => return StatusCode::FORBIDDEN,
-                }
-            }
+    if state.auth_config.enabled
+        && let MaybeAuthUser(Some(ref user)) = maybe_user
+        && !user.is_admin
+    {
+        match state
+            .repository
+            .check_instance_permission(&id, &user.user_id)
+            .await
+        {
+            Ok(Some(perm)) if perm.role == "owner" => {}
+            _ => return StatusCode::FORBIDDEN,
         }
     }
 
@@ -707,7 +706,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_invitation_as_admin() {
-        let (app, _tmp, admin_user, state) = auth_test_router().await;
+        let (app, _tmp, admin_user, _state) = auth_test_router().await;
 
         // Create an instance first (non-claude command so no InstancePersistor)
         let mut req = Request::builder()

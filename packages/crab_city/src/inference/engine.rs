@@ -119,19 +119,19 @@ impl StateInferrer {
         }
 
         // Detect tool execution start
-        if let Some(tool) = self.detect_tool_start(output) {
-            if self.current_tool.as_ref() != Some(&tool) {
-                // New tool started
-                if let Some(old_tool) = self.current_tool.take() {
-                    events.push(StateEvent::ToolCompleted { tool: old_tool });
-                }
-                self.current_tool = Some(tool.clone());
-                self.state = ClaudeState::ToolExecuting { tool: tool.clone() };
-                events.push(StateEvent::ToolStarted { tool: tool.clone() });
-                events.push(StateEvent::StateChanged {
-                    state: self.state.clone(),
-                });
+        if let Some(tool) = self.detect_tool_start(output)
+            && self.current_tool.as_ref() != Some(&tool)
+        {
+            // New tool started
+            if let Some(old_tool) = self.current_tool.take() {
+                events.push(StateEvent::ToolCompleted { tool: old_tool });
             }
+            self.current_tool = Some(tool.clone());
+            self.state = ClaudeState::ToolExecuting { tool: tool.clone() };
+            events.push(StateEvent::ToolStarted { tool: tool.clone() });
+            events.push(StateEvent::StateChanged {
+                state: self.state.clone(),
+            });
         }
 
         // Detect tool completion (looking for result patterns)
@@ -170,47 +170,47 @@ impl StateInferrer {
         match &self.state {
             ClaudeState::Responding => {
                 // If no output for idle_timeout, consider Claude done
-                if let Some(last) = self.last_output_time {
-                    if now.duration_since(last) > self.idle_timeout {
-                        // Check if buffer ends with a prompt
-                        if self.detect_input_prompt(&self.buffer) {
-                            let prompt = self.extract_prompt(&self.buffer);
-                            self.state = ClaudeState::WaitingForInput { prompt };
-                        } else {
-                            self.state = ClaudeState::Idle;
-                        }
-                        events.push(StateEvent::StateChanged {
-                            state: self.state.clone(),
-                        });
+                if let Some(last) = self.last_output_time
+                    && now.duration_since(last) > self.idle_timeout
+                {
+                    // Check if buffer ends with a prompt
+                    if self.detect_input_prompt(&self.buffer) {
+                        let prompt = self.extract_prompt(&self.buffer);
+                        self.state = ClaudeState::WaitingForInput { prompt };
+                    } else {
+                        self.state = ClaudeState::Idle;
                     }
+                    events.push(StateEvent::StateChanged {
+                        state: self.state.clone(),
+                    });
                 }
             }
             ClaudeState::Thinking => {
                 // If thinking for too long with no output, something might be wrong
-                if let Some(last) = self.last_input_time {
-                    if now.duration_since(last) > self.thinking_timeout {
-                        // Stay in thinking but could emit a warning event
-                    }
+                if let Some(last) = self.last_input_time
+                    && now.duration_since(last) > self.thinking_timeout
+                {
+                    // Stay in thinking but could emit a warning event
                 }
             }
             ClaudeState::ToolExecuting { tool } => {
                 // If no output for idle_timeout while executing tool, tool is probably done
-                if let Some(last) = self.last_output_time {
-                    if now.duration_since(last) > self.idle_timeout {
-                        let tool_name = tool.clone();
-                        events.push(StateEvent::ToolCompleted { tool: tool_name });
-                        self.current_tool = None;
-                        // Check if buffer ends with a prompt
-                        if self.detect_input_prompt(&self.buffer) {
-                            let prompt = self.extract_prompt(&self.buffer);
-                            self.state = ClaudeState::WaitingForInput { prompt };
-                        } else {
-                            self.state = ClaudeState::Idle;
-                        }
-                        events.push(StateEvent::StateChanged {
-                            state: self.state.clone(),
-                        });
+                if let Some(last) = self.last_output_time
+                    && now.duration_since(last) > self.idle_timeout
+                {
+                    let tool_name = tool.clone();
+                    events.push(StateEvent::ToolCompleted { tool: tool_name });
+                    self.current_tool = None;
+                    // Check if buffer ends with a prompt
+                    if self.detect_input_prompt(&self.buffer) {
+                        let prompt = self.extract_prompt(&self.buffer);
+                        self.state = ClaudeState::WaitingForInput { prompt };
+                    } else {
+                        self.state = ClaudeState::Idle;
                     }
+                    events.push(StateEvent::StateChanged {
+                        state: self.state.clone(),
+                    });
                 }
             }
             _ => {}

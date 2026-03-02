@@ -44,19 +44,18 @@ pub async fn get_git_branches(State(state): State<AppState>, Path(id): Path<Stri
     let all_instances = state.instance_manager.list().await;
     let mut instance_branches = Vec::new();
     for inst in &all_instances {
-        if inst.working_dir == instance.working_dir {
-            if let Ok(branch) =
+        if inst.working_dir == instance.working_dir
+            && let Ok(branch) =
                 run_git(&inst.working_dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await
-            {
-                instance_branches.push(InstanceBranchInfo {
-                    instance_id: inst.id.clone(),
-                    instance_name: inst
-                        .custom_name
-                        .clone()
-                        .unwrap_or_else(|| inst.name.clone()),
-                    branch: branch.trim().to_string(),
-                });
-            }
+        {
+            instance_branches.push(InstanceBranchInfo {
+                instance_id: inst.id.clone(),
+                instance_name: inst
+                    .custom_name
+                    .clone()
+                    .unwrap_or_else(|| inst.name.clone()),
+                branch: branch.trim().to_string(),
+            });
         }
     }
 
@@ -135,10 +134,10 @@ pub fn parse_ahead_behind(track: &str) -> (i64, i64) {
     let mut behind = 0i64;
     for part in track.split(',') {
         let part = part.trim();
-        if part.starts_with("ahead ") {
-            ahead = part[6..].trim().parse().unwrap_or(0);
-        } else if part.starts_with("behind ") {
-            behind = part[7..].trim().parse().unwrap_or(0);
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.trim().parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.trim().parse().unwrap_or(0);
         }
     }
     (ahead, behind)
@@ -183,6 +182,7 @@ mod tests {
 
     // ── parse_branch_list ───────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     fn make_branch_line(
         head: &str,
         name: &str,

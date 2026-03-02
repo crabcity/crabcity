@@ -50,9 +50,9 @@ pub fn parse_porcelain_status(output: &str) -> GitStatusResponse {
                 let b = parts[1].trim_start_matches('-').parse::<i64>().unwrap_or(0);
                 ahead_behind = Some((a, b));
             }
-        } else if line.starts_with("? ") {
+        } else if let Some(path) = line.strip_prefix("? ") {
             // Untracked
-            let path = line[2..].to_string();
+            let path = path.to_string();
             untracked.push(GitFileStatus {
                 path,
                 status: "untracked".to_string(),
@@ -69,11 +69,7 @@ pub fn parse_porcelain_status(output: &str) -> GitStatusResponse {
             let x = xy.chars().next().unwrap_or('.');
             let y = xy.chars().nth(1).unwrap_or('.');
 
-            let file_path = if is_rename {
-                parts.last().unwrap_or(&"").to_string()
-            } else {
-                parts.last().unwrap_or(&"").to_string()
-            };
+            let file_path = parts.last().unwrap_or(&"").to_string();
 
             let old_path = if is_rename {
                 let last = *parts.last().unwrap_or(&"");

@@ -1379,7 +1379,7 @@ mod serde_tests {
         let cs = ConversationShare::new("conv-1".into(), Some(7));
         let json = serde_json::to_value(&cs).unwrap();
         assert_eq!(json["conversation_id"], "conv-1");
-        assert!(json["share_token"].as_str().unwrap().len() > 0);
+        assert!(!json["share_token"].as_str().unwrap().is_empty());
         let rt: ConversationShare = serde_json::from_value(json).unwrap();
         assert_eq!(rt.conversation_id, "conv-1");
     }

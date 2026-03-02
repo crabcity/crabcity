@@ -76,8 +76,8 @@ fn main() -> Result<()> {
         if let Some(project) = &entry.project {
             println!("    Project: {}", project);
         }
-        let timestamp = chrono::DateTime::from_timestamp(entry.timestamp / 1000, 0)
-            .unwrap_or(chrono::DateTime::default());
+        let timestamp =
+            chrono::DateTime::from_timestamp(entry.timestamp / 1000, 0).unwrap_or_default();
         println!("    Time: {}", timestamp.format("%Y-%m-%d %H:%M"));
         println!();
     }

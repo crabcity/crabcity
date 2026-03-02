@@ -40,13 +40,13 @@ impl ConversationReader {
                 }
                 Err(_) => {
                     // Try to parse as a generic JSON value to check the type
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if let Some(entry_type) = value.get("type").and_then(|t| t.as_str()) {
-                            // Known metadata types we can safely ignore
-                            if entry_type == "file-history-snapshot" {
-                                // Silently skip file snapshots
-                                continue;
-                            }
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                        && let Some(entry_type) = value.get("type").and_then(|t| t.as_str())
+                    {
+                        // Known metadata types we can safely ignore
+                        if entry_type == "file-history-snapshot" {
+                            // Silently skip file snapshots
+                            continue;
                         }
                     }
 
@@ -101,22 +101,21 @@ impl ConversationReader {
                         message_count += 1;
                     }
 
-                    if project_path.is_empty() {
-                        if let Some(cwd) = entry.cwd {
-                            project_path = cwd;
-                        }
+                    if project_path.is_empty()
+                        && let Some(cwd) = entry.cwd
+                    {
+                        project_path = cwd;
                     }
 
-                    if !entry.timestamp.is_empty() {
-                        if let Ok(timestamp) =
+                    if !entry.timestamp.is_empty()
+                        && let Ok(timestamp) =
                             entry.timestamp.parse::<chrono::DateTime<chrono::Utc>>()
-                        {
-                            if started_at.is_none() || Some(timestamp) < started_at {
-                                started_at = Some(timestamp);
-                            }
-                            if last_activity.is_none() || Some(timestamp) > last_activity {
-                                last_activity = Some(timestamp);
-                            }
+                    {
+                        if started_at.is_none() || Some(timestamp) < started_at {
+                            started_at = Some(timestamp);
+                        }
+                        if last_activity.is_none() || Some(timestamp) > last_activity {
+                            last_activity = Some(timestamp);
                         }
                     }
                 }

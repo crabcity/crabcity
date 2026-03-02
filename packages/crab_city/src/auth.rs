@@ -490,14 +490,13 @@ async fn register_handler(
     }
 
     // Record server invite usage if applicable
-    if let Some(ref invite) = valid_invite {
-        if let Err(e) = state
+    if let Some(ref invite) = valid_invite
+        && let Err(e) = state
             .repository
             .use_server_invite(&invite.token, &user.id)
             .await
-        {
-            warn!("Failed to record server invite usage: {}", e);
-        }
+    {
+        warn!("Failed to record server invite usage: {}", e);
     }
 
     info!(
@@ -637,10 +636,10 @@ async fn login_handler(
 
 /// POST /api/auth/logout
 async fn logout_handler(State(state): State<AuthState>, headers: HeaderMap) -> Response {
-    if let Some(token) = extract_session_token(&headers) {
-        if let Err(e) = state.repository.delete_session(&token).await {
-            warn!("Failed to delete session on logout: {}", e);
-        }
+    if let Some(token) = extract_session_token(&headers)
+        && let Err(e) = state.repository.delete_session(&token).await
+    {
+        warn!("Failed to delete session on logout: {}", e);
     }
 
     let cookie = make_clear_cookie(&state.auth_config);
@@ -676,16 +675,16 @@ async fn me_handler(State(state): State<AuthState>, headers: HeaderMap) -> Respo
     }
 
     // Try to get current user from session
-    if let Some(token) = extract_session_token(&headers) {
-        if let Ok(Some((session, user))) = state.repository.get_session_with_user(&token).await {
-            return Json(MeResponse {
-                user: Some(user.into()),
-                csrf_token: Some(session.csrf_token),
-                needs_setup: false,
-                auth_enabled: true,
-            })
-            .into_response();
-        }
+    if let Some(token) = extract_session_token(&headers)
+        && let Ok(Some((session, user))) = state.repository.get_session_with_user(&token).await
+    {
+        return Json(MeResponse {
+            user: Some(user.into()),
+            csrf_token: Some(session.csrf_token),
+            needs_setup: false,
+            auth_enabled: true,
+        })
+        .into_response();
     }
 
     Json(MeResponse {
@@ -824,7 +823,6 @@ pub fn auth_routes() -> Router<AuthState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx;
 
     #[test]
     fn test_hash_password_and_verify() {
@@ -1508,11 +1506,11 @@ mod tests {
         .unwrap();
         assert!(body.get("user").is_none() || body["user"].is_null());
         assert_eq!(body["auth_enabled"], true);
-        assert_eq!(
-            body.get("needs_setup")
+        assert!(
+            !body
+                .get("needs_setup")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            false
+                .unwrap_or(false)
         );
     }
 

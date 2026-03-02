@@ -405,6 +405,45 @@ fn apply_profile_defaults(local: &mut ConfigState) {
     }
 }
 
+fn fetch_config(client: &reqwest::blocking::Client, daemon: &DaemonInfo) -> Result<ConfigState> {
+    let url = format!("{}/api/admin/config", daemon.base_url());
+    let resp = client
+        .get(&url)
+        .send()
+        .context("Failed to reach daemon config endpoint")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("GET /api/admin/config returned {}", resp.status());
+    }
+    resp.json().context("Failed to parse config response")
+}
+
+fn apply_config(
+    client: &reqwest::blocking::Client,
+    daemon: &DaemonInfo,
+    local: &ConfigState,
+    save: bool,
+) -> Result<()> {
+    let url = format!("{}/api/admin/config", daemon.base_url());
+    let body = serde_json::json!({
+        "host": local.host,
+        "port": local.port,
+        "auth_enabled": local.auth_enabled,
+        "https": local.https,
+        "save": save,
+    });
+    let resp = client
+        .patch(&url)
+        .json(&body)
+        .send()
+        .context("Failed to reach daemon config endpoint")?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!("PATCH /api/admin/config failed: {} {}", status, body);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,43 +588,4 @@ mod tests {
         let result = format_edit_or_value(&edit, Field::Host, "127.0.0.1");
         assert_eq!(result, "127.0.0.1");
     }
-}
-
-fn fetch_config(client: &reqwest::blocking::Client, daemon: &DaemonInfo) -> Result<ConfigState> {
-    let url = format!("{}/api/admin/config", daemon.base_url());
-    let resp = client
-        .get(&url)
-        .send()
-        .context("Failed to reach daemon config endpoint")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("GET /api/admin/config returned {}", resp.status());
-    }
-    resp.json().context("Failed to parse config response")
-}
-
-fn apply_config(
-    client: &reqwest::blocking::Client,
-    daemon: &DaemonInfo,
-    local: &ConfigState,
-    save: bool,
-) -> Result<()> {
-    let url = format!("{}/api/admin/config", daemon.base_url());
-    let body = serde_json::json!({
-        "host": local.host,
-        "port": local.port,
-        "auth_enabled": local.auth_enabled,
-        "https": local.https,
-        "save": save,
-    });
-    let resp = client
-        .patch(&url)
-        .json(&body)
-        .send()
-        .context("Failed to reach daemon config endpoint")?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        anyhow::bail!("PATCH /api/admin/config failed: {} {}", status, body);
-    }
-    Ok(())
 }

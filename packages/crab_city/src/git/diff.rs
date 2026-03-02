@@ -265,27 +265,24 @@ pub async fn get_git_diff(
 
     // Structural engine: try syndiff for single-file diffs, fall back to patience
     let requested_structural = query.engine.as_deref() == Some("structural");
-    if requested_structural {
-        if let Some(ref path) = query.path {
-            let base_head = match (&query.base, &query.head) {
-                (Some(b), Some(h)) => Some((b.as_str(), h.as_str())),
-                _ => None,
+    if requested_structural && let Some(ref path) = query.path {
+        let base_head = match (&query.base, &query.head) {
+            (Some(b), Some(h)) => Some((b.as_str(), h.as_str())),
+            _ => None,
+        };
+        if let Some(file) = structural_diff_file(wd, path, query.commit.as_deref(), base_head).await
+        {
+            let stats = GitDiffStats {
+                additions: file.additions,
+                deletions: file.deletions,
+                files_changed: 1,
             };
-            if let Some(file) =
-                structural_diff_file(wd, path, query.commit.as_deref(), base_head).await
-            {
-                let stats = GitDiffStats {
-                    additions: file.additions,
-                    deletions: file.deletions,
-                    files_changed: 1,
-                };
-                return Json(GitDiffResponse {
-                    files: vec![file],
-                    stats,
-                    engine: Some("structural".to_string()),
-                })
-                .into_response();
-            }
+            return Json(GitDiffResponse {
+                files: vec![file],
+                stats,
+                engine: Some("structural".to_string()),
+            })
+            .into_response();
         }
     }
 
@@ -500,30 +497,30 @@ pub fn parse_unified_diff(diff_text: &str) -> (Vec<GitDiffFile>, GitDiffStats) {
                 }
                 current_hunk = Some((hunk_header, Vec::new()));
             } else if let Some((_, ref mut hunk_lines)) = current_hunk {
-                if line.starts_with('+') {
+                if let Some(rest) = line.strip_prefix('+') {
                     hunk_lines.push(GitDiffLine {
                         line_type: "add".to_string(),
-                        content: line[1..].to_string(),
+                        content: rest.to_string(),
                         old_num: None,
                         new_num: Some(new_num),
                         highlights: None,
                     });
                     new_num += 1;
                     file_additions += 1;
-                } else if line.starts_with('-') {
+                } else if let Some(rest) = line.strip_prefix('-') {
                     hunk_lines.push(GitDiffLine {
                         line_type: "del".to_string(),
-                        content: line[1..].to_string(),
+                        content: rest.to_string(),
                         old_num: Some(old_num),
                         new_num: None,
                         highlights: None,
                     });
                     old_num += 1;
                     file_deletions += 1;
-                } else if line.starts_with(' ') {
+                } else if let Some(rest) = line.strip_prefix(' ') {
                     hunk_lines.push(GitDiffLine {
                         line_type: "ctx".to_string(),
-                        content: line[1..].to_string(),
+                        content: rest.to_string(),
                         old_num: Some(old_num),
                         new_num: Some(new_num),
                         highlights: None,
@@ -742,6 +739,7 @@ fn parse_hunk_header(header: &str) -> Option<(i64, i64)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 

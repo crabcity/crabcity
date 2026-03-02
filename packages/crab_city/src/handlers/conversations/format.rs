@@ -169,42 +169,37 @@ pub async fn format_turn_with_attribution(
     };
 
     // 1. Try in-process content-matched attribution (fast path, no DB)
-    if let (Some(content), Some(sm)) = (content_text, state_manager) {
-        if let Some(attr) = sm.consume_pending_attribution(instance_id, content).await {
-            if let Some(obj) = json.as_object_mut() {
-                obj.insert(
-                    "attributed_to".to_string(),
-                    serde_json::json!({
-                        "user_id": attr.user_id,
-                        "display_name": attr.display_name,
-                    }),
-                );
-                if let Some(task_id) = attr.task_id {
-                    obj.insert("task_id".to_string(), serde_json::json!(task_id));
-                }
+    if let (Some(content), Some(sm)) = (content_text, state_manager)
+        && let Some(attr) = sm.consume_pending_attribution(instance_id, content).await
+    {
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert(
+                "attributed_to".to_string(),
+                serde_json::json!({
+                    "user_id": attr.user_id,
+                    "display_name": attr.display_name,
+                }),
+            );
+            if let Some(task_id) = attr.task_id {
+                obj.insert("task_id".to_string(), serde_json::json!(task_id));
             }
-            // Persist entry_uuid link to DB so historical queries find it
-            if let Some(repo) = repo {
-                let repo = Arc::clone(repo);
-                let instance_id = instance_id.to_string();
-                let entry_uuid = turn.id.clone();
-                let entry_content = content.to_string();
-                let unix_ts = chrono::DateTime::parse_from_rfc3339(&turn.timestamp)
-                    .map(|dt| dt.timestamp())
-                    .unwrap_or(0);
-                tokio::spawn(async move {
-                    let _ = repo
-                        .correlate_attribution(
-                            &instance_id,
-                            &entry_uuid,
-                            unix_ts,
-                            Some(&entry_content),
-                        )
-                        .await;
-                });
-            }
-            return json;
         }
+        // Persist entry_uuid link to DB so historical queries find it
+        if let Some(repo) = repo {
+            let repo = Arc::clone(repo);
+            let instance_id = instance_id.to_string();
+            let entry_uuid = turn.id.clone();
+            let entry_content = content.to_string();
+            let unix_ts = chrono::DateTime::parse_from_rfc3339(&turn.timestamp)
+                .map(|dt| dt.timestamp())
+                .unwrap_or(0);
+            tokio::spawn(async move {
+                let _ = repo
+                    .correlate_attribution(&instance_id, &entry_uuid, unix_ts, Some(&entry_content))
+                    .await;
+            });
+        }
+        return json;
     }
 
     // 2. Fall back to DB-based attribution
@@ -364,10 +359,10 @@ pub fn format_entry(entry: &toolpath_claude::ConversationEntry) -> serde_json::V
                     "tools": tool_names
                 });
 
-                if let Some(thinking) = thinking_text {
-                    if let Some(obj) = json.as_object_mut() {
-                        obj.insert("thinking".to_string(), serde_json::Value::String(thinking));
-                    }
+                if let Some(thinking) = thinking_text
+                    && let Some(obj) = json.as_object_mut()
+                {
+                    obj.insert("thinking".to_string(), serde_json::Value::String(thinking));
                 }
 
                 return json;
@@ -389,132 +384,127 @@ pub fn format_entry(entry: &toolpath_claude::ConversationEntry) -> serde_json::V
     }
 
     // Handle progress entries specially
-    if entry.entry_type == "progress" {
-        if let Some(data) = entry.extra.get("data") {
-            let progress_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if entry.entry_type == "progress"
+        && let Some(data) = entry.extra.get("data")
+    {
+        let progress_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-            match progress_type {
-                "hook_progress" => {
-                    let hook_name = data
-                        .get("hookName")
-                        .and_then(|h| h.as_str())
-                        .unwrap_or("hook");
-                    let hook_event = data.get("hookEvent").and_then(|e| e.as_str()).unwrap_or("");
+        match progress_type {
+            "hook_progress" => {
+                let hook_name = data
+                    .get("hookName")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("hook");
+                let hook_event = data.get("hookEvent").and_then(|e| e.as_str()).unwrap_or("");
 
-                    let empty_tools: Vec<String> = vec![];
-                    return serde_json::json!({
-                        "uuid": entry.uuid,
-                        "role": "Progress",
-                        "content": hook_name,
-                        "timestamp": entry.timestamp.clone(),
-                        "tools": empty_tools,
-                        "entry_type": "progress",
-                        "progress_type": "hook",
-                        "hook_event": hook_event
-                    });
-                }
-                "agent_progress" => {
-                    let agent_id = data
-                        .get("agentId")
-                        .and_then(|a| a.as_str())
-                        .unwrap_or("unknown");
-                    let prompt = data.get("prompt").and_then(|p| p.as_str()).unwrap_or("");
+                let empty_tools: Vec<String> = vec![];
+                return serde_json::json!({
+                    "uuid": entry.uuid,
+                    "role": "Progress",
+                    "content": hook_name,
+                    "timestamp": entry.timestamp.clone(),
+                    "tools": empty_tools,
+                    "entry_type": "progress",
+                    "progress_type": "hook",
+                    "hook_event": hook_event
+                });
+            }
+            "agent_progress" => {
+                let agent_id = data
+                    .get("agentId")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("unknown");
+                let prompt = data.get("prompt").and_then(|p| p.as_str()).unwrap_or("");
 
-                    let mut content = String::new();
-                    let mut msg_role = "agent";
+                let mut content = String::new();
+                let mut msg_role = "agent";
 
-                    if let Some(message_data) = data.get("message") {
-                        let msg_type = message_data
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("");
-                        msg_role = match msg_type {
-                            "user" => "agent_user",
-                            "assistant" => "agent_assistant",
-                            _ => "agent",
-                        };
+                if let Some(message_data) = data.get("message") {
+                    let msg_type = message_data
+                        .get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    msg_role = match msg_type {
+                        "user" => "agent_user",
+                        "assistant" => "agent_assistant",
+                        _ => "agent",
+                    };
 
-                        if let Some(inner_msg) = message_data.get("message") {
-                            if let Some(inner_content) = inner_msg.get("content") {
-                                if let Some(text) = inner_content.as_str() {
-                                    content = text.to_string();
-                                } else if let Some(parts) = inner_content.as_array() {
-                                    let texts: Vec<String> = parts
-                                        .iter()
-                                        .filter_map(|p| {
-                                            if p.get("type").and_then(|t| t.as_str())
-                                                == Some("text")
-                                            {
-                                                p.get("text")
-                                                    .and_then(|t| t.as_str())
-                                                    .map(|s| s.to_string())
-                                            } else if p.get("type").and_then(|t| t.as_str())
-                                                == Some("tool_use")
-                                            {
-                                                let name = p
-                                                    .get("name")
-                                                    .and_then(|n| n.as_str())
-                                                    .unwrap_or("tool");
-                                                Some(format!("[{}]", name))
-                                            } else if p.get("type").and_then(|t| t.as_str())
-                                                == Some("tool_result")
-                                            {
-                                                let tool_content = p
-                                                    .get("content")
-                                                    .and_then(|c| c.as_str())
-                                                    .unwrap_or("");
-                                                let preview = if tool_content.len() > 100 {
-                                                    let end = tool_content.floor_char_boundary(100);
-                                                    format!("{}...", &tool_content[..end])
-                                                } else {
-                                                    tool_content.to_string()
-                                                };
-                                                Some(format!("[result: {}]", preview))
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect();
-                                    content = texts.join(" ");
-                                }
-                            }
-                        }
-
-                        if let Some(tool_result) =
-                            message_data.get("toolUseResult").and_then(|t| t.as_str())
-                        {
-                            if content.is_empty() {
-                                content = tool_result.to_string();
-                            }
+                    if let Some(inner_msg) = message_data.get("message")
+                        && let Some(inner_content) = inner_msg.get("content")
+                    {
+                        if let Some(text) = inner_content.as_str() {
+                            content = text.to_string();
+                        } else if let Some(parts) = inner_content.as_array() {
+                            let texts: Vec<String> = parts
+                                .iter()
+                                .filter_map(|p| {
+                                    if p.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        p.get("text")
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.to_string())
+                                    } else if p.get("type").and_then(|t| t.as_str())
+                                        == Some("tool_use")
+                                    {
+                                        let name = p
+                                            .get("name")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("tool");
+                                        Some(format!("[{}]", name))
+                                    } else if p.get("type").and_then(|t| t.as_str())
+                                        == Some("tool_result")
+                                    {
+                                        let tool_content =
+                                            p.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                                        let preview = if tool_content.len() > 100 {
+                                            let end = tool_content.floor_char_boundary(100);
+                                            format!("{}...", &tool_content[..end])
+                                        } else {
+                                            tool_content.to_string()
+                                        };
+                                        Some(format!("[result: {}]", preview))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            content = texts.join(" ");
                         }
                     }
 
-                    if content.len() > 500 {
-                        let end = content.floor_char_boundary(500);
-                        content = format!("{}...", &content[..end]);
+                    if let Some(tool_result) =
+                        message_data.get("toolUseResult").and_then(|t| t.as_str())
+                        && content.is_empty()
+                    {
+                        content = tool_result.to_string();
                     }
+                }
 
-                    let empty_tools: Vec<String> = vec![];
-                    return serde_json::json!({
-                        "uuid": entry.uuid,
-                        "role": "AgentProgress",
-                        "content": content,
-                        "timestamp": entry.timestamp.clone(),
-                        "tools": empty_tools,
-                        "entry_type": "progress",
-                        "agent_id": agent_id,
-                        "agent_prompt": if prompt.len() > 200 {
-                            let end = prompt.floor_char_boundary(200);
-                            format!("{}...", &prompt[..end])
-                        } else {
-                            prompt.to_string()
-                        },
-                        "agent_msg_role": msg_role
-                    });
+                if content.len() > 500 {
+                    let end = content.floor_char_boundary(500);
+                    content = format!("{}...", &content[..end]);
                 }
-                _ => {
-                    // Unknown progress type - fall through to generic handling
-                }
+
+                let empty_tools: Vec<String> = vec![];
+                return serde_json::json!({
+                    "uuid": entry.uuid,
+                    "role": "AgentProgress",
+                    "content": content,
+                    "timestamp": entry.timestamp.clone(),
+                    "tools": empty_tools,
+                    "entry_type": "progress",
+                    "agent_id": agent_id,
+                    "agent_prompt": if prompt.len() > 200 {
+                        let end = prompt.floor_char_boundary(200);
+                        format!("{}...", &prompt[..end])
+                    } else {
+                        prompt.to_string()
+                    },
+                    "agent_msg_role": msg_role
+                });
+            }
+            _ => {
+                // Unknown progress type - fall through to generic handling
             }
         }
     }
@@ -587,42 +577,37 @@ pub async fn format_entry_with_attribution(
     let content_text = content_text.as_deref();
 
     // 1. Try in-process content-matched attribution (fast path, no DB)
-    if let (Some(content), Some(sm)) = (content_text, state_manager) {
-        if let Some(attr) = sm.consume_pending_attribution(instance_id, content).await {
-            if let Some(obj) = json.as_object_mut() {
-                obj.insert(
-                    "attributed_to".to_string(),
-                    serde_json::json!({
-                        "user_id": attr.user_id,
-                        "display_name": attr.display_name,
-                    }),
-                );
-                if let Some(task_id) = attr.task_id {
-                    obj.insert("task_id".to_string(), serde_json::json!(task_id));
-                }
+    if let (Some(content), Some(sm)) = (content_text, state_manager)
+        && let Some(attr) = sm.consume_pending_attribution(instance_id, content).await
+    {
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert(
+                "attributed_to".to_string(),
+                serde_json::json!({
+                    "user_id": attr.user_id,
+                    "display_name": attr.display_name,
+                }),
+            );
+            if let Some(task_id) = attr.task_id {
+                obj.insert("task_id".to_string(), serde_json::json!(task_id));
             }
-            // Persist entry_uuid link to DB so historical queries find it
-            if let Some(repo) = repo {
-                let repo = Arc::clone(repo);
-                let instance_id = instance_id.to_string();
-                let entry_uuid = entry.uuid.clone();
-                let entry_content = content.to_string();
-                let unix_ts = chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
-                    .map(|dt| dt.timestamp())
-                    .unwrap_or(0);
-                tokio::spawn(async move {
-                    let _ = repo
-                        .correlate_attribution(
-                            &instance_id,
-                            &entry_uuid,
-                            unix_ts,
-                            Some(&entry_content),
-                        )
-                        .await;
-                });
-            }
-            return json;
         }
+        // Persist entry_uuid link to DB so historical queries find it
+        if let Some(repo) = repo {
+            let repo = Arc::clone(repo);
+            let instance_id = instance_id.to_string();
+            let entry_uuid = entry.uuid.clone();
+            let entry_content = content.to_string();
+            let unix_ts = chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
+                .map(|dt| dt.timestamp())
+                .unwrap_or(0);
+            tokio::spawn(async move {
+                let _ = repo
+                    .correlate_attribution(&instance_id, &entry_uuid, unix_ts, Some(&entry_content))
+                    .await;
+            });
+        }
+        return json;
     }
 
     // 2. Fall back to DB-based attribution
@@ -1822,7 +1807,7 @@ mod attribution_integration_tests {
         assert_eq!(r1["attributed_to"]["user_id"], "u1");
 
         // Let the spawned write-back complete
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // DB should now have entry_uuid populated
         let db_attr = repo.get_attribution_by_entry_uuid("e1").await.unwrap();
@@ -2435,12 +2420,21 @@ mod attribution_pipeline_diagnostic_tests {
             "Watcher (first consumer) should attribute to Alice"
         );
 
-        // Let DB write-back complete
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // === Step D: REST endpoint also processes the entry ===
-        let rest_result =
-            format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+        // Wait for the spawned DB write-back to complete
+        let mut rest_result = serde_json::Value::Null;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            rest_result =
+                format_entry_with_attribution(&entry, "inst1", Some(&repo), Some(&sm)).await;
+            if rest_result
+                .get("attributed_to")
+                .and_then(|a| a.get("user_id"))
+                .and_then(|v| v.as_str())
+                == Some("u1")
+            {
+                break;
+            }
+        }
         assert_eq!(
             rest_result["attributed_to"]["user_id"],
             "u1",

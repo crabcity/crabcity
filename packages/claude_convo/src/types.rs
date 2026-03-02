@@ -238,12 +238,12 @@ impl Conversation {
         let mut results = Vec::new();
 
         for entry in &self.entries {
-            if let Some(message) = &entry.message {
-                if let Some(MessageContent::Parts(parts)) = &message.content {
-                    for part in parts {
-                        if matches!(part, ContentPart::ToolUse { .. }) {
-                            results.push((entry, part));
-                        }
+            if let Some(message) = &entry.message
+                && let Some(MessageContent::Parts(parts)) = &message.content
+            {
+                for part in parts {
+                    if matches!(part, ContentPart::ToolUse { .. }) {
+                        results.push((entry, part));
                     }
                 }
             }

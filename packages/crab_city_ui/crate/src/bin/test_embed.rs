@@ -1,5 +1,4 @@
 use crab_city_ui::Assets;
-use rust_embed::Embed;
 
 fn main() {
     // v2

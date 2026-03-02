@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -25,7 +25,7 @@ pub struct NotesStorage {
 }
 
 impl NotesStorage {
-    pub fn new(data_dir: &PathBuf) -> Result<Self> {
+    pub fn new(data_dir: &Path) -> Result<Self> {
         let notes_dir = data_dir.join("notes");
         fs::create_dir_all(&notes_dir)?;
 
@@ -34,14 +34,14 @@ impl NotesStorage {
         // Load existing notes
         if let Ok(entries) = fs::read_dir(&notes_dir) {
             for entry in entries.flatten() {
-                if let Some(session_id) = entry.file_name().to_str() {
-                    if session_id.ends_with(".json") {
-                        let session_id = session_id.trim_end_matches(".json");
-                        if let Ok(content) = fs::read_to_string(entry.path()) {
-                            if let Ok(notes) = serde_json::from_str::<Vec<Note>>(&content) {
-                                cache.insert(session_id.to_string(), notes);
-                            }
-                        }
+                if let Some(session_id) = entry.file_name().to_str()
+                    && session_id.ends_with(".json")
+                {
+                    let session_id = session_id.trim_end_matches(".json");
+                    if let Ok(content) = fs::read_to_string(entry.path())
+                        && let Ok(notes) = serde_json::from_str::<Vec<Note>>(&content)
+                    {
+                        cache.insert(session_id.to_string(), notes);
                     }
                 }
             }
@@ -88,15 +88,15 @@ impl NotesStorage {
         content: String,
     ) -> Result<()> {
         let mut cache = self.cache.write().await;
-        if let Some(notes) = cache.get_mut(session_id) {
-            if let Some(note) = notes.iter_mut().find(|n| n.id == note_id) {
-                note.content = content;
-                note.updated_at = chrono::Utc::now().timestamp();
+        if let Some(notes) = cache.get_mut(session_id)
+            && let Some(note) = notes.iter_mut().find(|n| n.id == note_id)
+        {
+            note.content = content;
+            note.updated_at = chrono::Utc::now().timestamp();
 
-                // Save to disk
-                self.save_notes(session_id, notes).await?;
-                debug!("Updated note {} for session {}", note_id, session_id);
-            }
+            // Save to disk
+            self.save_notes(session_id, notes).await?;
+            debug!("Updated note {} for session {}", note_id, session_id);
         }
         Ok(())
     }
@@ -131,7 +131,7 @@ mod tests {
     use super::*;
 
     fn make_storage(tmp: &std::path::Path) -> NotesStorage {
-        NotesStorage::new(&tmp.to_path_buf()).unwrap()
+        NotesStorage::new(tmp).unwrap()
     }
 
     #[tokio::test]

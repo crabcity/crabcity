@@ -9,7 +9,8 @@ use super::types::FilePathQuery;
 use crate::AppState;
 
 /// Security check: returns true if `target` is within `working_dir` after canonicalization.
-pub(crate) fn is_path_within(working_dir: &std::path::Path, target: &std::path::Path) -> bool {
+#[cfg(test)]
+fn is_path_within(working_dir: &std::path::Path, target: &std::path::Path) -> bool {
     target.starts_with(working_dir)
 }
 
@@ -75,16 +76,16 @@ pub async fn get_instance_file_content(
 
     // Check file size (limit to 1MB to prevent memory issues)
     const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1MB
-    if let Ok(metadata) = std::fs::metadata(&canonical_target) {
-        if metadata.len() > MAX_FILE_SIZE {
-            return (
+    if let Ok(metadata) = std::fs::metadata(&canonical_target)
+        && metadata.len() > MAX_FILE_SIZE
+    {
+        return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "error": format!("File too large ({}MB). Max size is 1MB.", metadata.len() / (1024 * 1024))
                 })),
             )
                 .into_response();
-        }
     }
 
     match std::fs::read_to_string(&canonical_target) {

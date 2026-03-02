@@ -55,18 +55,18 @@ pub fn render_layer_paint(layer: &Layer, screen_rows: u16, screen_cols: u16) -> 
         let screen_row = top_row + row;
         let mut col = 0u16;
         while col < layer.width {
-            if let Some(cell) = layer.get_cell(row, col) {
-                if !cell.wide_continuation {
-                    let screen_col = left_col + col;
-                    // Position cursor and reset attrs before each cell
-                    out.extend_from_slice(
-                        format!("\x1b[{};{}H", screen_row + 1, screen_col + 1).as_bytes(),
-                    );
-                    out.extend_from_slice(b"\x1b[0m");
-                    let default_attrs = Attrs::default();
-                    emit_sgr_diff(&mut out, &default_attrs, &cell.attrs);
-                    out.extend_from_slice(cell.contents.as_bytes());
-                }
+            if let Some(cell) = layer.get_cell(row, col)
+                && !cell.wide_continuation
+            {
+                let screen_col = left_col + col;
+                // Position cursor and reset attrs before each cell
+                out.extend_from_slice(
+                    format!("\x1b[{};{}H", screen_row + 1, screen_col + 1).as_bytes(),
+                );
+                out.extend_from_slice(b"\x1b[0m");
+                let default_attrs = Attrs::default();
+                emit_sgr_diff(&mut out, &default_attrs, &cell.attrs);
+                out.extend_from_slice(cell.contents.as_bytes());
             }
             col += 1;
         }
@@ -92,9 +92,7 @@ pub fn render_layer_clear(layer: &Layer, screen_rows: u16, screen_cols: u16) -> 
     for row in 0..layer.height {
         let screen_row = top_row + row;
         out.extend_from_slice(format!("\x1b[{};{}H", screen_row + 1, left_col + 1).as_bytes());
-        for _ in 0..layer.width {
-            out.push(b' ');
-        }
+        out.extend(std::iter::repeat_n(b' ', layer.width as usize));
     }
 
     // Restore cursor

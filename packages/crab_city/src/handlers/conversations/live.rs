@@ -93,10 +93,10 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
         let detected_session = &candidates[0].session_id;
         info!("Detected session_id: {}", detected_session);
 
-        if let Some(handle) = state.instance_manager.get_handle(&id).await {
-            if let Err(e) = handle.set_session_id(detected_session.clone()).await {
-                tracing::warn!("Failed to cache session_id: {}", e);
-            }
+        if let Some(handle) = state.instance_manager.get_handle(&id).await
+            && let Err(e) = handle.set_session_id(detected_session.clone()).await
+        {
+            tracing::warn!("Failed to cache session_id: {}", e);
         }
 
         detected_session.clone()
@@ -198,10 +198,10 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
             let detected = candidates[0].session_id.clone();
 
-            if let Some(handle) = state.instance_manager.get_handle(&id).await {
-                if let Err(e) = handle.set_session_id(detected.clone()).await {
-                    warn!(instance = %id, session = %detected, "Failed to cache session ID: {}", e);
-                }
+            if let Some(handle) = state.instance_manager.get_handle(&id).await
+                && let Err(e) = handle.set_session_id(detected.clone()).await
+            {
+                warn!(instance = %id, session = %detected, "Failed to cache session ID: {}", e);
             }
 
             detected

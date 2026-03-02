@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 /// The current state of a Claude instance
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
+#[derive(Default)]
 pub enum ClaudeState {
     /// Claude is waiting for user input (prompt visible)
+    #[default]
     Idle,
 
     /// User sent input, Claude is processing but no output yet
@@ -23,12 +25,6 @@ pub enum ClaudeState {
 
     /// Claude is waiting for user confirmation or additional input
     WaitingForInput { prompt: Option<String> },
-}
-
-impl Default for ClaudeState {
-    fn default() -> Self {
-        ClaudeState::Idle
-    }
 }
 
 /// Events emitted during state transitions (for external consumers)

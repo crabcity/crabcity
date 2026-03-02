@@ -97,10 +97,10 @@ fn picker_loop(
                 PickerEvent::Stopped(id) => {
                     instances.retain(|i| i.id != id);
                     // Cancel rename if the renamed instance was removed
-                    if let Some(ref r) = rename {
-                        if r.instance_id == id {
-                            rename = None;
-                        }
+                    if let Some(ref r) = rename
+                        && r.instance_id == id
+                    {
+                        rename = None;
                     }
                 }
                 PickerEvent::Renamed {

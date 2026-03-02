@@ -390,8 +390,8 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
-                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
-                                    if let Err(e) = handle
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await
+                                    && let Err(e) = handle
                                         .update_viewport_and_resize(
                                             &connection_id_clone,
                                             rows,
@@ -399,9 +399,8 @@ pub async fn handle_multiplexed_ws(
                                             ClientType::Web,
                                         )
                                         .await
-                                    {
-                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
-                                    }
+                                {
+                                    warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                 }
                             }
                             ClientMessage::TerminalVisible {
@@ -409,8 +408,8 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
-                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
-                                    if let Err(e) = handle
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await
+                                    && let Err(e) = handle
                                         .update_viewport_and_resize(
                                             &connection_id_clone,
                                             rows,
@@ -418,19 +417,17 @@ pub async fn handle_multiplexed_ws(
                                             ClientType::Web,
                                         )
                                         .await
-                                    {
-                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
-                                    }
+                                {
+                                    warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                 }
                             }
                             ClientMessage::TerminalHidden { instance_id } => {
-                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
-                                    if let Err(e) = handle
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await
+                                    && let Err(e) = handle
                                         .set_active_and_resize(&connection_id_clone, false)
                                         .await
-                                    {
-                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
-                                    }
+                                {
+                                    warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                 }
                             }
                             ClientMessage::SessionSelect { session_id } => {

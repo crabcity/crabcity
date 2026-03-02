@@ -283,13 +283,11 @@ async fn run_live_picker(
             while let Some(Ok(tungstenite::Message::Text(text))) = ws_read.next().await {
                 if let Ok(ev) = serde_json::from_str::<WsLifecycleEvent>(&text) {
                     let picker_ev = match ev {
-                        WsLifecycleEvent::InstanceCreated { instance } => {
-                            PickerEvent::Created(instance)
-                        }
-                        WsLifecycleEvent::InstanceStopped { instance_id } => {
+                        WsLifecycleEvent::Created { instance } => PickerEvent::Created(instance),
+                        WsLifecycleEvent::Stopped { instance_id } => {
                             PickerEvent::Stopped(instance_id)
                         }
-                        WsLifecycleEvent::InstanceRenamed {
+                        WsLifecycleEvent::Renamed {
                             instance_id,
                             custom_name,
                         } => PickerEvent::Renamed {
@@ -313,13 +311,12 @@ async fn run_live_picker(
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum WsLifecycleEvent {
-    InstanceCreated {
-        instance: InstanceInfo,
-    },
-    InstanceStopped {
-        instance_id: String,
-    },
-    InstanceRenamed {
+    #[serde(rename = "InstanceCreated")]
+    Created { instance: InstanceInfo },
+    #[serde(rename = "InstanceStopped")]
+    Stopped { instance_id: String },
+    #[serde(rename = "InstanceRenamed")]
+    Renamed {
         instance_id: String,
         custom_name: Option<String>,
     },
@@ -382,10 +379,7 @@ pub async fn list_command(config: &CrabCityConfig, json: bool) -> Result<()> {
         println!("No running instances.");
     } else {
         // Table header
-        println!(
-            "{:<38} {:<20} {:<8} {}",
-            "ID", "NAME", "STATUS", "WORKING DIR"
-        );
+        println!("{:<38} {:<20} {:<8} WORKING DIR", "ID", "NAME", "STATUS");
         println!("{}", "-".repeat(100));
         for inst in &instances {
             let status = if inst.running { "running" } else { "stopped" };
@@ -471,7 +465,7 @@ async fn fetch_instances(daemon: &DaemonInfo) -> Result<Vec<InstanceInfo>, Daemo
     let resp = reqwest::get(&url)
         .await
         .map_err(DaemonError::from_reqwest)?;
-    Ok(resp.json().await.map_err(DaemonError::from_reqwest)?)
+    resp.json().await.map_err(DaemonError::from_reqwest)
 }
 
 async fn create_instance(
@@ -499,7 +493,7 @@ async fn create_instance(
         return Err(anyhow::anyhow!("Failed to create instance: {} {}", status, text).into());
     }
 
-    Ok(resp.json().await.map_err(DaemonError::from_reqwest)?)
+    resp.json().await.map_err(DaemonError::from_reqwest)
 }
 
 async fn resolve_instance(daemon: &DaemonInfo, target: &str) -> Result<String> {
@@ -655,7 +649,7 @@ mod tests {
         let json = r#"{"type":"InstanceStopped","instance_id":"inst-1"}"#;
         let event: WsLifecycleEvent = serde_json::from_str(json).unwrap();
         match event {
-            WsLifecycleEvent::InstanceStopped { instance_id } => {
+            WsLifecycleEvent::Stopped { instance_id } => {
                 assert_eq!(instance_id, "inst-1");
             }
             _ => panic!("Expected InstanceStopped"),

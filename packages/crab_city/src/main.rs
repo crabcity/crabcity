@@ -272,7 +272,7 @@ fn install_panic_hook(logs_dir: std::path::PathBuf) {
             let _ = writeln!(f, "=== Crab City Crash Report ===");
             let _ = writeln!(f, "Time: {}", chrono::Local::now());
             let _ = writeln!(f, "Version: {VERSION}");
-            let _ = writeln!(f, "");
+            let _ = writeln!(f);
             let _ = writeln!(f, "Panic: {info}");
             if let Some(loc) = info.location() {
                 let _ = writeln!(
@@ -283,7 +283,7 @@ fn install_panic_hook(logs_dir: std::path::PathBuf) {
                     loc.column()
                 );
             }
-            let _ = writeln!(f, "");
+            let _ = writeln!(f);
             let _ = writeln!(f, "Backtrace:\n{backtrace}");
 
             eprintln!("\n[crab] crash report saved to {}", crash_path.display());
@@ -395,13 +395,13 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         info!("Detecting available commands...");
         let claude_check = std::process::Command::new("which").arg("claude").output();
 
-        if let Ok(output) = claude_check {
-            if output.status.success() {
-                let claude_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !claude_path.is_empty() {
-                    info!("Found 'claude' command at: {}", claude_path);
-                    return claude_path;
-                }
+        if let Ok(output) = claude_check
+            && output.status.success()
+        {
+            let claude_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !claude_path.is_empty() {
+                info!("Found 'claude' command at: {}", claude_path);
+                return claude_path;
             }
         }
 
@@ -500,7 +500,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         let server_config = Arc::new(ServerConfig::from_file(&fc.server));
 
         // If effective host changed from last iteration, force rebind
-        let host_changed = bound_host.as_ref().map_or(false, |h| h != effective_host);
+        let host_changed = bound_host.as_ref().is_some_and(|h| h != effective_host);
         if host_changed {
             bound_port = None;
         }

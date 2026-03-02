@@ -397,6 +397,7 @@ fn resolve_session_id(manager: &ClaudeConvo, project: &str, session: &str) -> Re
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_show(
     manager: &ClaudeConvo,
     project: &str,
@@ -890,8 +891,7 @@ fn handle_history(
     }
 
     for entry in entries {
-        let timestamp =
-            DateTime::from_timestamp(entry.timestamp / 1000, 0).unwrap_or(DateTime::default());
+        let timestamp = DateTime::from_timestamp(entry.timestamp / 1000, 0).unwrap_or_default();
 
         println!("{}", entry.display);
         if let Some(proj) = &entry.project {

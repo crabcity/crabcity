@@ -11,7 +11,6 @@ use axum::{
     routing::get,
 };
 use crab_city_ui::Assets as UiAssets;
-use rust_embed::Embed;
 
 /// Create a router that serves the embedded SPA under /spa/
 pub fn spa_router() -> Router {
@@ -33,10 +32,10 @@ async fn serve_spa_asset(req: Request<Body>) -> impl IntoResponse {
     let path = req.uri().path().trim_start_matches('/');
 
     // Try to serve the exact path first
-    if !path.is_empty() {
-        if let Some(response) = try_serve_file(path) {
-            return response;
-        }
+    if !path.is_empty()
+        && let Some(response) = try_serve_file(path)
+    {
+        return response;
     }
 
     // For SPA routing, serve index.html for non-asset paths

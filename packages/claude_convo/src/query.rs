@@ -49,16 +49,16 @@ impl<'a> ConversationQuery<'a> {
             .entries
             .iter()
             .filter(|e| {
-                if let Some(message) = &e.message {
-                    if let Some(crate::types::MessageContent::Parts(parts)) = &message.content {
-                        return parts.iter().any(|p| {
-                            if let ContentPart::ToolUse { name, .. } = p {
-                                name == tool_name
-                            } else {
-                                false
-                            }
-                        });
-                    }
+                if let Some(message) = &e.message
+                    && let Some(crate::types::MessageContent::Parts(parts)) = &message.content
+                {
+                    return parts.iter().any(|p| {
+                        if let ContentPart::ToolUse { name, .. } = p {
+                            name == tool_name
+                        } else {
+                            false
+                        }
+                    });
                 }
                 false
             })
@@ -101,16 +101,16 @@ impl<'a> ConversationQuery<'a> {
             .entries
             .iter()
             .filter(|e| {
-                if let Some(message) = &e.message {
-                    if let Some(crate::types::MessageContent::Parts(parts)) = &message.content {
-                        return parts.iter().any(|p| {
-                            if let ContentPart::ToolResult { is_error, .. } = p {
-                                *is_error
-                            } else {
-                                false
-                            }
-                        });
-                    }
+                if let Some(message) = &e.message
+                    && let Some(crate::types::MessageContent::Parts(parts)) = &message.content
+                {
+                    return parts.iter().any(|p| {
+                        if let ContentPart::ToolResult { is_error, .. } = p {
+                            *is_error
+                        } else {
+                            false
+                        }
+                    });
                 }
                 false
             })

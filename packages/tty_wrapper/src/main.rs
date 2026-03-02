@@ -270,7 +270,7 @@ async fn main() -> Result<()> {
 async fn web_ui(State(state): State<AppState>) -> impl IntoResponse {
     let pty_state = state.pty.get_state().await.ok();
 
-    let status_class = if pty_state.as_ref().map_or(false, |s| s.running) {
+    let status_class = if pty_state.as_ref().is_some_and(|s| s.running) {
         "running"
     } else {
         "stopped"
@@ -307,7 +307,7 @@ async fn web_ui(State(state): State<AppState>) -> impl IntoResponse {
                             div class="info-item" {
                                 span class="label" { "Status:" }
                                 span class=(format!("value status-{}", status_class)) {
-                                    @if pty_state.as_ref().map_or(false, |s| s.running) {
+                                    @if pty_state.as_ref().is_some_and(|s| s.running) {
                                         "\u{25cf} Running"
                                     } @else {
                                         "\u{25cb} Stopped"
@@ -347,7 +347,7 @@ async fn web_ui(State(state): State<AppState>) -> impl IntoResponse {
                         div class="button-group" {
                             button id="refresh" class="btn btn-primary" { "Refresh Output" }
                             button id="clear" class="btn btn-secondary" { "Clear Display" }
-                            @if pty_state.as_ref().map_or(false, |s| s.running) {
+                            @if pty_state.as_ref().is_some_and(|s| s.running) {
                                 button id="kill" class="btn btn-danger" { "Kill Process" }
                             }
                         }

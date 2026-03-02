@@ -144,10 +144,10 @@ pub fn start_daemon(config: &CrabCityConfig) -> Result<()> {
 
 /// Require a daemon to already be running. Returns an error if none is found.
 pub async fn require_running_daemon(config: &CrabCityConfig) -> Result<DaemonInfo> {
-    if let Some(info) = check_daemon(config) {
-        if health_check(&info).await {
-            return Ok(info);
-        }
+    if let Some(info) = check_daemon(config)
+        && health_check(&info).await
+    {
+        return Ok(info);
     }
     anyhow::bail!("No crab daemon is running. Start one with `crab` or `crab server`.")
 }
@@ -184,21 +184,20 @@ pub async fn ensure_daemon(config: &CrabCityConfig) -> Result<DaemonInfo> {
 
         tokio::time::sleep(poll_interval).await;
 
-        if let Some(info) = check_daemon(config) {
-            if health_check(&info).await {
-                eprintln!("Daemon running on port {}", info.port);
-                return Ok(info);
-            }
+        if let Some(info) = check_daemon(config)
+            && health_check(&info).await
+        {
+            eprintln!("Daemon running on port {}", info.port);
+            return Ok(info);
         }
 
         // Also check if port file exists even if PID check fails (race condition)
-        if port_path.exists() {
-            if let Some(info) = check_daemon(config) {
-                if health_check(&info).await {
-                    eprintln!("Daemon running on port {}", info.port);
-                    return Ok(info);
-                }
-            }
+        if port_path.exists()
+            && let Some(info) = check_daemon(config)
+            && health_check(&info).await
+        {
+            eprintln!("Daemon running on port {}", info.port);
+            return Ok(info);
         }
     }
 }

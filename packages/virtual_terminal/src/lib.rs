@@ -152,18 +152,18 @@ impl VirtualTerminal {
     /// Returns `Some((rows, cols))` if dims changed, `None` otherwise.
     fn recalculate_effective_dims(&mut self) -> Option<(u16, u16)> {
         let new_dims = calculate_effective_dims(&self.client_viewports);
-        if let Some((rows, cols)) = new_dims {
-            if (rows, cols) != self.effective_dims {
-                self.effective_dims = (rows, cols);
-                // Fresh parser at new dimensions — old screen content was
-                // rendered at stale dimensions and vt100's set_size merges
-                // soft-wrapped lines, corrupting the display.  The PTY resize
-                // will SIGWINCH the application, which redraws cleanly.
-                self.parser = vt100::Parser::new(rows, cols, 0);
-                self.keyframe = None;
-                self.deltas.clear();
-                return Some((rows, cols));
-            }
+        if let Some((rows, cols)) = new_dims
+            && (rows, cols) != self.effective_dims
+        {
+            self.effective_dims = (rows, cols);
+            // Fresh parser at new dimensions — old screen content was
+            // rendered at stale dimensions and vt100's set_size merges
+            // soft-wrapped lines, corrupting the display.  The PTY resize
+            // will SIGWINCH the application, which redraws cleanly.
+            self.parser = vt100::Parser::new(rows, cols, 0);
+            self.keyframe = None;
+            self.deltas.clear();
+            return Some((rows, cols));
         }
         // If no active viewports, keep current dims (don't shrink to nothing)
         None

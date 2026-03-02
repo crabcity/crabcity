@@ -193,12 +193,11 @@ async fn handle_websocket(socket: WebSocket, state: WrapperState) {
     // Task to forward WebSocket input to PTY
     let input_task = async move {
         while let Some(msg) = receiver.next().await {
-            if let Ok(Message::Text(text)) = msg {
-                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
-                    if ws_msg.msg_type == "Input" {
-                        let _ = state.pty.write_input(&ws_msg.data).await;
-                    }
-                }
+            if let Ok(Message::Text(text)) = msg
+                && let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text)
+                && ws_msg.msg_type == "Input"
+            {
+                let _ = state.pty.write_input(&ws_msg.data).await;
             }
         }
     };

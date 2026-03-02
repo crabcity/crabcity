@@ -105,6 +105,7 @@ pub fn parse_git_log_output(output: &str, limit: i64) -> GitLogResponse {
 mod tests {
     use super::*;
 
+    #[allow(clippy::too_many_arguments)]
     fn make_record(
         hash: &str,
         short: &str,

@@ -249,13 +249,13 @@ impl InstanceTracker {
 
     /// Send a signal to this instance's state manager
     pub async fn send_signal(&self, signal: StateSignal) {
-        if let Some(tx) = &self.signal_tx {
-            if tx.send(signal).await.is_err() {
-                warn!(
-                    "Failed to send signal to state manager for instance {} (receiver dropped)",
-                    self.instance_id
-                );
-            }
+        if let Some(tx) = &self.signal_tx
+            && tx.send(signal).await.is_err()
+        {
+            warn!(
+                "Failed to send signal to state manager for instance {} (receiver dropped)",
+                self.instance_id
+            );
         }
     }
 }
@@ -492,16 +492,16 @@ impl GlobalStateManager {
     /// Returns true if a lock was actually released.
     pub async fn release_terminal_lock(&self, instance_id: &str, connection_id: &str) -> bool {
         let mut locks = self.terminal_locks.write().await;
-        if let Some(lock) = locks.get(instance_id) {
-            if lock.holder_connection_id == connection_id {
-                let holder = lock.holder_display_name.clone();
-                locks.remove(instance_id);
-                info!(
-                    "[TERMINAL-LOCK] {} released lock for instance {}",
-                    holder, instance_id
-                );
-                return true;
-            }
+        if let Some(lock) = locks.get(instance_id)
+            && lock.holder_connection_id == connection_id
+        {
+            let holder = lock.holder_display_name.clone();
+            locks.remove(instance_id);
+            info!(
+                "[TERMINAL-LOCK] {} released lock for instance {}",
+                holder, instance_id
+            );
+            return true;
         }
         false
     }
@@ -514,7 +514,7 @@ impl GlobalStateManager {
     /// Reconcile terminal lock with presence:
     /// - If holder disconnected, clear the lock.
     /// - If only one user is present and no lock exists, auto-grant.
-    /// Returns true if lock state changed.
+    ///   Returns true if lock state changed.
     pub async fn reconcile_terminal_lock_with_presence(&self, instance_id: &str) -> bool {
         let presence = self.presence.read().await;
         let instance_presence = presence.get(instance_id);
@@ -522,22 +522,22 @@ impl GlobalStateManager {
             .map(|p| p.keys().cloned().collect())
             .unwrap_or_default();
         let unique_users = instance_presence
-            .map(|p| Self::dedupe_presence(p))
+            .map(Self::dedupe_presence)
             .unwrap_or_default();
         drop(presence);
 
         let mut locks = self.terminal_locks.write().await;
 
         // If holder's connection is no longer present, clear the lock
-        if let Some(lock) = locks.get(instance_id) {
-            if !connection_ids.contains(&lock.holder_connection_id) {
-                info!(
-                    "[TERMINAL-LOCK] Holder {} disconnected from {}, clearing lock",
-                    lock.holder_display_name, instance_id
-                );
-                locks.remove(instance_id);
-                return true;
-            }
+        if let Some(lock) = locks.get(instance_id)
+            && !connection_ids.contains(&lock.holder_connection_id)
+        {
+            info!(
+                "[TERMINAL-LOCK] Holder {} disconnected from {}, clearing lock",
+                lock.holder_display_name, instance_id
+            );
+            locks.remove(instance_id);
+            return true;
         }
 
         // Auto-grant to sole user if no lock exists
@@ -866,7 +866,7 @@ mod tests {
         assert!(t5_own_session >= t1_created);
 
         // With first_input_at, only OWN session matches (correct)
-        assert!(!(t3_other_session >= t4_first_input));
+        assert!(t3_other_session < t4_first_input);
         assert!(t5_own_session >= t4_first_input);
     }
 

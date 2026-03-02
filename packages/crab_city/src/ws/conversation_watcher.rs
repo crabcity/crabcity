@@ -43,6 +43,7 @@ fn entry_state_signal(entry: &toolpath_claude::ConversationEntry) -> StateSignal
 /// 6. Sends `StateSignal::ConversationEntry` for inference
 ///
 /// Runs for the lifetime of the instance (cancelled when unregistered).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server_conversation_watcher(
     instance_id: String,
     working_dir: String,
@@ -66,14 +67,14 @@ pub async fn run_server_conversation_watcher(
         }
 
         // Check if a session has already been claimed (by focus path or prior run)
-        if let Some(handle) = state_manager.get_handle(&instance_id).await {
-            if let Some(sid) = handle.get_session_id().await {
-                debug!(
-                    "[SERVER-CONVO {}] Using claimed session {}",
-                    instance_id, sid
-                );
-                break sid;
-            }
+        if let Some(handle) = state_manager.get_handle(&instance_id).await
+            && let Some(sid) = handle.get_session_id().await
+        {
+            debug!(
+                "[SERVER-CONVO {}] Using claimed session {}",
+                instance_id, sid
+            );
+            break sid;
         }
 
         // Attempt auto-discovery: if exactly one unclaimed candidate, claim it
@@ -105,10 +106,10 @@ pub async fn run_server_conversation_watcher(
                         "[SERVER-CONVO {}] Auto-claimed session {}",
                         instance_id, session.id
                     );
-                    if let Some(handle) = state_manager.get_handle(&instance_id).await {
-                        if let Err(e) = handle.set_session_id(session.id.clone()).await {
-                            warn!(instance = %instance_id, session = %session.id, "Failed to set session ID: {}", e);
-                        }
+                    if let Some(handle) = state_manager.get_handle(&instance_id).await
+                        && let Err(e) = handle.set_session_id(session.id.clone()).await
+                    {
+                        warn!(instance = %instance_id, session = %session.id, "Failed to set session ID: {}", e);
                     }
                     break session.id.clone();
                 }
@@ -167,11 +168,11 @@ pub async fn run_server_conversation_watcher(
             });
 
             // Signal initial state from last entry
-            if let Some(last) = entries.last() {
-                if signal_tx.send(entry_state_signal(last)).await.is_err() {
-                    warn!(instance = %instance_id, "State signal channel closed on initial poll");
-                    return;
-                }
+            if let Some(last) = entries.last()
+                && signal_tx.send(entry_state_signal(last)).await.is_err()
+            {
+                warn!(instance = %instance_id, "State signal channel closed on initial poll");
+                return;
             }
         }
         Err(e) => {
@@ -269,14 +270,14 @@ pub async fn run_session_discovery(
         }
 
         // Check if the server watcher already found a session (auto-discovery)
-        if let Some(handle) = state_manager.get_handle(&instance_id).await {
-            if handle.get_session_id().await.is_some() {
-                debug!(
-                    "[SESSION-DISCOVERY {}] Session already claimed by server watcher",
-                    instance_id
-                );
-                return;
-            }
+        if let Some(handle) = state_manager.get_handle(&instance_id).await
+            && handle.get_session_id().await.is_some()
+        {
+            debug!(
+                "[SESSION-DISCOVERY {}] Session already claimed by server watcher",
+                instance_id
+            );
+            return;
         }
 
         let search_after = state_manager
@@ -353,11 +354,10 @@ pub async fn run_session_discovery(
 
                             // Claim and set session_id — server watcher will pick it up
                             state_manager.try_claim_session(&selected_id, &instance_id).await;
-                            if let Some(handle) = state_manager.get_handle(&instance_id).await {
-                                if let Err(e) = handle.set_session_id(selected_id.clone()).await {
+                            if let Some(handle) = state_manager.get_handle(&instance_id).await
+                                && let Err(e) = handle.set_session_id(selected_id.clone()).await {
                                     warn!(instance = %instance_id, session = %selected_id, "Failed to set session ID: {}", e);
                                 }
-                            }
                             return;
                         }
                     }

@@ -150,21 +150,19 @@ impl AsyncConversationWatcher {
                         let now = std::time::Instant::now();
                         if now.duration_since(last_event) >= debounce {
                             last_event = now;
-                            if let Ok(entries) = read_new_entries(&file_path, &byte_offset).await {
-                                if !entries.is_empty() && tx.send(entries).await.is_err() {
+                            if let Ok(entries) = read_new_entries(&file_path, &byte_offset).await
+                                && !entries.is_empty() && tx.send(entries).await.is_err() {
                                     break; // Receiver dropped
                                 }
-                            }
                         }
                     }
 
                     // Periodic fallback poll
                     _ = poll_timer.tick() => {
-                        if let Ok(entries) = read_new_entries(&file_path, &byte_offset).await {
-                            if !entries.is_empty() && tx.send(entries).await.is_err() {
+                        if let Ok(entries) = read_new_entries(&file_path, &byte_offset).await
+                            && !entries.is_empty() && tx.send(entries).await.is_err() {
                                 break; // Receiver dropped
                             }
-                        }
                     }
                 }
             }

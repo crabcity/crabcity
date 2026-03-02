@@ -170,9 +170,8 @@ impl InstanceHandle {
             .send(InstanceCommand::SubscribeOutput { respond_to: tx })
             .await
             .map_err(|_| anyhow::anyhow!("Instance actor is gone"))?;
-        Ok(rx
-            .await
-            .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))?)
+        rx.await
+            .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))
     }
 
     /// Get recent output up to max_bytes total
