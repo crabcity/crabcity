@@ -429,7 +429,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "claude_convo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "compositor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vt100",
 ]
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "crab_city"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "crab_city_ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rust-embed",
 ]
@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "pty_manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3776,7 +3776,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tty_wrapper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3998,7 +3998,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "virtual_terminal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vt100",
 ]
