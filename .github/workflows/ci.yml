@@ -35,7 +35,7 @@ jobs:
       - name: Run quality gates
         run: scripts/quality_gates.sh
         env:
-          BAZEL_EXTRA_ARGS: "--disk_cache=${{ env.HOME }}/.cache/bazel-disk-cache --repository_cache=${{ env.HOME }}/.cache/bazel-repo-cache"
+          BAZEL_EXTRA_ARGS: "--disk_cache=${HOME}/.cache/bazel-disk-cache --repository_cache=${HOME}/.cache/bazel-repo-cache"
 
       - name: Save Bazel repository cache
         if: always()
