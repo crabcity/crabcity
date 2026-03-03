@@ -1,5 +1,4 @@
-/// Crab binary version. Bump this when releasing.
-pub const VERSION: &str = "0.42.0";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 use anyhow::Result;
 use axum::{

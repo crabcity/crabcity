@@ -1,5 +1,6 @@
 load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("//packages/crab_city:version.bzl", "CRAB_VERSION")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -11,6 +12,7 @@ rust_binary(
         exclude = ["src/embedded_ui.rs"],
     ),
     edition = "2024",
+    rustc_env = {"CARGO_PKG_VERSION": CRAB_VERSION},
     deps = [
         "//packages/compositor",
         "//packages/pty_manager",
@@ -71,6 +73,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     crate_features = ["embedded-ui"],
     edition = "2024",
+    rustc_env = {"CARGO_PKG_VERSION": CRAB_VERSION},
     deps = [
         "//packages/compositor",
         "//packages/crab_city_ui/crate:crab_city_ui_crate",
