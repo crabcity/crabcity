@@ -98,6 +98,7 @@ echo "Checksum verified."
 
 # Install
 mkdir -p "$INSTALL_DIR"
+rm -f "${INSTALL_DIR}/crab"
 cp "${TMPDIR}/${ASSET}" "${INSTALL_DIR}/crab"
 chmod +x "${INSTALL_DIR}/crab"
 
