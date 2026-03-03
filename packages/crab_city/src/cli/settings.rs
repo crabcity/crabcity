@@ -58,8 +58,7 @@ struct StatusMessage {
 }
 
 pub fn run_settings(terminal: &mut DefaultTerminal, daemon: &DaemonInfo) -> Result<()> {
-    let client =
-        tokio::task::block_in_place(|| reqwest::blocking::Client::new());
+    let client = tokio::task::block_in_place(|| reqwest::blocking::Client::new());
     let mut config = fetch_config(&client, daemon)?;
     let mut selected = 0usize;
     let mut edit: Option<EditState> = None;

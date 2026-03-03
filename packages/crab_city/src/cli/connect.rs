@@ -196,6 +196,7 @@ pub async fn connect_command(
     eprintln!("Connecting as {}...", display_name);
 
     // Create client-side iroh endpoint (uses public relays by default)
+    eprintln!("[debug] binding iroh endpoint...");
     let endpoint = Endpoint::builder()
         .secret_key(identity.iroh_secret_key())
         .alpns(vec![ALPN.to_vec()])
@@ -203,24 +204,35 @@ pub async fn connect_command(
         .bind()
         .await
         .context("failed to bind iroh endpoint")?;
+    eprintln!("[debug] endpoint bound, waiting for relay connection...");
+
+    endpoint.online().await;
+    eprintln!("[debug] endpoint online");
 
     // Build target address
     let remote_node_id = iroh::EndpointId::from_bytes(&node_id).context("invalid node ID")?;
     let mut target = iroh::EndpointAddr::new(remote_node_id);
     if let Some(ref url) = relay_url {
+        eprintln!("[debug] token includes relay_url: {url}");
         let relay_parsed: iroh::RelayUrl = url.parse().context("invalid relay URL")?;
         target = target.with_relay_url(relay_parsed);
+    } else {
+        eprintln!("[debug] no relay_url in token — relying on DNS discovery");
     }
 
     eprintln!("Connecting to {}...", remote_node_id.fmt_short());
+    eprintln!("[debug] target addr: {target:?}");
 
-    // Phase 1: Redeem invite
+    // Connect and open bidi stream
+    eprintln!("[debug] calling endpoint.connect()...");
     let conn = endpoint
         .connect(target.clone(), ALPN)
         .await
         .context("failed to connect to remote")?;
+    eprintln!("[debug] connected! opening bidi stream...");
 
     let (mut send, mut recv) = conn.open_bi().await.context("failed to open bidi stream")?;
+    eprintln!("[debug] bidi stream open");
 
     // Send RedeemInvite
     let redeem_msg = ClientMessage::RedeemInvite {
@@ -230,95 +242,92 @@ pub async fn connect_command(
     };
     framing::write_client_message(&mut send, &redeem_msg, None).await?;
 
-    // Read response
+    // Read response — either InviteRedeemed (new member) or
+    // ConnectionEstablished (already authenticated, server upgraded in-place).
     let response = framing::read_server_message(&mut recv)
         .await?
         .ok_or_else(|| anyhow::anyhow!("connection closed during invite redemption"))?;
 
-    let granted_capability = match &response {
+    match &response {
         ServerMessage::InviteRedeemed {
             capability,
             fingerprint,
             ..
         } => {
             eprintln!("Joined as {} ({})", fingerprint, capability);
-            Some(capability.clone())
-        }
-        ServerMessage::Error { message, .. } => {
-            if message.contains("already have a grant") {
-                eprintln!("Already a member, reconnecting...");
-                None
+
+            // Persist this remote so the daemon can auto-connect on next startup
+            let host_name = instance_name.clone().unwrap_or_else(|| {
+                iroh::EndpointId::from_bytes(&node_id)
+                    .map(|id| id.fmt_short().to_string())
+                    .unwrap_or_else(|_| "unknown".into())
+            });
+            if let Err(e) = persist_remote(
+                config,
+                &node_id,
+                identity.public_key.as_bytes(),
+                &host_name,
+                capability,
+            )
+            .await
+            {
+                eprintln!(
+                    "Warning: failed to save remote (will need to reconnect manually): {}",
+                    e
+                );
             } else {
-                let friendly = format_server_error(message, instance_name.as_deref());
-                bail!("{}", friendly);
+                info!(host = %host_name, "remote saved — will auto-connect on next daemon start");
             }
+            // Server upgrades the connection in-place — no reconnect needed.
+            // Next message will be ConnectionEstablished.
         }
-        other => {
-            bail!("Unexpected response during invite redemption: {:?}", other);
-        }
-    };
-
-    // Persist this remote so the daemon can auto-connect on next startup
-    let host_name = instance_name.clone().unwrap_or_else(|| {
-        iroh::EndpointId::from_bytes(&node_id)
-            .map(|id| id.fmt_short().to_string())
-            .unwrap_or_else(|_| "unknown".into())
-    });
-    let granted_access = granted_capability.as_deref().unwrap_or("view");
-
-    if let Err(e) = persist_remote(
-        config,
-        &node_id,
-        identity.public_key.as_bytes(),
-        &host_name,
-        granted_access,
-    )
-    .await
-    {
-        eprintln!(
-            "Warning: failed to save remote (will need to reconnect manually): {}",
-            e
-        );
-    } else {
-        info!(host = %host_name, "remote saved — will auto-connect on next daemon start");
-    }
-
-    // Wait for server to close the connection (it sends "please reconnect")
-    drop(send);
-    drop(recv);
-    // Brief wait for the close frame
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Phase 2: Reconnect as authenticated member
-    eprintln!("Reconnecting...");
-    let conn = endpoint
-        .connect(target, ALPN)
-        .await
-        .context("failed to reconnect after invite redemption")?;
-
-    let (mut send, mut recv) = conn
-        .accept_bi()
-        .await
-        .context("failed to accept bidi stream on reconnect")?;
-
-    // Read ConnectionEstablished
-    let msg = framing::read_server_message(&mut recv)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("connection closed before ConnectionEstablished"))?;
-
-    let _connection_id = match msg {
-        ServerMessage::ConnectionEstablished { connection_id } => {
-            debug!("connection established: {}", connection_id);
-            connection_id
+        ServerMessage::ConnectionEstablished { .. } => {
+            // Already authenticated — server routed us straight to the
+            // authenticated handler. Persist remote in case it's missing.
+            eprintln!("Already authenticated, connected.");
+            let host_name = instance_name.clone().unwrap_or_else(|| {
+                iroh::EndpointId::from_bytes(&node_id)
+                    .map(|id| id.fmt_short().to_string())
+                    .unwrap_or_else(|_| "unknown".into())
+            });
+            let _ = persist_remote(
+                config,
+                &node_id,
+                identity.public_key.as_bytes(),
+                &host_name,
+                "collaborate",
+            )
+            .await;
         }
         ServerMessage::Error { message, .. } => {
-            let friendly = format_server_error(&message, instance_name.as_deref());
+            let friendly = format_server_error(message, instance_name.as_deref());
             bail!("{}", friendly);
         }
         other => {
-            bail!("Expected ConnectionEstablished, got: {:?}", other);
+            bail!("Unexpected response: {:?}", other);
         }
-    };
+    }
+
+    // If we got InviteRedeemed, the next message is ConnectionEstablished
+    // (the server upgraded in-place). If we already got ConnectionEstablished,
+    // skip this read.
+    if !matches!(&response, ServerMessage::ConnectionEstablished { .. }) {
+        let msg = framing::read_server_message(&mut recv)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("connection closed before ConnectionEstablished"))?;
+        match msg {
+            ServerMessage::ConnectionEstablished { connection_id } => {
+                debug!("connection established: {}", connection_id);
+            }
+            ServerMessage::Error { message, .. } => {
+                let friendly = format_server_error(&message, instance_name.as_deref());
+                bail!("{}", friendly);
+            }
+            other => {
+                bail!("Expected ConnectionEstablished, got: {:?}", other);
+            }
+        }
+    }
 
     // Read InstanceList
     let msg = framing::read_server_message(&mut recv)

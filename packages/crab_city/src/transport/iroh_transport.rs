@@ -299,6 +299,16 @@ impl IrohTransport {
             None => info!("iroh transport started (public relays)"),
         }
 
+        // Log the endpoint's relay state for debugging connectivity
+        let ep_debug = endpoint.clone();
+        tokio::spawn(async move {
+            ep_debug.online().await;
+            let addr = ep_debug.addr();
+            let relays: Vec<_> = addr.relay_urls().collect();
+            info!("iroh endpoint online — relay URLs: {:?}, direct addrs: {:?}",
+                  relays, addr.ip_addrs().collect::<Vec<_>>());
+        });
+
         Ok(Self {
             endpoint,
             connections,
@@ -319,6 +329,11 @@ impl IrohTransport {
     /// The node ID (ed25519 public key) of this endpoint.
     pub fn node_id(&self) -> [u8; 32] {
         *self.endpoint.id().as_bytes()
+    }
+
+    /// The relay URL this endpoint is registered with (if any).
+    pub fn home_relay(&self) -> Option<RelayUrl> {
+        self.endpoint.addr().relay_urls().next().cloned()
     }
 
     /// Close all connections for a specific identity.
@@ -473,7 +488,7 @@ impl IrohTransport {
         let peer = public_key.fingerprint();
 
         // Per-connection channel (same pattern as WS handler)
-        let (tx, mut rx) = mpsc::channel::<ServerMessage>(100);
+        let (tx, rx) = mpsc::channel::<ServerMessage>(100);
 
         // Accept the main bidirectional stream from the client
         let (mut send, mut recv) = match conn.accept_bi().await {
@@ -592,6 +607,45 @@ impl IrohTransport {
                 return;
             }
         }
+
+        Self::run_authenticated_session(
+            conn,
+            public_key,
+            auth_user,
+            connection_id,
+            cancel,
+            transport,
+            tx,
+            rx,
+            send,
+            recv,
+            seq,
+            first_message,
+        )
+        .await;
+    }
+
+    /// Core authenticated session loop, shared by `connection_handler` (direct
+    /// grant) and `unauthenticated_handler` (post-invite upgrade).
+    ///
+    /// Sends ConnectionEstablished + InstanceList, then enters the bidirectional
+    /// message dispatch loop with replay buffer, state broadcast, and lifecycle
+    /// forwarding.
+    async fn run_authenticated_session(
+        conn: iroh::endpoint::Connection,
+        public_key: PublicKey,
+        auth_user: AuthUser,
+        connection_id: String,
+        cancel: CancellationToken,
+        transport: Arc<TransportContext>,
+        tx: mpsc::Sender<ServerMessage>,
+        mut rx: mpsc::Receiver<ServerMessage>,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+        seq: u64,
+        first_message: Option<framing::IncomingMessage>,
+    ) {
+        let peer = public_key.fingerprint();
 
         // Tell the client its connection_id so it can reconnect later
         if tx
@@ -717,23 +771,34 @@ impl IrohTransport {
         let rpc_ctx = transport.rpc_ctx.clone();
         let disconnect_tx = transport.disconnect_tx.clone();
         let input_task = async move {
-            // Dispatch stashed first message (non-Reconnect)
+            // Dispatch stashed first message (non-Reconnect).
+            // Skip RedeemInvite from already-authenticated clients — they've
+            // already been routed to connection_handler because they have a
+            // grant, so re-dispatching the invite would just produce a
+            // spurious "already have a grant" error.
             if let Some(framing::IncomingMessage {
                 message,
                 request_id: _,
             }) = first_message
             {
-                match dispatch_client_message(&conn_ctx_input, message).await {
-                    DispatchResult::Handled => {}
-                    DispatchResult::Unhandled(msg) => {
-                        Self::dispatch_rpc(
-                            &rpc_ctx,
-                            &auth_user,
-                            &conn_ctx_input.tx,
-                            &disconnect_tx,
-                            msg,
-                        )
-                        .await;
+                if matches!(&message, ClientMessage::RedeemInvite { .. }) {
+                    debug!(
+                        peer = %peer_input,
+                        "ignoring stashed RedeemInvite from already-authenticated client"
+                    );
+                } else {
+                    match dispatch_client_message(&conn_ctx_input, message).await {
+                        DispatchResult::Handled => {}
+                        DispatchResult::Unhandled(msg) => {
+                            Self::dispatch_rpc(
+                                &rpc_ctx,
+                                &auth_user,
+                                &conn_ctx_input.tx,
+                                &disconnect_tx,
+                                msg,
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -908,6 +973,9 @@ impl IrohTransport {
 
     /// Route an unauthenticated connection: peek at the first message to decide
     /// between federation tunnel (TunnelClientMessage::Hello) and invite redemption.
+    ///
+    /// On successful invite redemption, upgrades in-place to an authenticated
+    /// session — no reconnect needed.
     async fn unauthenticated_handler(
         conn: iroh::endpoint::Connection,
         public_key: PublicKey,
@@ -1021,15 +1089,49 @@ impl IrohTransport {
                         {
                             error!(peer = %peer, "failed to send redeem response: {}", e);
                         }
-                        if let Err(e) = send.finish() {
-                            debug!(peer = %peer, "send.finish error (non-fatal): {}", e);
-                        }
-                        tokio::task::yield_now().await;
+
                         if is_error {
-                            conn.close(3u32.into(), b"invite redemption failed");
-                        } else {
-                            conn.close(0u32.into(), b"invite redeemed, please reconnect");
+                            // Error path: finish and let client drive teardown
+                            let _ = send.finish();
+                            drop(send);
+                            drop(recv);
+                            let _ =
+                                tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+                            transport.connections.lock().await.remove(&connection_id);
+                            return;
                         }
+
+                        // Success: upgrade to authenticated session in-place.
+                        // The invite was redeemed, so the client now has a grant.
+                        // Build an AuthUser from the newly-created grant and
+                        // transition to the full message loop on the same
+                        // connection + streams. No reconnect needed.
+                        info!(peer = %peer, "invite redeemed, upgrading to authenticated session");
+
+                        let cap = match rpc_ctx.repo.get_active_grant(public_key.as_bytes()).await {
+                            Ok(Some(g)) => g.capability.parse().unwrap_or(Capability::View),
+                            _ => Capability::View,
+                        };
+                        let auth_user = AuthUser::from_grant(public_key, display_name.clone(), cap);
+
+                        let (tx, rx) = mpsc::channel::<ServerMessage>(100);
+
+                        Self::run_authenticated_session(
+                            conn,
+                            public_key,
+                            auth_user,
+                            connection_id,
+                            cancel,
+                            transport,
+                            tx,
+                            rx,
+                            send,
+                            recv,
+                            seq,
+                            None, // no stashed first message
+                        )
+                        .await;
+                        return; // run_authenticated_session handles cleanup
                     }
                     Ok(_) => {
                         let err = ServerMessage::Error {
@@ -1043,7 +1145,10 @@ impl IrohTransport {
                             request_id.as_deref(),
                         )
                         .await;
-                        conn.close(3u32.into(), b"expected RedeemInvite");
+                        let _ = send.finish();
+                        drop(send);
+                        drop(recv);
+                        let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
                     }
                     Err(e) => {
                         error!(peer = %peer, "failed to parse first message: {}", e);
@@ -1059,73 +1164,6 @@ impl IrohTransport {
 
         transport.connections.lock().await.remove(&connection_id);
     }
-
-    /// Handle an unauthenticated connection: expect invite redemption as first message.
-    #[allow(dead_code)]
-    async fn invite_handler(
-        conn: iroh::endpoint::Connection,
-        public_key: PublicKey,
-        connection_id: String,
-        cancel: CancellationToken,
-        transport: Arc<TransportContext>,
-    ) {
-        let peer = public_key.fingerprint();
-
-        let (mut send, mut recv) = match conn.accept_bi().await {
-            Ok(streams) => streams,
-            Err(e) => {
-                error!(peer = %peer, "failed to accept bidi stream for invite: {}", e);
-                transport.connections.lock().await.remove(&connection_id);
-                return;
-            }
-        };
-        let rpc_ctx = &transport.rpc_ctx;
-
-        // Wait for the invite redemption message
-        let mut seq = 0u64;
-        tokio::select! {
-            _ = cancel.cancelled() => {}
-            msg = framing::read_message(&mut recv) => {
-                match msg {
-                    Ok(Some(framing::IncomingMessage { message: ClientMessage::RedeemInvite { token, display_name, .. }, request_id })) => {
-                        let resp = interconnect::handle_redeem_invite(rpc_ctx, &public_key, &token, &display_name).await;
-                        let is_error = matches!(resp, ServerMessage::Error { .. });
-                        if let Err(e) = framing::write_message(&mut send, &resp, &mut seq, request_id.as_deref()).await {
-                            error!(peer = %peer, "failed to send redeem response: {}", e);
-                        }
-                        // Finish the send stream to flush the response before closing.
-                        // Without this, conn.close() may race the frame delivery.
-                        if let Err(e) = send.finish() {
-                            debug!(peer = %peer, "send.finish error (non-fatal): {}", e);
-                        }
-                        // Brief yield to allow the QUIC stack to flush
-                        tokio::task::yield_now().await;
-                        if is_error {
-                            conn.close(3u32.into(), b"invite redemption failed");
-                        } else {
-                            conn.close(0u32.into(), b"invite redeemed, please reconnect");
-                        }
-                    }
-                    Ok(Some(framing::IncomingMessage { request_id, .. })) => {
-                        let err = ServerMessage::Error {
-                            instance_id: None,
-                            message: "expected RedeemInvite as first message".into(),
-                        };
-                        let _ = framing::write_message(&mut send, &err, &mut seq, request_id.as_deref()).await;
-                        conn.close(3u32.into(), b"expected RedeemInvite");
-                    }
-                    Ok(None) => {
-                        info!(peer = %peer, "invite client disconnected");
-                    }
-                    Err(e) => {
-                        error!(peer = %peer, "invite handler read error: {}", e);
-                    }
-                }
-            }
-        }
-
-        transport.connections.lock().await.remove(&connection_id);
-    }
 }
 
 #[cfg(test)]
@@ -1136,6 +1174,6 @@ mod tests {
     #[test]
     fn transport_config_default() {
         let cfg = TransportConfig::from_file(&crate::config::TransportFileConfig::default());
-        assert_eq!(cfg.relay_bind_addr, ([127, 0, 0, 1], 4434).into());
+        assert_eq!(cfg.relay_bind_addr, ([127, 0, 0, 1], 0).into());
     }
 }

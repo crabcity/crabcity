@@ -273,6 +273,8 @@ pub(crate) struct AppState {
     pub identity: Option<Arc<InstanceIdentity>>,
     /// The iroh node ID (ed25519 public key) when transport is active
     pub iroh_node_id: Option<[u8; 32]>,
+    /// The iroh relay URL this instance is registered with (for connection tokens)
+    pub iroh_relay_url: Option<String>,
     /// Human-readable instance name (for invite tokens and federation)
     pub instance_name: String,
     /// Federation connection manager (outbound tunnels to remote Crab Cities)
@@ -561,6 +563,27 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .await?;
     }
 
+    // Ensure the instance identity has an active owner grant.
+    // Invites are signed by this key, and redemption verifies the root issuer
+    // has an active grant — without this, all invites fail chain verification.
+    if repository
+        .get_active_grant(identity.public_key.as_bytes())
+        .await?
+        .is_none()
+    {
+        repository
+            .create_grant(
+                identity.public_key.as_bytes(),
+                "owner",
+                "full",
+                "active",
+                None,
+                None,
+            )
+            .await?;
+        info!("Created owner grant for instance identity");
+    }
+
     // First-run detection: if no active grants exist, generate an owner invite
     first_run_bootstrap(&identity, &repository).await;
 
@@ -687,6 +710,9 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             global_state_manager: global_state_manager.clone(),
             identity: Some(identity.clone()),
             iroh_node_id: iroh_transport.as_ref().map(|(iroh, _)| iroh.node_id()),
+            iroh_relay_url: iroh_transport
+                .as_ref()
+                .and_then(|(iroh, _)| iroh.home_relay().map(|u| u.to_string())),
             instance_name: fc_initial.transport.instance_name.clone(),
             connection_manager: connection_manager.clone(),
             runtime_overrides: runtime_overrides.clone(),

@@ -1067,10 +1067,15 @@ pub async fn create_invite_handler(
 
             let inviter_fp = ConnectionToken::compute_fingerprint(identity.public_key.as_bytes());
 
+            info!(
+                relay_url = ?state.iroh_relay_url,
+                "creating invite token with relay_url"
+            );
+
             let mut token = ConnectionToken {
                 node_id,
                 invite_nonce: nonce_arr,
-                relay_url: None,
+                relay_url: state.iroh_relay_url.clone(),
                 instance_name: Some(state.instance_name.clone()),
                 inviter_fingerprint: Some(inviter_fp),
                 capability: Some(cap_byte),

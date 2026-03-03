@@ -58,8 +58,7 @@ pub fn run_connect_panel(
     daemon: &DaemonInfo,
     current_context: &CrabCityContext,
 ) -> Result<ConnectPanelResult> {
-    let client =
-        tokio::task::block_in_place(|| reqwest::blocking::Client::new());
+    let client = tokio::task::block_in_place(|| reqwest::blocking::Client::new());
     let connections = fetch_connections(&client, daemon)?;
     let remotes = fetch_remotes(&client, daemon)?;
 
