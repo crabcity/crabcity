@@ -279,6 +279,14 @@ pub enum ServerMessage {
         topics: Vec<crate::models::ChatTopicSummary>,
     },
 
+    // === Session rotation ===
+    /// Session rotated (plan-mode exit or context overflow)
+    SessionRotated {
+        instance_id: String,
+        from_session: String,
+        to_session: String,
+    },
+
     // === Tasks ===
     /// A task was created or updated — full snapshot for idempotent merge
     TaskUpdate { task: serde_json::Value },

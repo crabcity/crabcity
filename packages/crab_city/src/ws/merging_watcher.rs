@@ -46,6 +46,12 @@ impl MergingWatcher {
         self.inner.project()
     }
 
+    /// Drain any rotation events detected during the last poll.
+    /// Returns Vec<(from_session_id, to_session_id)>.
+    pub fn take_pending_rotations(&mut self) -> Vec<(String, String)> {
+        self.inner.take_pending_rotations()
+    }
+
     /// Check if an entry is a tool-result-only user message
     /// (no human-authored text, only tool_result parts).
     fn is_tool_result_only(entry: &ConversationEntry) -> bool {

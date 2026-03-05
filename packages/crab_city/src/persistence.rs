@@ -184,7 +184,6 @@ impl PersistenceService {
 pub struct InstancePersistor {
     instance_id: String,
     project_path: String,
-    claude_convo: ClaudeConvo,
     persistence: Arc<PersistenceService>,
     active_sessions: Arc<Mutex<HashSet<String>>>,
 }
@@ -198,7 +197,6 @@ impl InstancePersistor {
         Self {
             instance_id,
             project_path,
-            claude_convo: ClaudeConvo::new(),
             persistence,
             active_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -256,8 +254,11 @@ impl InstancePersistor {
 
     /// Check for new sessions and return true if any were found
     async fn check_for_new_sessions(&self) -> Result<bool> {
+        // Create provider on demand (ClaudeConvo is !Sync, cannot be stored in Arc)
+        let claude_convo = ClaudeConvo::new();
+
         // List all conversations for this project (via trait)
-        let sessions = self.claude_convo.list_conversations(&self.project_path)?;
+        let sessions = claude_convo.list_conversations(&self.project_path)?;
 
         let mut active = self.active_sessions.lock().await;
         let mut found_new = false;
@@ -269,12 +270,9 @@ impl InstancePersistor {
             }
 
             // Check if this session is recent (within last 5 minutes)
-            match self
-                .claude_convo
-                .load_metadata(&self.project_path, &session_id)
-            {
-                Ok(metadata) => {
-                    if let Some(started) = metadata.started_at {
+            match claude_convo.load_metadata(&self.project_path, &session_id) {
+                Ok(meta) => {
+                    if let Some(started) = meta.started_at {
                         let five_minutes_ago = chrono::Utc::now() - chrono::Duration::minutes(5);
                         if started < five_minutes_ago {
                             continue; // Skip old sessions
