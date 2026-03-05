@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use toolpath_claude::ClaudeConvo;
+use toolpath_convo::ConversationProvider;
 use tracing::{debug, error, info, warn};
 
 use crate::models::{Conversation, ConversationEntry};
@@ -146,14 +147,23 @@ impl ConversationImporter {
 
     /// Import a single conversation session, with staleness detection.
     async fn import_session(&self, project_path: &Path, session_id: &str) -> Result<ImportResult> {
-        // Get the JSONL file path for this session
+        // Get the JSONL file path for this session via trait-based API
         let metadata = self
             .claude_convo
-            .read_conversation_metadata(&project_path.to_string_lossy(), session_id)?;
-        let file_path = &metadata.file_path;
+            .load_metadata(&project_path.to_string_lossy(), session_id)?;
+        let file_path = match &metadata.file_path {
+            Some(p) => p.clone(),
+            None => {
+                debug!(
+                    "No file path in metadata for session {}, skipping",
+                    session_id
+                );
+                return Ok(ImportResult::Skipped);
+            }
+        };
 
         // Stat the file for mtime + size
-        let (file_mtime, file_size) = match Self::file_stat(file_path) {
+        let (file_mtime, file_size) = match Self::file_stat(&file_path) {
             Some(v) => v,
             None => {
                 debug!("Could not stat file for session {}, skipping", session_id);
@@ -204,22 +214,35 @@ impl ConversationImporter {
                 .delete_conversation_entries(&existing_conv.id)
                 .await?;
 
-            // Re-read and re-insert entries
-            let claude_conversation = self
+            // Re-read and re-insert entries via trait-based API
+            let view = self
                 .claude_convo
-                .read_conversation(&project_path.to_string_lossy(), session_id)?;
+                .load_conversation(&project_path.to_string_lossy(), session_id)?;
 
             let mut db_entries = Vec::new();
             let mut title = existing_conv.title.clone();
             let mut title_set = title.is_some();
 
-            for entry in &claude_conversation.entries {
-                if !title_set && let Some(extracted) = Self::extract_title(entry) {
+            for turn in &view.turns {
+                if !title_set
+                    && let Some(extracted) = crate::handlers::extract_title_from_turn(turn, 100)
+                {
                     title = Some(extracted);
                     title_set = true;
                 }
-                let db_entry =
-                    ConversationEntry::from_claude_entry(existing_conv.id.clone(), entry);
+                let entry_type = match &turn.role {
+                    toolpath_convo::Role::User => "user",
+                    toolpath_convo::Role::Assistant => "assistant",
+                    toolpath_convo::Role::System => "system",
+                    toolpath_convo::Role::Other(s) => s.as_str(),
+                };
+                let raw_json = serde_json::to_string(turn).unwrap_or_default();
+                let db_entry = ConversationEntry::from_turn(
+                    existing_conv.id.clone(),
+                    turn,
+                    entry_type.to_string(),
+                    raw_json,
+                );
                 db_entries.push(db_entry);
             }
 
@@ -277,23 +300,37 @@ impl ConversationImporter {
         conversation.file_mtime = Some(file_mtime);
         conversation.import_version = Some(IMPORT_FORMAT_VERSION);
 
-        // Read all conversation entries
-        let claude_conversation = self
+        // Read all conversation turns via trait-based API
+        let view = self
             .claude_convo
-            .read_conversation(&project_path.to_string_lossy(), session_id)?;
+            .load_conversation(&project_path.to_string_lossy(), session_id)?;
 
         // Extract title from first user message
         let mut title_set = false;
         let mut db_entries = Vec::new();
 
-        for entry in &claude_conversation.entries {
-            if !title_set && let Some(extracted) = Self::extract_title(entry) {
+        for turn in &view.turns {
+            if !title_set
+                && let Some(extracted) = crate::handlers::extract_title_from_turn(turn, 100)
+            {
                 conversation.title = Some(extracted);
                 title_set = true;
             }
 
             // Convert to database entry
-            let db_entry = ConversationEntry::from_claude_entry(conversation_id.clone(), entry);
+            let entry_type = match &turn.role {
+                toolpath_convo::Role::User => "user",
+                toolpath_convo::Role::Assistant => "assistant",
+                toolpath_convo::Role::System => "system",
+                toolpath_convo::Role::Other(s) => s.as_str(),
+            };
+            let raw_json = serde_json::to_string(turn).unwrap_or_default();
+            let db_entry = ConversationEntry::from_turn(
+                conversation_id.clone(),
+                turn,
+                entry_type.to_string(),
+                raw_json,
+            );
             db_entries.push(db_entry);
         }
 
@@ -311,12 +348,6 @@ impl ConversationImporter {
         }
 
         Ok(ImportResult::Imported)
-    }
-
-    /// Extract a title from a conversation entry (first user message text, truncated to 100 chars)
-    fn extract_title(entry: &toolpath_claude::ConversationEntry) -> Option<String> {
-        let turn = toolpath_claude::provider::to_turn(entry)?;
-        crate::handlers::extract_title_from_turn(&turn, 100)
     }
 }
 
@@ -344,44 +375,6 @@ impl ImportStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use toolpath_claude::{ConversationEntry, Message, MessageContent, MessageRole};
-
-    /// Helper to create a minimal conversation entry for testing
-    fn make_entry(uuid: &str, entry_type: &str, message: Option<Message>) -> ConversationEntry {
-        ConversationEntry {
-            uuid: uuid.to_string(),
-            parent_uuid: None,
-            is_sidechain: false,
-            entry_type: entry_type.to_string(),
-            session_id: Some("session".to_string()),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-            cwd: None,
-            git_branch: None,
-            version: None,
-            user_type: None,
-            request_id: None,
-            tool_use_result: None,
-            snapshot: None,
-            message_id: None,
-            message,
-            extra: HashMap::new(),
-        }
-    }
-
-    /// Helper to create a minimal message for testing
-    fn make_message(role: MessageRole, content: Option<MessageContent>) -> Message {
-        Message {
-            role,
-            content,
-            model: None,
-            id: None,
-            message_type: None,
-            stop_reason: None,
-            stop_sequence: None,
-            usage: None,
-        }
-    }
 
     #[test]
     fn test_import_stats_total() {
@@ -416,131 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_title_from_user_message() {
-        let entry = make_entry(
-            "123",
-            "user",
-            Some(make_message(
-                MessageRole::User,
-                Some(MessageContent::Text("Help me write a function".to_string())),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert_eq!(title, Some("Help me write a function".to_string()));
-    }
-
-    #[test]
-    fn test_extract_title_truncates_long_text() {
-        let long_text = "a".repeat(200);
-        let entry = make_entry(
-            "123",
-            "user",
-            Some(make_message(
-                MessageRole::User,
-                Some(MessageContent::Text(long_text)),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert_eq!(title.as_ref().map(|t| t.len()), Some(100));
-    }
-
-    #[test]
-    fn test_extract_title_ignores_assistant_messages() {
-        let entry = make_entry(
-            "123",
-            "assistant",
-            Some(make_message(
-                MessageRole::Assistant,
-                Some(MessageContent::Text("I can help with that".to_string())),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert!(title.is_none());
-    }
-
-    #[test]
-    fn test_extract_title_handles_empty_content() {
-        let entry = make_entry("123", "user", Some(make_message(MessageRole::User, None)));
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert!(title.is_none());
-    }
-
-    #[test]
-    fn test_extract_title_no_message() {
-        let entry = make_entry("123", "system", None);
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert!(title.is_none());
-    }
-
-    #[test]
-    fn test_extract_title_from_parts_content() {
-        use toolpath_claude::ContentPart;
-
-        let entry = make_entry(
-            "123",
-            "user",
-            Some(make_message(
-                MessageRole::User,
-                Some(MessageContent::Parts(vec![ContentPart::Text {
-                    text: "Hello from parts".to_string(),
-                }])),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert_eq!(title, Some("Hello from parts".to_string()));
-    }
-
-    #[test]
-    fn test_extract_title_from_parts_no_text() {
-        use toolpath_claude::ContentPart;
-
-        let entry = make_entry(
-            "123",
-            "user",
-            Some(make_message(
-                MessageRole::User,
-                Some(MessageContent::Parts(vec![ContentPart::ToolUse {
-                    id: "t1".to_string(),
-                    name: "read".to_string(),
-                    input: serde_json::json!({}),
-                }])),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert!(
-            title.is_none(),
-            "ToolUse-only entry should not produce a title"
-        );
-    }
-
-    #[test]
-    fn test_extract_title_parts_truncates() {
-        use toolpath_claude::ContentPart;
-        let long = "z".repeat(200);
-
-        let entry = make_entry(
-            "123",
-            "user",
-            Some(make_message(
-                MessageRole::User,
-                Some(MessageContent::Parts(vec![ContentPart::Text {
-                    text: long,
-                }])),
-            )),
-        );
-
-        let title = ConversationImporter::extract_title(&entry);
-        assert_eq!(title.as_ref().map(|t| t.len()), Some(100));
-    }
-
-    #[test]
     fn test_import_stats_default() {
         let stats = ImportStats::default();
         assert_eq!(stats.imported, 0);
@@ -570,7 +438,6 @@ mod tests {
 
     #[test]
     fn test_import_format_version_is_positive() {
-        // Use a runtime check so clippy doesn't flag it as assertions_on_constants
         let version = IMPORT_FORMAT_VERSION;
         assert!(version >= 1);
     }

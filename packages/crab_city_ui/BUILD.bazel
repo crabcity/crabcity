@@ -150,6 +150,8 @@ ts_project(
         "src/lib/utils/fuzzy.ts",
         "src/lib/utils/noise.test.ts",
         "src/lib/utils/noise.ts",
+        "src/lib/utils/tool-registry.test.ts",
+        "src/lib/utils/tool-registry.ts",
         "src/lib/utils/virtualList.test.ts",
         "src/lib/utils/virtualList.ts",
         "src/lib/utils/wrapLines.test.ts",
