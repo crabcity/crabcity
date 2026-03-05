@@ -60,7 +60,39 @@
 	}
 
 	// Extract tools from message content parts
-	function extractTools(raw: Record<string, unknown>, entryUuid: string, timestamp: string): ToolCell[] {
+	// Build a map of tool_use_id → { content, is_error } from all tool_result entries.
+	// Tool results live in separate "phantom" user entries that follow the assistant
+	// entry containing the tool_use.
+	function buildToolResultMap(entries: ConversationEntry[]): Map<string, { content: string; is_error: boolean }> {
+		const map = new Map<string, { content: string; is_error: boolean }>();
+		for (const e of entries) {
+			try {
+				const raw = JSON.parse(e.raw_json) as Record<string, unknown>;
+				const message = raw.message as Record<string, unknown> | undefined;
+				const content = message?.content;
+				if (!Array.isArray(content)) continue;
+				for (const part of content) {
+					if (part && typeof part === 'object' && 'type' in part) {
+						const p = part as Record<string, unknown>;
+						if (p.type === 'tool_result' && typeof p.tool_use_id === 'string') {
+							const text = typeof p.content === 'string' ? p.content : '';
+							map.set(p.tool_use_id, { content: text, is_error: !!p.is_error });
+						}
+					}
+				}
+			} catch {
+				// skip unparseable entries
+			}
+		}
+		return map;
+	}
+
+	function extractTools(
+		raw: Record<string, unknown>,
+		entryUuid: string,
+		timestamp: string,
+		toolResultMap: Map<string, { content: string; is_error: boolean }>
+	): ToolCell[] {
 		const tools: ToolCell[] = [];
 
 		// Check for tool_use in message.content array
@@ -72,10 +104,13 @@
 				if (part && typeof part === 'object' && 'type' in part) {
 					const p = part as Record<string, unknown>;
 					if (p.type === 'tool_use' && typeof p.name === 'string') {
+						const result = typeof p.id === 'string' ? toolResultMap.get(p.id) : undefined;
 						tools.push({
 							id: `${entryUuid}-tool-${index}`,
 							name: p.name,
 							input: (p.input as Record<string, unknown>) ?? {},
+							output: result?.content,
+							is_error: result?.is_error,
 							status: 'complete',
 							timestamp,
 							canRerun: false
@@ -195,6 +230,7 @@
 	// Aggregates consecutive progress entries like the live view does
 	function entriesToCells(entries: ConversationEntry[], attrMap?: Map<string, EntryAttribution>): NotebookCellType[] {
 		const cells: NotebookCellType[] = [];
+		const toolResultMap = buildToolResultMap(entries);
 
 		for (const e of entries) {
 			const cellType = getCellType(e);
@@ -264,7 +300,7 @@
 				const raw = JSON.parse(e.raw_json) as Record<string, unknown>;
 
 				// Extract tools from content parts
-				const tools = extractTools(raw, e.entry_uuid, e.timestamp);
+				const tools = extractTools(raw, e.entry_uuid, e.timestamp, toolResultMap);
 				if (tools.length > 0) {
 					cell.toolCells = tools;
 				}

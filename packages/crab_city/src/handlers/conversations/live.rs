@@ -9,7 +9,7 @@ use toolpath_claude::ClaudeConvo;
 use toolpath_convo::ConversationProvider;
 use tracing::{debug, info, warn};
 
-use super::format::{format_turn_with_attribution, process_watcher_entries};
+use super::format::{format_progress_event, format_turn_with_attribution};
 use crate::AppState;
 
 pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -210,26 +210,49 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
     let mut watchers = state.conversation_watchers.lock().await;
     let watcher = watchers.entry(id.clone()).or_insert_with(|| {
-        toolpath_claude::ConversationWatcher::new(
+        Box::new(crate::ws::merging_watcher::MergingWatcher::new(
             ClaudeConvo::new(),
             instance.working_dir.clone(),
             session_id.clone(),
-        )
+        )) as Box<dyn toolpath_convo::ConversationWatcher + Send>
     });
 
-    match watcher.poll() {
-        Ok(new_entries) => {
-            let turns = process_watcher_entries(
-                &new_entries,
-                &id,
-                Some(&state.repository),
-                Some(&state.global_state_manager),
-            )
-            .await;
+    match toolpath_convo::ConversationWatcher::poll(watcher.as_mut()) {
+        Ok(events) => {
+            let mut turns = Vec::new();
+            for event in &events {
+                match event {
+                    toolpath_convo::WatcherEvent::Turn(turn) => {
+                        turns.push(
+                            format_turn_with_attribution(
+                                turn,
+                                &id,
+                                Some(&state.repository),
+                                Some(&state.global_state_manager),
+                            )
+                            .await,
+                        );
+                    }
+                    toolpath_convo::WatcherEvent::TurnUpdated(turn) => {
+                        turns.push(
+                            format_turn_with_attribution(
+                                turn,
+                                &id,
+                                Some(&state.repository),
+                                Some(&state.global_state_manager),
+                            )
+                            .await,
+                        );
+                    }
+                    toolpath_convo::WatcherEvent::Progress { kind, data } => {
+                        turns.push(format_progress_event(kind, data));
+                    }
+                }
+            }
 
             Json(serde_json::json!({
                 "new_turns": turns,
-                "total_seen": watcher.seen_count()
+                "total_seen": toolpath_convo::ConversationWatcher::seen_count(watcher.as_ref())
             }))
             .into_response()
         }

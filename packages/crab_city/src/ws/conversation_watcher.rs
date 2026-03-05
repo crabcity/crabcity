@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
-use toolpath_claude::{ClaudeConvo, ConversationWatcher};
-use toolpath_convo::ConversationProvider;
+use toolpath_claude::ClaudeConvo;
+use toolpath_convo::{ConversationProvider, Role, WatcherEvent};
 use tracing::{debug, info, warn};
 
 use crate::inference::StateSignal;
@@ -18,17 +18,39 @@ use crate::repository::ConversationRepository;
 use super::session_discovery::find_candidate_sessions;
 use super::state_manager::{ConversationBroadcast, ConversationEvent, GlobalStateManager};
 
-/// Helper to extract a state signal from a conversation entry.
-fn entry_state_signal(entry: &toolpath_claude::ConversationEntry) -> StateSignal {
-    let subtype = entry
-        .extra
-        .get("subtype")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    StateSignal::ConversationEntry {
-        entry_type: entry.entry_type.clone(),
-        subtype,
-        stop_reason: entry.message.as_ref().and_then(|m| m.stop_reason.clone()),
+/// Extract a state signal from a WatcherEvent.
+fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
+    match event {
+        WatcherEvent::Turn(turn) => {
+            let entry_type = match &turn.role {
+                Role::User => "human".to_string(),
+                Role::Assistant => "assistant".to_string(),
+                Role::System => "system".to_string(),
+                Role::Other(s) => s.clone(),
+            };
+            let subtype = turn
+                .extra
+                .get("subtype")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Some(StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                stop_reason: turn.stop_reason.clone(),
+            })
+        }
+        WatcherEvent::TurnUpdated(_) => None,
+        WatcherEvent::Progress { kind, data } => {
+            let subtype = data
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Some(StateSignal::ConversationEntry {
+                entry_type: kind.clone(),
+                subtype,
+                stop_reason: None,
+            })
+        }
     }
 }
 
@@ -128,7 +150,7 @@ pub async fn run_server_conversation_watcher(
 
     // Phase 2: Watch the conversation.
     let repo_ref = repository.as_ref();
-    let mut watcher = ConversationWatcher::new(manager, working_dir, session_id);
+    let mut watcher = super::merging_watcher::MergingWatcher::new(manager, working_dir, session_id);
 
     info!(
         "[SERVER-CONVO {}] Starting conversation watcher for session {} (project={})",
@@ -137,23 +159,38 @@ pub async fn run_server_conversation_watcher(
         watcher.project()
     );
 
-    // Initial poll — load existing entries
-    match watcher.poll() {
-        Ok(entries) => {
+    // Initial poll — load existing events (turns + progress)
+    match toolpath_convo::ConversationWatcher::poll(&mut watcher) {
+        Ok(events) => {
             info!(
-                "[SERVER-CONVO {}] Initial poll: {} entries",
+                "[SERVER-CONVO {}] Initial poll: {} events",
                 instance_id,
-                entries.len()
+                events.len()
             );
 
-            // Format entries (skip phantom tool-result-only entries)
-            let turns = crate::handlers::process_watcher_entries(
-                &entries,
-                &instance_id,
-                repo_ref,
-                Some(&state_manager),
-            )
-            .await;
+            // Format events into JSON turns
+            let mut turns = Vec::new();
+            for event in &events {
+                match event {
+                    WatcherEvent::Turn(turn) => {
+                        turns.push(
+                            crate::handlers::format_turn_with_attribution(
+                                turn,
+                                &instance_id,
+                                repo_ref,
+                                Some(&state_manager),
+                            )
+                            .await,
+                        );
+                    }
+                    WatcherEvent::TurnUpdated(_) => {
+                        // Skip on initial poll — no prior state to update
+                    }
+                    WatcherEvent::Progress { kind, data } => {
+                        turns.push(crate::handlers::format_progress_event(kind, data));
+                    }
+                }
+            }
 
             // Store in shared state
             {
@@ -167,9 +204,10 @@ pub async fn run_server_conversation_watcher(
                 turns,
             });
 
-            // Signal initial state from last entry
-            if let Some(last) = entries.last()
-                && signal_tx.send(entry_state_signal(last)).await.is_err()
+            // Signal initial state from last event
+            if let Some(last) = events.last()
+                && let Some(signal) = watcher_event_to_signal(last)
+                && signal_tx.send(signal).await.is_err()
             {
                 warn!(instance = %instance_id, "State signal channel closed on initial poll");
                 return;
@@ -190,41 +228,80 @@ pub async fn run_server_conversation_watcher(
                 break;
             }
             _ = interval.tick() => {
-                match watcher.poll() {
-                    Ok(new_entries) if !new_entries.is_empty() => {
+                match toolpath_convo::ConversationWatcher::poll(&mut watcher) {
+                    Ok(events) if !events.is_empty() => {
                         debug!(
-                            "[SERVER-CONVO {}] {} new entries",
-                            instance_id, new_entries.len()
+                            "[SERVER-CONVO {}] {} new events",
+                            instance_id, events.len()
                         );
 
-                        // Signal state manager for each entry
-                        for entry in &new_entries {
-                            if signal_tx.send(entry_state_signal(entry)).await.is_err() {
-                                warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
-                                return;
+                        // Signal state manager for each event
+                        for event in &events {
+                            if let Some(signal) = watcher_event_to_signal(event) {
+                                if signal_tx.send(signal).await.is_err() {
+                                    warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
+                                    return;
+                                }
                             }
                         }
 
-                        // Format new entries (skip phantom tool-result-only entries)
-                        let turns = crate::handlers::process_watcher_entries(
-                            &new_entries,
-                            &instance_id,
-                            repo_ref,
-                            Some(&state_manager),
-                        )
-                        .await;
-
-                        // Append to shared store
-                        {
-                            let mut store = conversation_turns.write().await;
-                            store.extend(turns.clone());
+                        // Format new events into turns
+                        let mut new_turns = Vec::new();
+                        let mut had_update = false;
+                        for event in &events {
+                            match event {
+                                WatcherEvent::Turn(turn) => {
+                                    new_turns.push(
+                                        crate::handlers::format_turn_with_attribution(
+                                            turn,
+                                            &instance_id,
+                                            repo_ref,
+                                            Some(&state_manager),
+                                        )
+                                        .await,
+                                    );
+                                }
+                                WatcherEvent::TurnUpdated(turn) => {
+                                    // Replace matching turn in store by id
+                                    had_update = true;
+                                    let formatted = crate::handlers::format_turn_with_attribution(
+                                        turn,
+                                        &instance_id,
+                                        repo_ref,
+                                        Some(&state_manager),
+                                    )
+                                    .await;
+                                    let mut store = conversation_turns.write().await;
+                                    if let Some(pos) = store.iter().position(|t| t.get("uuid").and_then(|v| v.as_str()) == Some(&turn.id)) {
+                                        store[pos] = formatted;
+                                    } else {
+                                        // Turn not found in store — append
+                                        store.push(formatted);
+                                    }
+                                }
+                                WatcherEvent::Progress { kind, data } => {
+                                    new_turns.push(crate::handlers::format_progress_event(kind, data));
+                                }
+                            }
                         }
 
-                        // Broadcast update
-                        if !turns.is_empty() {
+                        // Append new turns to shared store
+                        if !new_turns.is_empty() {
+                            let mut store = conversation_turns.write().await;
+                            store.extend(new_turns.clone());
+                        }
+
+                        // Broadcast: Full if we had an update (replace), Update for new turns only
+                        if had_update {
+                            let store = conversation_turns.read().await;
+                            let _ = conversation_tx.send(ConversationEvent::Full {
+                                instance_id: instance_id.clone(),
+                                turns: store.clone(),
+                            });
+                        } else if !new_turns.is_empty() {
                             let _ = conversation_tx.send(ConversationEvent::Update {
                                 instance_id: instance_id.clone(),
-                                turns,
+                                turns: new_turns,
                             });
                         }
                     }

@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use toolpath_claude::{ClaudeConvo, ConversationWatcher};
+use toolpath_claude::ClaudeConvo;
+use toolpath_convo::{ConversationProvider, WatcherEvent};
 use tracing::{debug, error, info, warn};
 
 use crate::models::{Conversation, ConversationEntry};
@@ -67,15 +68,15 @@ impl PersistenceService {
             conversation_id, instance_id
         );
 
-        // Create a watcher for this conversation
+        // Create a watcher for this conversation (MergingWatcher handles cross-poll tool result merge)
         let claude_convo = ClaudeConvo::new();
-        let mut watcher = ConversationWatcher::new(
+        let mut watcher = crate::ws::merging_watcher::MergingWatcher::new(
             claude_convo.clone(),
             project_path.clone(),
             session_id.clone(),
         );
 
-        // Watch for new entries
+        // Watch for new events
         let service = Arc::clone(&self);
         tokio::spawn(async move {
             let mut first_user_message = true;
@@ -84,36 +85,52 @@ impl PersistenceService {
             loop {
                 check_interval.tick().await;
 
-                match watcher.poll() {
-                    Ok(entries) => {
-                        for entry in entries {
-                            // Extract title from first user message
-                            if first_user_message
-                                && let Some(turn) = toolpath_claude::provider::to_turn(&entry)
-                                && let Some(title) =
-                                    crate::handlers::extract_title_from_turn(&turn, 100)
-                            {
-                                first_user_message = false;
-                                if let Err(e) = service
-                                    .repository
-                                    .update_conversation_title(&conversation_id, &title)
-                                    .await
-                                {
-                                    error!("Failed to update conversation title: {}", e);
+                match toolpath_convo::ConversationWatcher::poll(&mut watcher) {
+                    Ok(events) => {
+                        for event in events {
+                            match event {
+                                WatcherEvent::Turn(turn) | WatcherEvent::TurnUpdated(turn) => {
+                                    // Extract title from first user message
+                                    if first_user_message
+                                        && let Some(title) =
+                                            crate::handlers::extract_title_from_turn(&turn, 100)
+                                    {
+                                        first_user_message = false;
+                                        if let Err(e) = service
+                                            .repository
+                                            .update_conversation_title(&conversation_id, &title)
+                                            .await
+                                        {
+                                            error!("Failed to update conversation title: {}", e);
+                                        }
+                                    }
+
+                                    // Add entry to buffer
+                                    let entry_type = match &turn.role {
+                                        toolpath_convo::Role::User => "user",
+                                        toolpath_convo::Role::Assistant => "assistant",
+                                        toolpath_convo::Role::System => "system",
+                                        toolpath_convo::Role::Other(s) => s.as_str(),
+                                    };
+                                    let raw_json =
+                                        serde_json::to_string(&*turn).unwrap_or_default();
+                                    let db_entry = ConversationEntry::from_turn(
+                                        conversation_id.clone(),
+                                        &turn,
+                                        entry_type.to_string(),
+                                        raw_json,
+                                    );
+
+                                    service.add_to_buffer(db_entry).await;
+                                }
+                                WatcherEvent::Progress { .. } => {
+                                    // Skip progress events for persistence
                                 }
                             }
-
-                            // Add entry to buffer
-                            let db_entry = ConversationEntry::from_claude_entry(
-                                conversation_id.clone(),
-                                &entry,
-                            );
-
-                            service.add_to_buffer(db_entry).await;
                         }
                     }
                     Err(e) => {
-                        debug!("Error getting new entries: {}", e);
+                        debug!("Error getting new events: {}", e);
                         // Conversation might have ended
                         break;
                     }
@@ -239,7 +256,7 @@ impl InstancePersistor {
 
     /// Check for new sessions and return true if any were found
     async fn check_for_new_sessions(&self) -> Result<bool> {
-        // List all conversations for this project
+        // List all conversations for this project (via trait)
         let sessions = self.claude_convo.list_conversations(&self.project_path)?;
 
         let mut active = self.active_sessions.lock().await;
@@ -254,7 +271,7 @@ impl InstancePersistor {
             // Check if this session is recent (within last 5 minutes)
             match self
                 .claude_convo
-                .read_conversation_metadata(&self.project_path, &session_id)
+                .load_metadata(&self.project_path, &session_id)
             {
                 Ok(metadata) => {
                     if let Some(started) = metadata.started_at {

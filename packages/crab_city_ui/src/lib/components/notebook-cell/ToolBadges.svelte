@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { ToolCell } from '$lib/types';
 	import { openFilePath, openExplorerWithSearch } from '$lib/stores/files';
+	import { getToolConfig } from '$lib/utils/tool-registry';
+	import QuestionCard from './QuestionCard.svelte';
 
 	interface Props {
 		toolCells: ToolCell[];
@@ -12,95 +14,26 @@
 	let toolsExpanded = $state(false);
 	let expandedToolId: string | null = $state(null);
 
-	const toolCount = $derived(toolCells.length);
+	// Widget components for card-mode tools.
+	// Add entries here when registering a new card tool in TOOL_REGISTRY.
+	const CARD_WIDGETS: Record<string, typeof QuestionCard> = {
+		AskUserQuestion: QuestionCard,
+	};
+
+	// Single derivation: pair each tool with its registry config once.
+	const toolEntries = $derived(toolCells.map((tool) => ({ tool, config: getToolConfig(tool.name) })));
+	const cardEntries = $derived(toolEntries.filter((e) => e.config.renderMode === 'card'));
+	const badgeEntries = $derived(toolEntries.filter((e) => e.config.renderMode !== 'card'));
+
+	const toolCount = $derived(badgeEntries.length);
 	const shouldCollapse = $derived(toolCount > 4);
 
-	const expandedTool = $derived(
-		expandedToolId ? toolCells.find((t) => t.id === expandedToolId) ?? null : null
+	const expandedEntry = $derived(
+		expandedToolId ? badgeEntries.find((e) => e.tool.id === expandedToolId) ?? null : null
 	);
-
-	function getToolIcon(name: string): string {
-		const icons: Record<string, string> = {
-			Read: '📖',
-			Write: '✏️',
-			Edit: '🔧',
-			Bash: '💻',
-			Glob: '🔍',
-			Grep: '🔎',
-			WebFetch: '🌐',
-			WebSearch: '🔍',
-			Task: '📋'
-		};
-		return icons[name] ?? '⚡';
-	}
-
-	/** Extract a human-readable detail string from tool input for badge label */
-	function getToolDetail(name: string, input: Record<string, unknown>): string | null {
-		let raw: string | null = null;
-		switch (name) {
-			case 'Bash': raw = input.command as string | null; break;
-			case 'Grep': raw = input.pattern as string | null; break;
-			case 'Glob': raw = input.pattern as string | null; break;
-			case 'WebFetch': raw = input.url as string | null; break;
-			case 'WebSearch': raw = input.query as string | null; break;
-			case 'Task': raw = input.description as string | null; break;
-			default: return null;
-		}
-		if (!raw) return null;
-		return raw.length > 40 ? raw.slice(0, 40) + '…' : raw;
-	}
 
 	function toggleTool(toolId: string) {
 		expandedToolId = expandedToolId === toolId ? null : toolId;
-	}
-
-	/** Get labeled input fields for the expanded view */
-	function getExpandedInputFields(tool: ToolCell): Array<{ label: string; value: string; clickable?: 'file' | 'glob' }> {
-		const fields: Array<{ label: string; value: string; clickable?: 'file' | 'glob' }> = [];
-		const input = tool.input;
-
-		switch (tool.name) {
-			case 'Read':
-			case 'Write':
-			case 'Edit':
-				if (input.file_path) fields.push({ label: 'FILE', value: String(input.file_path), clickable: 'file' });
-				if (input.old_string != null) fields.push({ label: 'OLD', value: String(input.old_string) });
-				if (input.new_string != null) fields.push({ label: 'NEW', value: String(input.new_string) });
-				if (input.content != null) fields.push({ label: 'CONTENT', value: String(input.content).length > 500 ? String(input.content).slice(0, 500) + '…' : String(input.content) });
-				break;
-			case 'Bash':
-				if (input.command) fields.push({ label: 'COMMAND', value: String(input.command) });
-				if (input.description) fields.push({ label: 'DESCRIPTION', value: String(input.description) });
-				break;
-			case 'Grep':
-				if (input.pattern) fields.push({ label: 'PATTERN', value: String(input.pattern) });
-				if (input.path) fields.push({ label: 'PATH', value: String(input.path), clickable: 'file' });
-				if (input.glob) fields.push({ label: 'GLOB', value: String(input.glob) });
-				break;
-			case 'Glob':
-				if (input.pattern) fields.push({ label: 'PATTERN', value: String(input.pattern), clickable: 'glob' });
-				if (input.path) fields.push({ label: 'PATH', value: String(input.path), clickable: 'file' });
-				break;
-			case 'WebFetch':
-				if (input.url) fields.push({ label: 'URL', value: String(input.url) });
-				if (input.prompt) fields.push({ label: 'PROMPT', value: String(input.prompt) });
-				break;
-			case 'WebSearch':
-				if (input.query) fields.push({ label: 'QUERY', value: String(input.query) });
-				break;
-			case 'Task':
-				if (input.description) fields.push({ label: 'TASK', value: String(input.description) });
-				if (input.prompt) fields.push({ label: 'PROMPT', value: String(input.prompt).length > 500 ? String(input.prompt).slice(0, 500) + '…' : String(input.prompt) });
-				break;
-			default: {
-				// Unknown tool: show all input keys
-				for (const [key, val] of Object.entries(input)) {
-					const str = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
-					fields.push({ label: key.toUpperCase(), value: str.length > 500 ? str.slice(0, 500) + '…' : str });
-				}
-			}
-		}
-		return fields;
 	}
 
 	function handleFieldClick(field: { clickable?: 'file' | 'glob'; value: string }) {
@@ -110,90 +43,92 @@
 </script>
 
 <div class="cell-tools">
-	{#if shouldCollapse && !toolsExpanded}
-		<button class="tools-collapsed-toggle" onclick={() => toolsExpanded = true}>
-			<span class="tools-count">{toolCount} tool operations</span>
-			<span class="tools-expand-icon">&#9654;</span>
-		</button>
-	{:else}
-		<div class="badges-row">
-			{#each toolCells as tool}
-				{@const isFileOp = tool.name === 'Read' || tool.name === 'Edit' || tool.name === 'Write'}
-				{@const filePath = isFileOp && tool.input?.file_path ? String(tool.input.file_path) : null}
-				{@const globPattern = tool.name === 'Glob' && tool.input?.pattern ? String(tool.input.pattern) : null}
-				{@const isExpanded = expandedToolId === tool.id}
-				<button
-					class="tool-badge"
-					class:file-tool={!!filePath || !!globPattern}
-					class:expanded={isExpanded}
-					onclick={() => toggleTool(tool.id)}
-					title={filePath ?? globPattern ?? getToolDetail(tool.name, tool.input) ?? tool.name}
-				>
-					<span class="tool-icon">{getToolIcon(tool.name)}</span>
-					<span class="tool-name">{tool.name}</span>
-					{#if filePath}
-						<span class="tool-file">{filePath.split('/').pop()}</span>
-					{:else if globPattern}
-						<span class="tool-detail">{globPattern.length > 40 ? globPattern.slice(0, 40) + '…' : globPattern}</span>
-					{:else}
-						{@const detail = getToolDetail(tool.name, tool.input)}
-						{#if detail}
-							<span class="tool-detail">{detail}</span>
-						{/if}
-					{/if}
-					{#if isExpanded}
-						<span class="expand-indicator">▼</span>
-					{/if}
-				</button>
-			{/each}
-			{#if shouldCollapse}
-				<button class="tools-collapse-toggle" onclick={() => { toolsExpanded = false; expandedToolId = null; }}>
-					&#9650; Collapse
-				</button>
-			{/if}
-		</div>
+	<!-- Card tools (rendered as specialized widget cards, not badges) -->
+	{#each cardEntries as { tool }}
+		{@const Widget = CARD_WIDGETS[tool.name]}
+		{#if Widget}
+			<svelte:component this={Widget} {tool} />
+		{/if}
+	{/each}
 
-		<!-- Expanded tool detail panel -->
-		{#if expandedTool}
-			{@const fields = getExpandedInputFields(expandedTool)}
-			<div class="tool-detail-panel" class:error-panel={expandedTool.is_error}>
-				{#if fields.length > 0}
-					<div class="detail-section">
-						{#each fields as field}
-							<div class="detail-field">
-								<span class="detail-label">{field.label}</span>
-								{#if field.clickable}
-									<button class="detail-value clickable" onclick={() => handleFieldClick(field)}>
-										{field.value}
-										<span class="open-arrow">&rarr;</span>
-									</button>
-								{:else}
-									<pre class="detail-value">{field.value}</pre>
-								{/if}
-							</div>
-						{/each}
-					</div>
+	<!-- Badge tools -->
+	{#if toolCount > 0}
+		{#if shouldCollapse && !toolsExpanded}
+			<button class="tools-collapsed-toggle" onclick={() => toolsExpanded = true}>
+				<span class="tools-count">{toolCount} tool operations</span>
+				<span class="tools-expand-icon">&#9654;</span>
+			</button>
+		{:else}
+			<div class="badges-row">
+				{#each badgeEntries as { tool, config }}
+					{@const label = config.badgeLabel ? config.badgeLabel(tool.input) : null}
+					{@const isExpanded = expandedToolId === tool.id}
+					<button
+						class="tool-badge"
+						class:file-tool={label?.style === 'file'}
+						class:expanded={isExpanded}
+						onclick={() => toggleTool(tool.id)}
+						title={label?.title ?? tool.name}
+					>
+						<span class="tool-icon">{config.icon}</span>
+						<span class="tool-name">{tool.name}</span>
+						{#if label}
+							<span class={label.style === 'file' ? 'tool-file' : 'tool-detail'}>{label.text}</span>
+						{/if}
+						{#if isExpanded}
+							<span class="expand-indicator">▼</span>
+						{/if}
+					</button>
+				{/each}
+				{#if shouldCollapse}
+					<button class="tools-collapse-toggle" onclick={() => { toolsExpanded = false; expandedToolId = null; }}>
+						&#9650; Collapse
+					</button>
 				{/if}
-				{#if expandedTool.output}
-					<div class="detail-section output-section" class:error-output={expandedTool.is_error}>
-						<span class="detail-label">{expandedTool.is_error ? 'ERROR' : 'OUTPUT'}</span>
-						<pre class="detail-output">{expandedTool.output}</pre>
-					</div>
-				{/if}
-				{#if expandedTool.name === 'Task' && agentLog && agentLog.length > 0}
-					<div class="detail-section agent-log-section">
-						<span class="detail-label">AGENT LOG</span>
-						<div class="agent-log">
-							{#each agentLog as entry}
-								<div class="agent-log-entry" class:agent-response={entry.role === 'agent_assistant'}>
-									<span class="agent-log-arrow">{entry.role === 'agent_assistant' ? '←' : '→'}</span>
-									<span class="agent-log-content">{entry.content}</span>
+			</div>
+
+			<!-- Expanded tool detail panel -->
+			{#if expandedEntry}
+				{@const fields = expandedEntry.config.expandedFields ? expandedEntry.config.expandedFields(expandedEntry.tool) : []}
+				<div class="tool-detail-panel" class:error-panel={expandedEntry.tool.is_error}>
+					{#if fields.length > 0}
+						<div class="detail-section">
+							{#each fields as field}
+								<div class="detail-field">
+									<span class="detail-label">{field.label}</span>
+									{#if field.clickable}
+										<button class="detail-value clickable" onclick={() => handleFieldClick(field)}>
+											{field.value}
+											<span class="open-arrow">&rarr;</span>
+										</button>
+									{:else}
+										<pre class="detail-value">{field.value}</pre>
+									{/if}
 								</div>
 							{/each}
 						</div>
-					</div>
-				{/if}
-			</div>
+					{/if}
+					{#if expandedEntry.tool.output}
+						<div class="detail-section output-section" class:error-output={expandedEntry.tool.is_error}>
+							<span class="detail-label">{expandedEntry.tool.is_error ? 'ERROR' : 'OUTPUT'}</span>
+							<pre class="detail-output">{expandedEntry.tool.output}</pre>
+						</div>
+					{/if}
+					{#if expandedEntry.tool.name === 'Task' && agentLog && agentLog.length > 0}
+						<div class="detail-section agent-log-section">
+							<span class="detail-label">AGENT LOG</span>
+							<div class="agent-log">
+								{#each agentLog as entry}
+									<div class="agent-log-entry" class:agent-response={entry.role === 'agent_assistant'}>
+										<span class="agent-log-arrow">{entry.role === 'agent_assistant' ? '←' : '→'}</span>
+										<span class="agent-log-content">{entry.content}</span>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
 		{/if}
 	{/if}
 </div>
