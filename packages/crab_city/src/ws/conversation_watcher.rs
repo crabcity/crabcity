@@ -304,6 +304,34 @@ pub async fn run_server_conversation_watcher(
                                 turns: new_turns,
                             });
                         }
+
+                        // Handle session rotations (plan-mode exit, context overflow)
+                        let rotations = watcher.take_pending_rotations();
+                        for (from_session, to_session) in &rotations {
+                            info!(
+                                "[SERVER-CONVO {}] Session rotated: {} → {}",
+                                instance_id, from_session, to_session
+                            );
+
+                            // Claim new session, release old
+                            state_manager.try_claim_session(to_session, &instance_id).await;
+
+                            // Update session_id on the instance handle
+                            if let Some(handle) = state_manager.get_handle(&instance_id).await {
+                                if let Err(e) = handle.set_session_id(to_session.clone()).await {
+                                    warn!(instance = %instance_id, "Failed to update session ID on rotation: {}", e);
+                                }
+                            }
+
+                            // Broadcast rotation event to clients
+                            state_manager.broadcast_lifecycle(
+                                super::protocol::ServerMessage::SessionRotated {
+                                    instance_id: instance_id.clone(),
+                                    from_session: from_session.clone(),
+                                    to_session: to_session.clone(),
+                                },
+                            );
+                        }
                     }
                     Err(e) => {
                         warn!("[SERVER-CONVO {}] Poll error: {}", instance_id, e);

@@ -50,7 +50,7 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
             }
         };
 
-        let metadata = match convo_manager.list_conversation_metadata(working_dir) {
+        let metadata = match ConversationProvider::list_metadata(&convo_manager, working_dir) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("Failed to list conversations: {}", e);
@@ -90,7 +90,7 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
             .into_response();
         }
 
-        let detected_session = &candidates[0].session_id;
+        let detected_session = &candidates[0].id;
         info!("Detected session_id: {}", detected_session);
 
         if let Some(handle) = state.instance_manager.get_handle(&id).await
@@ -172,16 +172,17 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
                 }
             };
 
-            let metadata = match convo_manager.list_conversation_metadata(&instance.working_dir) {
-                Ok(m) => m,
-                Err(_) => {
-                    return Json(serde_json::json!({
-                        "new_turns": [],
-                        "waiting": true
-                    }))
-                    .into_response();
-                }
-            };
+            let metadata =
+                match ConversationProvider::list_metadata(&convo_manager, &instance.working_dir) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return Json(serde_json::json!({
+                            "new_turns": [],
+                            "waiting": true
+                        }))
+                        .into_response();
+                    }
+                };
 
             let candidates: Vec<_> = metadata
                 .iter()
@@ -196,7 +197,7 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
                 .into_response();
             }
 
-            let detected = candidates[0].session_id.clone();
+            let detected = candidates[0].id.clone();
 
             if let Some(handle) = state.instance_manager.get_handle(&id).await
                 && let Err(e) = handle.set_session_id(detected.clone()).await

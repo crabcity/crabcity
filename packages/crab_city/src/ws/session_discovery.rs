@@ -82,6 +82,8 @@ mod tests {
             last_activity: None,
             message_count: 1,
             file_path: None,
+            predecessor: None,
+            successor: None,
         }
     }
 

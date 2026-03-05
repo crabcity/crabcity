@@ -28,15 +28,16 @@ enum ImportResult {
 
 pub struct ConversationImporter {
     repository: ConversationRepository,
-    claude_convo: ClaudeConvo,
 }
 
 impl ConversationImporter {
     pub fn new(repository: ConversationRepository) -> Self {
-        Self {
-            repository,
-            claude_convo: ClaudeConvo::new(),
-        }
+        Self { repository }
+    }
+
+    /// Create a ClaudeConvo on demand (it's !Sync so we can't store it in shared state).
+    fn claude_convo(&self) -> ClaudeConvo {
+        ClaudeConvo::new()
     }
 
     /// Import all conversations from a project directory
@@ -50,7 +51,7 @@ impl ConversationImporter {
 
         // List all conversation session IDs in this project
         let session_ids = self
-            .claude_convo
+            .claude_convo()
             .list_conversations(&project_path.to_string_lossy())?;
 
         info!(
@@ -88,7 +89,7 @@ impl ConversationImporter {
         let mut total_stats = ImportStats::default();
 
         // Use ClaudeConvo to discover all projects with conversations
-        let project_paths = match self.claude_convo.list_projects() {
+        let project_paths = match self.claude_convo().list_projects() {
             Ok(paths) => paths,
             Err(e) => {
                 warn!("Failed to list projects: {}", e);
@@ -149,7 +150,7 @@ impl ConversationImporter {
     async fn import_session(&self, project_path: &Path, session_id: &str) -> Result<ImportResult> {
         // Get the JSONL file path for this session via trait-based API
         let metadata = self
-            .claude_convo
+            .claude_convo()
             .load_metadata(&project_path.to_string_lossy(), session_id)?;
         let file_path = match &metadata.file_path {
             Some(p) => p.clone(),
@@ -216,7 +217,7 @@ impl ConversationImporter {
 
             // Re-read and re-insert entries via trait-based API
             let view = self
-                .claude_convo
+                .claude_convo()
                 .load_conversation(&project_path.to_string_lossy(), session_id)?;
 
             let mut db_entries = Vec::new();
@@ -302,7 +303,7 @@ impl ConversationImporter {
 
         // Read all conversation turns via trait-based API
         let view = self
-            .claude_convo
+            .claude_convo()
             .load_conversation(&project_path.to_string_lossy(), session_id)?;
 
         // Extract title from first user message
