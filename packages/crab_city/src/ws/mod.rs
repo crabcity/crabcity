@@ -8,6 +8,7 @@
 mod conversation_watcher;
 mod focus;
 mod handler;
+pub(crate) mod merging_watcher;
 mod protocol;
 mod session_discovery;
 mod state_manager;

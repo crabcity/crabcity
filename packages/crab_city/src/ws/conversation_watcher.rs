@@ -150,7 +150,7 @@ pub async fn run_server_conversation_watcher(
 
     // Phase 2: Watch the conversation.
     let repo_ref = repository.as_ref();
-    let mut watcher = toolpath_claude::ConversationWatcher::new(manager, working_dir, session_id);
+    let mut watcher = super::merging_watcher::MergingWatcher::new(manager, working_dir, session_id);
 
     info!(
         "[SERVER-CONVO {}] Starting conversation watcher for session {} (project={})",

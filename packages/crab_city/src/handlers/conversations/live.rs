@@ -210,7 +210,7 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
 
     let mut watchers = state.conversation_watchers.lock().await;
     let watcher = watchers.entry(id.clone()).or_insert_with(|| {
-        Box::new(toolpath_claude::ConversationWatcher::new(
+        Box::new(crate::ws::merging_watcher::MergingWatcher::new(
             ClaudeConvo::new(),
             instance.working_dir.clone(),
             session_id.clone(),

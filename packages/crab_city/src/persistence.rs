@@ -68,9 +68,9 @@ impl PersistenceService {
             conversation_id, instance_id
         );
 
-        // Create a watcher for this conversation (concrete type, called via trait)
+        // Create a watcher for this conversation (MergingWatcher handles cross-poll tool result merge)
         let claude_convo = ClaudeConvo::new();
-        let mut watcher = toolpath_claude::ConversationWatcher::new(
+        let mut watcher = crate::ws::merging_watcher::MergingWatcher::new(
             claude_convo.clone(),
             project_path.clone(),
             session_id.clone(),
