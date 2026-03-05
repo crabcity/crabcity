@@ -117,48 +117,36 @@
 				<div class="question-text">{q.question}</div>
 
 				{#if q.options.length > 0}
-					<div class="options-list">
+					<ol class="options-list">
 						{#each q.options as opt, oi}
-							<div
+							<li
 								class="option"
 								class:first-option={!isResolved && oi === 0}
 								class:selected-option={isResolved && selectedLabels.has(opt.label)}
 								class:unselected-option={isResolved && !selectedLabels.has(opt.label)}
 							>
-								<div class="option-indicator">
-									{#if q.multiSelect}
-										<span class="checkbox">{isResolved && selectedLabels.has(opt.label) ? '☑' : '☐'}</span>
-									{:else}
-										<span class="radio">{isResolved && selectedLabels.has(opt.label) ? '◉' : (!isResolved && oi === 0) ? '◉' : '○'}</span>
-									{/if}
-								</div>
+								<span class="option-number">{oi + 1}.</span>
 								<div class="option-body">
 									<span class="option-label">{opt.label}</span>
 									{#if opt.description}
 										<span class="option-desc">{opt.description}</span>
 									{/if}
 								</div>
-							</div>
+							</li>
 						{/each}
 						<!-- "Other" option is always implicitly available -->
-						<div
+						<li
 							class="option other-option"
 							class:selected-option={isOtherSelected}
 							class:unselected-option={isResolved && !isOtherSelected}
 						>
-							<div class="option-indicator">
-								{#if q.multiSelect}
-									<span class="checkbox">{isOtherSelected ? '☑' : '☐'}</span>
-								{:else}
-									<span class="radio">{isOtherSelected ? '◉' : '○'}</span>
-								{/if}
-							</div>
+							<span class="option-number">{q.options.length + 1}.</span>
 							<div class="option-body">
 								<span class="option-label other-label">Other</span>
 								<span class="option-desc">Custom text input</span>
 							</div>
-						</div>
-					</div>
+						</li>
+					</ol>
 				{/if}
 
 				{#if qi < questions().length - 1}
@@ -325,6 +313,9 @@
 	}
 
 	.options-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
@@ -346,26 +337,18 @@
 		background: var(--tint-active);
 	}
 
-	.option-indicator {
+	.option-number {
 		flex-shrink: 0;
-		width: 16px;
-		font-size: 11px;
-		color: var(--amber-400);
-		text-align: center;
+		min-width: 16px;
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--text-muted);
+		text-align: right;
 		line-height: 1.4;
 	}
 
-	.first-option .option-indicator {
+	.first-option .option-number {
 		color: var(--amber-400);
-	}
-
-	.checkbox, .radio {
-		opacity: 0.6;
-	}
-
-	.first-option .checkbox,
-	.first-option .radio {
-		opacity: 1;
 	}
 
 	.option-body {
@@ -399,13 +382,8 @@
 		background: var(--tint-active);
 	}
 
-	.option.selected-option .option-indicator {
+	.option.selected-option .option-number {
 		color: var(--amber-400);
-	}
-
-	.option.selected-option .checkbox,
-	.option.selected-option .radio {
-		opacity: 1;
 	}
 
 	.option.selected-option .option-label {
