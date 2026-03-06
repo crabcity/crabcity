@@ -911,6 +911,8 @@ mod tests {
     #[test]
     fn test_claude_state_all_variants_serialize() {
         let states: Vec<ClaudeState> = vec![
+            ClaudeState::Initializing,
+            ClaudeState::Starting,
             ClaudeState::Idle,
             ClaudeState::Thinking,
             ClaudeState::Responding,

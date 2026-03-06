@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { notebookCells, isWaiting, toolStats } from '$lib/stores/conversation';
-	import { isActive, isThinking, isToolExecuting, currentTool } from '$lib/stores/claude';
+	import { isActive, isStarting, isThinking, isToolExecuting, currentTool, claudeState } from '$lib/stores/claude';
 	import { currentVerb } from '$lib/stores/activity';
 	import { isDesktop } from '$lib/stores/ui';
-	import { currentInstanceId } from '$lib/stores/instances';
+	import { currentInstanceId, currentInstance } from '$lib/stores/instances';
 	import NotebookCell from './NotebookCell.svelte';
 	import MessageInput from './MessageInput.svelte';
 	import TodoQueue from './TodoQueue.svelte';
@@ -15,8 +15,67 @@
 	let virtualList = $state<VirtualList<(typeof $notebookCells)[0]> | undefined>();
 	let scrollInfo = $state({ scrollTop: 0, scrollHeight: 0, clientHeight: 0, visibleStart: 0, visibleEnd: 0 });
 
+	// Boot panel transition: Starting → brief "READY" hold → fade out
+	let bootCompleting = $state(false);
+	let wasStarting = $state(false);
+
+	$effect(() => {
+		if ($isStarting) {
+			wasStarting = true;
+			bootCompleting = false;
+		} else if (wasStarting) {
+			// Transition: Starting → non-Starting — hold "READY" briefly
+			bootCompleting = true;
+			wasStarting = false;
+			setTimeout(() => { bootCompleting = false; }, 800);
+		}
+	});
+
 	// Use server state for activity, fall back to heuristic isWaiting for empty state detection
-	const showEmptyState = $derived($isWaiting && $notebookCells.length === 0);
+	const showEmptyState = $derived(!$isStarting && !bootCompleting && $isWaiting && $notebookCells.length === 0);
+	const showBootPanel = $derived(($isStarting || bootCompleting) && $notebookCells.length === 0);
+
+	// Time-aware startup messaging
+	let startupElapsed = $state(0);
+	let startupInterval: ReturnType<typeof setInterval> | null = null;
+
+	$effect(() => {
+		if ($isStarting) {
+			// Compute initial elapsed from instance created_at
+			const inst = $currentInstance;
+			if (inst?.created_at) {
+				const created = new Date(inst.created_at).getTime();
+				startupElapsed = Math.floor((Date.now() - created) / 1000);
+			}
+			startupInterval = setInterval(() => {
+				startupElapsed += 1;
+			}, 1000);
+		} else {
+			if (startupInterval) {
+				clearInterval(startupInterval);
+				startupInterval = null;
+			}
+			startupElapsed = 0;
+		}
+		return () => {
+			if (startupInterval) clearInterval(startupInterval);
+		};
+	});
+
+	// Boot phase milestones (driven by actual ClaudeState enum)
+	// Initializing = PTY spawned, no output yet
+	// Starting = first output received, waiting for Claude Code banner
+	const stateType = $derived($claudeState.type);
+	const bootPhaseProcess = $derived($currentInstance?.running ?? false);
+	const bootPhaseClaude = $derived(stateType === 'Starting' || (!$isStarting && !bootCompleting));
+	const bootPhaseSession = $derived(!!$currentInstance?.session_id);
+
+	function startupMessage(elapsed: number): string {
+		if (elapsed < 5) return 'Waiting for Claude to start...';
+		if (elapsed < 15) return 'Claude is taking a moment to initialize...';
+		if (elapsed < 30) return 'Startup is slower than usual \u2014 this may be due to network latency or API load';
+		return 'Claude is taking unusually long. You can switch to another instance or keep waiting.';
+	}
 
 	// Debug logging removed - was firing on every state change and causing jank with DevTools open
 
@@ -148,7 +207,34 @@
 
 	<!-- Messages container (relative for minimap positioning) -->
 	<div class="messages-wrapper">
-		{#if showEmptyState}
+		{#if showBootPanel}
+			<div class="messages">
+				<div class="empty-state boot-panel" class:boot-completing={bootCompleting}>
+					<div class="boot-sequence">
+						<div class="boot-header">INSTANCE BOOT SEQUENCE</div>
+						<div class="boot-divider"></div>
+						<div class="boot-line" class:done={bootPhaseProcess || bootCompleting}>
+							<span class="boot-check">{bootPhaseProcess || bootCompleting ? '[✓]' : '[ ]'}</span>
+							<span>PROCESS SPAWNED</span>
+						</div>
+						<div class="boot-line" class:done={bootPhaseClaude || bootCompleting} class:active={!bootCompleting && bootPhaseProcess && !bootPhaseClaude}>
+							<span class="boot-check">{bootPhaseClaude || bootCompleting ? '[✓]' : bootPhaseProcess ? '[·]' : '[ ]'}</span>
+							<span>FIRST BYTE RECEIVED</span>
+						</div>
+						<div class="boot-line" class:done={bootPhaseSession || bootCompleting} class:active={!bootCompleting && bootPhaseClaude && !bootPhaseSession}>
+							<span class="boot-check">{bootPhaseSession || bootCompleting ? '[✓]' : bootPhaseClaude ? '[·]' : '[ ]'}</span>
+							<span>LOADING CLAUDE CODE</span>
+						</div>
+						<div class="boot-line" class:done={bootCompleting}>
+							<span class="boot-check">{bootCompleting ? '[✓]' : '[ ]'}</span>
+							<span>READY</span>
+						</div>
+						<div class="boot-divider"></div>
+						<p class="boot-message">{bootCompleting ? 'Boot complete.' : startupMessage(startupElapsed)}</p>
+					</div>
+				</div>
+			</div>
+		{:else if showEmptyState}
 			<div class="messages">
 				<div class="empty-state">
 					<div class="empty-icon">
@@ -503,6 +589,93 @@
 
 	.messages::-webkit-scrollbar-thumb:hover {
 		background: var(--amber-600);
+	}
+
+	/* Boot panel — CRT-style startup sequence */
+	.boot-panel {
+		background: radial-gradient(ellipse at center, var(--surface-700) 0%, var(--surface-900) 70%);
+	}
+
+	.boot-sequence {
+		font-family: var(--font-mono);
+		text-align: left;
+		max-width: 440px;
+		width: 100%;
+	}
+
+	.boot-header {
+		font-size: 12px;
+		font-weight: 700;
+		letter-spacing: 0.15em;
+		text-transform: uppercase;
+		color: var(--amber-400);
+		text-shadow: var(--emphasis);
+		margin-bottom: 8px;
+	}
+
+	.boot-divider {
+		height: 1px;
+		background: var(--surface-border);
+		margin: 12px 0;
+		opacity: 0.5;
+	}
+
+	.boot-line {
+		display: flex;
+		gap: 10px;
+		padding: 4px 0;
+		font-size: 12px;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		transition: color 0.3s ease;
+	}
+
+	.boot-line.done {
+		color: var(--amber-400);
+		text-shadow: var(--emphasis);
+	}
+
+	.boot-line.active {
+		color: var(--amber-500);
+		animation: boot-pulse 1.5s ease-in-out infinite;
+	}
+
+	.boot-check {
+		font-weight: 700;
+		min-width: 24px;
+	}
+
+	.boot-message {
+		font-size: 11px;
+		color: var(--text-secondary);
+		letter-spacing: 0.03em;
+		margin: 0;
+		line-height: 1.5;
+	}
+
+	@keyframes boot-pulse {
+		0%, 100% { opacity: 0.6; }
+		50% { opacity: 1; }
+	}
+
+	.boot-completing {
+		animation: boot-fade-out 0.8s ease-out forwards;
+	}
+
+	.boot-completing .boot-header {
+		color: var(--amber-300);
+	}
+
+	.boot-completing .boot-message {
+		color: var(--amber-400);
+		text-shadow: var(--emphasis);
+	}
+
+	@keyframes boot-fade-out {
+		0% { opacity: 1; }
+		50% { opacity: 1; }
+		100% { opacity: 0; }
 	}
 
 	/* Mobile responsive */

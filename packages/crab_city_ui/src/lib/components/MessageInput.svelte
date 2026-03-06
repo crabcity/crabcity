@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { sendMessage, connectionStatus, hasPendingInput } from '$lib/stores/websocket';
-	import { isActive } from '$lib/stores/claude';
+	import { isActive, isStarting } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
 	import { voiceBackendOverride } from '$lib/stores/metrics';
@@ -14,6 +14,7 @@
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
 	let showBanner = $derived(isDisconnected || isReconnecting || $hasPendingInput);
+	let showStartupBanner = $derived($isStarting);
 
 	// Queue flash confirmation
 	let queueFlash = $state(false);
@@ -126,6 +127,17 @@
 			voiceSession.stop();
 		}
 
+		// During startup, queue message as a task instead of sending
+		if ($isStarting && $currentInstanceId) {
+			quickAddTask($currentInstanceId, message.trim());
+			message = '';
+			messageBeforeVoice = '';
+			queueFlash = true;
+			setTimeout(() => { queueFlash = false; }, 400);
+			inputEl?.focus();
+			return;
+		}
+
 		// If a task was staged, append a structural tag and send with task_id
 		if ($stagedTask) {
 			const tag = `\n[task:#${$stagedTask.id}]`;
@@ -225,6 +237,15 @@
 			<span class="voice-correcting-label">transcribing&hellip;</span>
 		</div>
 	{/if}
+	{#if showStartupBanner}
+		<div class="status-banner startup">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<circle cx="12" cy="12" r="10" />
+				<path d="M12 6v6l4 2" />
+			</svg>
+			<span>Claude is starting up — your message will be queued as a task</span>
+		</div>
+	{/if}
 	{#if showBanner}
 		<div class="status-banner" class:warning={isDisconnected} class:info={isReconnecting && !isDisconnected}>
 			{#if isDisconnected}
@@ -252,7 +273,7 @@
 			bind:value={message}
 			onkeydown={handleKeydown}
 			oninput={() => inputEl && autoResize(inputEl)}
-			placeholder={isDisconnected ? "Type here — will send when reconnected..." : "Message Claude..."}
+			placeholder={isDisconnected ? "Type here — will send when reconnected..." : $isStarting ? "Type here — will queue as task while Claude starts..." : "Message Claude..."}
 			rows="1"
 			class:voice-draft={showDraftBanner}
 			class:voice-correcting={showCorrectingBanner}
@@ -286,7 +307,7 @@
 				</button>
 			</div>
 		{/if}
-		{#if $isActive}
+		{#if $isActive || $isStarting}
 			<button
 				class="queue-btn"
 				class:flash={queueFlash}
@@ -348,6 +369,17 @@
 		background: var(--tint-active-strong);
 		color: var(--amber-400);
 		border-bottom: 1px solid var(--tint-focus);
+	}
+
+	.status-banner.startup {
+		background: var(--tint-active-strong);
+		color: var(--amber-400);
+		border-bottom: 1px solid var(--tint-focus);
+		animation: staged-slide-in 0.2s ease-out;
+	}
+
+	.status-banner.startup svg {
+		animation: spin 2s linear infinite;
 	}
 
 	.status-banner svg {

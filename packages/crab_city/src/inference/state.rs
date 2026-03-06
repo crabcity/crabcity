@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 #[derive(Default)]
 pub enum ClaudeState {
+    /// PTY spawned, waiting for first byte of output
+    Initializing,
+
+    /// First output received, waiting for Claude Code banner/prompt
+    Starting,
+
     /// Claude is waiting for user input (prompt visible)
     #[default]
     Idle,
@@ -95,6 +101,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initializing_is_not_active() {
+        assert!(!ClaudeState::Initializing.is_active());
+    }
+
+    #[test]
+    fn starting_is_not_active() {
+        assert!(!ClaudeState::Starting.is_active());
+    }
+
+    #[test]
     fn idle_is_not_active() {
         assert!(!ClaudeState::Idle.is_active());
     }
@@ -148,6 +164,24 @@ mod tests {
     #[test]
     fn default_is_idle() {
         assert_eq!(ClaudeState::default(), ClaudeState::Idle);
+    }
+
+    #[test]
+    fn serde_roundtrip_initializing() {
+        let state = ClaudeState::Initializing;
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"type\":\"Initializing\""));
+        let parsed: ClaudeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ClaudeState::Initializing);
+    }
+
+    #[test]
+    fn serde_roundtrip_starting() {
+        let state = ClaudeState::Starting;
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"type\":\"Starting\""));
+        let parsed: ClaudeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, ClaudeState::Starting);
     }
 
     #[test]

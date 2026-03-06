@@ -563,7 +563,7 @@ impl InstanceActor {
             running: true,
             created_at: chrono::Utc::now().to_rfc3339(),
             session_id: None,
-            claude_state: None,
+            claude_state: Some(ClaudeState::Initializing),
         }));
 
         let (sender, receiver) = mpsc::channel(32);

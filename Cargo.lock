@@ -3487,9 +3487,9 @@ dependencies = [
 
 [[package]]
 name = "toolpath-claude"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "257b072316e91994eca57acdb95f6210f88f86408b3befeb0ee55ee88eb5c3b0"
+checksum = "c9e9901cd026396273b9de4919eb14ef2676b35f1d787401bb7324502b72b18b"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3504,9 +3504,9 @@ dependencies = [
 
 [[package]]
 name = "toolpath-convo"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd3151a10ebd7f1d08e62590aebd21399d15ac8e681b2e99ff71ddb6072bed50"
+checksum = "10c0048bf1b6b9903d67aa38d3883246955e4ac27820fc2740929c3202d1a575"
 dependencies = [
  "chrono",
  "serde",

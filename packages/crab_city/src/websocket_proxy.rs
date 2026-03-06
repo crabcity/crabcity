@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, warn};
 
-use crate::inference::ClaudeState;
+use crate::inference::{ClaudeState, StateSignal};
 use crate::instance_actor::InstanceHandle;
 use crate::virtual_terminal::ClientType;
 use crate::ws::{ConversationEvent, GlobalStateManager};
@@ -227,6 +227,8 @@ pub async fn handle_proxy(
     // Task to forward WebSocket input to PTY
     let handle_clone = handle.clone();
     let connection_id_input = connection_id.clone();
+    let gsm_for_input = global_state_manager.clone();
+    let instance_id_input = instance_id.clone();
     let input_task = async move {
         while let Some(msg) = ws_receiver.next().await {
             match msg {
@@ -235,6 +237,14 @@ pub async fn handle_proxy(
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Input { data } => {
+                                // Feed input to state manager for Idle→Thinking detection
+                                if let Some(ref gsm) = gsm_for_input {
+                                    gsm.send_signal(
+                                        &instance_id_input,
+                                        StateSignal::TerminalInput { data: data.clone() },
+                                    )
+                                    .await;
+                                }
                                 if let Err(e) = handle_clone.write_input(&data).await {
                                     error!("Failed to write to PTY: {}", e);
                                 }
@@ -424,6 +434,10 @@ mod tests {
             WsMessage::Resize { rows: 10, cols: 20 },
             WsMessage::ConversationUpdate { turns: vec![] },
             WsMessage::ConversationFull { turns: vec![] },
+            WsMessage::StateChange {
+                state: ClaudeState::Starting,
+                stale: false,
+            },
             WsMessage::StateChange {
                 state: ClaudeState::Idle,
                 stale: false,
