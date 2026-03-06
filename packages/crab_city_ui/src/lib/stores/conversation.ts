@@ -73,7 +73,8 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 					pendingToolCell.agentLog.push({
 						content: turn.content,
 						agentId: turn.agent_id,
-						role: turn.agent_msg_role
+						role: turn.agent_msg_role,
+						tools: turn.agent_tools
 					});
 				}
 				continue;

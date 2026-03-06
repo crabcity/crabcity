@@ -3,6 +3,7 @@
 	import { openFilePath, openExplorerWithSearch } from '$lib/stores/files';
 	import { getToolConfig } from '$lib/utils/tool-registry';
 	import QuestionCard from './QuestionCard.svelte';
+	import TaskCard from './TaskCard.svelte';
 
 	interface Props {
 		toolCells: ToolCell[];
@@ -16,8 +17,9 @@
 
 	// Widget components for card-mode tools.
 	// Add entries here when registering a new card tool in TOOL_REGISTRY.
-	const CARD_WIDGETS: Record<string, typeof QuestionCard> = {
+	const CARD_WIDGETS: Record<string, typeof QuestionCard | typeof TaskCard> = {
 		AskUserQuestion: QuestionCard,
+		Task: TaskCard,
 	};
 
 	// Single derivation: pair each tool with its registry config once.
@@ -47,7 +49,7 @@
 	{#each cardEntries as { tool }}
 		{@const Widget = CARD_WIDGETS[tool.name]}
 		{#if Widget}
-			<svelte:component this={Widget} {tool} />
+			<svelte:component this={Widget} {tool} {agentLog} />
 		{/if}
 	{/each}
 

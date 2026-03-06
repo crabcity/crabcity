@@ -134,8 +134,8 @@ describe('registry structure', () => {
 		expect(getToolConfig(name).renderMode).toBe('card');
 	});
 
-	it('AskUserQuestion is the only card-mode tool', () => {
-		expect(CARD_TOOLS).toEqual(['AskUserQuestion']);
+	it('card-mode tools are Task and AskUserQuestion', () => {
+		expect(CARD_TOOLS.sort()).toEqual(['AskUserQuestion', 'Task']);
 	});
 
 	it.each(BADGE_TOOLS)('%s has expandedFields', (name) => {
@@ -221,7 +221,6 @@ describe.each([
 	['Grep', 'pattern', 'function\\s+\\w+'],
 	['WebFetch', 'url', 'https://example.com/api'],
 	['WebSearch', 'query', 'svelte 5 runes migration'],
-	['Task', 'description', 'Explore the codebase'],
 ] as const)('%s badgeLabel', (name, key, sample) => {
 	const config = getToolConfig(name);
 
@@ -416,28 +415,20 @@ describe('WebSearch expandedFields', () => {
 });
 
 // =============================================================================
-// expandedFields: Task
+// Task: card-mode (no badgeLabel or expandedFields)
 // =============================================================================
 
-describe('Task expandedFields', () => {
-	const expand = getToolConfig('Task').expandedFields!;
-
-	it('shows TASK and PROMPT', () => {
-		const fields = expand(tool('Task', {
-			description: 'Search code',
-			prompt: 'Find all usages',
-		}));
-		expect(fields).toEqual([
-			{ label: 'TASK', value: 'Search code' },
-			{ label: 'PROMPT', value: 'Find all usages' },
-		]);
+describe('Task card mode', () => {
+	it('is card renderMode', () => {
+		expect(getToolConfig('Task').renderMode).toBe('card');
 	});
 
-	it('truncates long prompts at 500 chars', () => {
-		const longPrompt = 'p'.repeat(600);
-		const fields = expand(tool('Task', { description: 'x', prompt: longPrompt }));
-		const promptField = fields.find((f) => f.label === 'PROMPT');
-		expect(promptField!.value.length).toBe(501);
+	it('has no badgeLabel', () => {
+		expect(getToolConfig('Task').badgeLabel).toBeUndefined();
+	});
+
+	it('has no expandedFields', () => {
+		expect(getToolConfig('Task').expandedFields).toBeUndefined();
 	});
 });
 
