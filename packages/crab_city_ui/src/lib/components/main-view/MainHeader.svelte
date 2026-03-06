@@ -2,7 +2,7 @@
 	import { currentInstance, currentInstanceId, isClaudeInstance, showTerminal, setTerminalMode, setCustomName } from '$lib/stores/instances';
 	import { sendRefresh, connectionStatus, instancePresence } from '$lib/stores/websocket';
 	import { currentTerminalLock } from '$lib/stores/terminalLock';
-	import { isActive, isThinking, isToolExecuting, currentTool } from '$lib/stores/claude';
+	import { isActive, isStarting, isThinking, isToolExecuting, currentTool } from '$lib/stores/claude';
 	import { currentVerb, baudRate, activityLevel } from '$lib/stores/activity';
 	import { openSidebar, isDesktop, isMobile } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
@@ -127,13 +127,15 @@
 		{/if}
 	</div>
 
-	{#if $isActive && $isClaudeInstance}
-		<div class="baud-panel" class:thinking={$isThinking} class:tool={$isToolExecuting} class:compact={!$isDesktop}>
+	{#if ($isActive || $isStarting) && $isClaudeInstance}
+		<div class="baud-panel" class:thinking={$isThinking} class:tool={$isToolExecuting} class:starting={$isStarting} class:compact={!$isDesktop}>
 			<div class="panel-scanline"></div>
-			<div class="panel-led" class:pulse={$activityLevel > 0}></div>
+			<div class="panel-led" class:pulse={$activityLevel > 0 || $isStarting}></div>
 			{#if $isDesktop}
 				<span class="panel-label">
-					{#if $isToolExecuting && $currentTool}
+					{#if $isStarting}
+						BOOT
+					{:else if $isToolExecuting && $currentTool}
 						{$currentTool.toUpperCase().slice(0, 8)}
 					{:else}
 						{$currentVerb.toUpperCase()}
@@ -144,14 +146,14 @@
 				{#each Array($isMobile ? 5 : 10) as _, i}
 					<div
 						class="panel-bar"
-						class:active={$activityLevel > i / ($isMobile ? 5 : 10)}
+						class:active={$isStarting ? i < ($isMobile ? 2 : 3) : $activityLevel > i / ($isMobile ? 5 : 10)}
 						class:hot={i >= ($isMobile ? 3 : 7)}
 						class:warn={i >= ($isMobile ? 2 : 4) && i < ($isMobile ? 3 : 7)}
 					></div>
 				{/each}
 			</div>
 			{#if !$isMobile}
-				<span class="panel-rate">{$baudRate.toString().padStart(4, '0')}</span>
+				<span class="panel-rate">{$isStarting ? 'INIT' : $baudRate.toString().padStart(4, '0')}</span>
 			{/if}
 		</div>
 	{/if}
@@ -538,6 +540,40 @@
 	@keyframes panel-scan {
 		0% { top: 0; opacity: 1; }
 		100% { top: 100%; opacity: 0.3; }
+	}
+
+	.baud-panel.starting {
+		border-color: var(--surface-border);
+		box-shadow: var(--depth-up);
+	}
+
+	.baud-panel.starting .panel-scanline {
+		background: linear-gradient(90deg, transparent, var(--amber-500), transparent);
+		animation: panel-scan 3s linear infinite;
+	}
+
+	.baud-panel.starting .panel-led {
+		animation: led-boot-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes led-boot-pulse {
+		0%, 100% { opacity: 0.3; }
+		50% { opacity: 1; box-shadow: 0 0 6px var(--amber-500); }
+	}
+
+	.baud-panel.starting .panel-bar.active {
+		animation: bar-boot-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes bar-boot-pulse {
+		0%, 100% { opacity: 0.4; }
+		50% { opacity: 1; }
+	}
+
+	.baud-panel.starting .panel-rate {
+		color: var(--text-secondary);
+		font-size: 10px;
+		letter-spacing: 0.08em;
 	}
 
 	.baud-panel.thinking {

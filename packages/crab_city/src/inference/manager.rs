@@ -107,7 +107,7 @@ pub struct StateManager {
 impl StateManager {
     pub fn new(config: StateManagerConfig) -> Self {
         Self {
-            state: ClaudeState::Idle,
+            state: ClaudeState::Initializing,
             config,
             last_convo_activity: Instant::now(),
             last_terminal_activity: Instant::now(),
@@ -128,7 +128,10 @@ impl StateManager {
                 self.sent_idle = false;
                 if matches!(
                     self.state,
-                    ClaudeState::Idle | ClaudeState::WaitingForInput { .. }
+                    ClaudeState::Initializing
+                        | ClaudeState::Starting
+                        | ClaudeState::Idle
+                        | ClaudeState::WaitingForInput { .. }
                 ) {
                     self.state = ClaudeState::Thinking;
                 }
@@ -138,6 +141,18 @@ impl StateManager {
                 // Track terminal activity to prevent false idle during extended thinking
                 self.last_terminal_activity = Instant::now();
                 self.sent_idle = false;
+
+                // Initializing → Starting on first terminal output (first byte received)
+                if matches!(self.state, ClaudeState::Initializing) {
+                    self.state = ClaudeState::Starting;
+                }
+
+                // Starting → Idle when the Claude Code banner appears in output.
+                // Early startup noise (before Claude is loaded) stays in Starting;
+                // only the "Claude Code" banner means the process is at its prompt.
+                if matches!(self.state, ClaudeState::Starting) && data.contains("Claude Code") {
+                    self.state = ClaudeState::Idle;
+                }
 
                 // Check for tool patterns
                 if let Some(tool) = self.detect_tool(data) {
@@ -171,6 +186,14 @@ impl StateManager {
                 }
 
                 self.last_convo_role = Some(entry_type.clone());
+
+                // Any conversation entry while still booting means Claude is alive
+                if matches!(
+                    self.state,
+                    ClaudeState::Initializing | ClaudeState::Starting
+                ) {
+                    self.state = ClaudeState::Idle;
+                }
 
                 if entry_type == "user" {
                     self.state = ClaudeState::Thinking;
@@ -295,9 +318,136 @@ mod tests {
     }
 
     #[test]
-    fn test_initial_state_is_idle() {
+    fn test_initial_state_is_initializing() {
         let manager = default_manager();
+        assert_eq!(*manager.state(), ClaudeState::Initializing);
+    }
+
+    /// Create a manager in Starting state (first byte received)
+    fn starting_manager() -> StateManager {
+        let mut manager = default_manager();
+        manager.state = ClaudeState::Starting;
+        manager
+    }
+
+    /// Create a manager that has already booted (Starting → Idle)
+    fn idle_manager() -> StateManager {
+        let mut manager = default_manager();
+        manager.state = ClaudeState::Idle;
+        manager
+    }
+
+    // --- Initializing phase tests ---
+
+    #[test]
+    fn test_initializing_to_starting_on_first_output() {
+        let mut manager = default_manager();
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "Loading...".to_string(),
+        });
+        assert_eq!(result, Some(ClaudeState::Starting));
+        assert_eq!(*manager.state(), ClaudeState::Starting);
+    }
+
+    #[test]
+    fn test_initializing_to_idle_on_claude_code_banner() {
+        // If the very first output contains the banner, go straight to Idle
+        let mut manager = default_manager();
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "Claude Code v2.1.37".to_string(),
+        });
+        assert_eq!(result, Some(ClaudeState::Idle));
         assert_eq!(*manager.state(), ClaudeState::Idle);
+    }
+
+    #[test]
+    fn test_initializing_to_thinking_on_terminal_input() {
+        let mut manager = default_manager();
+        let result = manager.process(StateSignal::TerminalInput {
+            data: "hello".to_string(),
+        });
+        assert_eq!(result, Some(ClaudeState::Thinking));
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+    }
+
+    #[test]
+    fn test_initializing_to_idle_on_conversation_entry() {
+        let mut manager = default_manager();
+        // An assistant entry while Initializing → Idle → Responding
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: None,
+        });
+        assert_eq!(result, Some(ClaudeState::Responding));
+    }
+
+    #[test]
+    fn test_initializing_to_thinking_on_user_conversation_entry() {
+        let mut manager = default_manager();
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+        });
+        assert_eq!(result, Some(ClaudeState::Thinking));
+    }
+
+    // --- Starting phase tests ---
+
+    #[test]
+    fn test_starting_stays_starting_on_generic_terminal_output() {
+        let mut manager = starting_manager();
+        // Generic PTY output (startup noise) should NOT transition out of Starting.
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "Loading...".to_string(),
+        });
+        assert_eq!(result, None);
+        assert_eq!(*manager.state(), ClaudeState::Starting);
+    }
+
+    #[test]
+    fn test_starting_to_idle_on_claude_code_banner() {
+        let mut manager = starting_manager();
+        // The Claude Code banner signals the process is loaded and at its prompt.
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "Claude Code v2.1.37".to_string(),
+        });
+        assert_eq!(result, Some(ClaudeState::Idle));
+        assert_eq!(*manager.state(), ClaudeState::Idle);
+    }
+
+    #[test]
+    fn test_starting_to_thinking_on_terminal_input() {
+        let mut manager = starting_manager();
+        let result = manager.process(StateSignal::TerminalInput {
+            data: "hello".to_string(),
+        });
+        assert_eq!(result, Some(ClaudeState::Thinking));
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+    }
+
+    #[test]
+    fn test_starting_to_idle_on_conversation_entry() {
+        let mut manager = starting_manager();
+        // An assistant entry while Starting → Idle → Responding
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: None,
+        });
+        assert_eq!(result, Some(ClaudeState::Responding));
+    }
+
+    #[test]
+    fn test_starting_to_thinking_on_user_conversation_entry() {
+        let mut manager = starting_manager();
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+        });
+        assert_eq!(result, Some(ClaudeState::Thinking));
     }
 
     #[test]
@@ -391,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_conversation_entry_user_transitions_to_thinking() {
-        let mut manager = default_manager();
+        let mut manager = idle_manager();
         // Start in Idle
         assert_eq!(*manager.state(), ClaudeState::Idle);
 
@@ -425,6 +575,7 @@ mod tests {
     fn test_turn_duration_from_any_state() {
         // turn_duration should ALWAYS transition to WaitingForInput
         let states_to_test = vec![
+            ClaudeState::Starting,
             ClaudeState::Idle,
             ClaudeState::Thinking,
             ClaudeState::Responding,
@@ -438,6 +589,9 @@ mod tests {
 
             // Force to initial state
             match &initial_state {
+                ClaudeState::Starting => {
+                    manager.state = ClaudeState::Starting;
+                }
                 ClaudeState::Thinking => {
                     manager.process(StateSignal::TerminalInput {
                         data: "x".to_string(),

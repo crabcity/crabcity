@@ -87,6 +87,8 @@ export interface PollResponse {
 // Claude state types (from server-side inference)
 
 export type ClaudeState =
+	| { type: 'Initializing' }
+	| { type: 'Starting' }
 	| { type: 'Idle' }
 	| { type: 'Thinking' }
 	| { type: 'Responding' }

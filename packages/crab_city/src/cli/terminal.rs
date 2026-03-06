@@ -11,12 +11,16 @@ pub struct TerminalGuard {
     compositor: Compositor,
     /// The active overlay layer ID, if any.
     overlay_id: Option<LayerId>,
+    /// The bottom status bar layer ID, if any.
+    status_bar_id: Option<LayerId>,
     /// Current terminal width (for anchor resolution).
     cols: u16,
     /// Current terminal height.
     rows: u16,
     /// Cached paint sequence for the overlay layer.
     paint_cache: Vec<u8>,
+    /// Cached paint sequence for the status bar layer.
+    status_bar_cache: Vec<u8>,
 }
 
 #[cfg(unix)]
@@ -29,9 +33,11 @@ impl TerminalGuard {
             original,
             compositor: Compositor::new(),
             overlay_id: None,
+            status_bar_id: None,
             cols: 80,
             rows: 24,
             paint_cache: Vec::new(),
+            status_bar_cache: Vec::new(),
         }
     }
 
@@ -130,11 +136,97 @@ impl TerminalGuard {
             self.paint_cache.clear();
         }
     }
+
+    /// Show or update a full-width status bar at the bottom of the terminal.
+    /// `text` is displayed left-aligned with reverse video. ASCII only.
+    pub fn show_status_bar(&mut self, text: &str, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
+
+        // Clear existing status bar if any
+        self.clear_status_bar_layer();
+
+        let bar_width = cols;
+        if bar_width == 0 {
+            return;
+        }
+
+        let id = self.compositor.add_layer(
+            Anchor::BottomLeft(0, 0),
+            bar_width,
+            1,
+            50, // below overlay badge
+        );
+        let attrs = Attrs {
+            inverse: true,
+            bold: true,
+            ..Default::default()
+        };
+        if let Some(layer) = self.compositor.layer_mut(id) {
+            // Pad text to full width
+            let padded = format!("{:width$}", text, width = bar_width as usize);
+            layer.fill_text(0, 0, &padded, attrs);
+        }
+
+        let paint = self
+            .compositor
+            .paint_layer(id, rows, cols)
+            .unwrap_or_default();
+        if !paint.is_empty() {
+            write_escape_bytes(&paint);
+        }
+        self.status_bar_cache = paint;
+        self.status_bar_id = Some(id);
+    }
+
+    /// Repaint the status bar for a new terminal size.
+    pub fn repaint_status_bar(&mut self, cols: u16, rows: u16) {
+        let Some(id) = self.status_bar_id else {
+            return;
+        };
+
+        // Clear at old dimensions
+        if let Some(layer) = self.compositor.layer(id) {
+            let clear = render_layer_clear(layer, self.rows, self.cols);
+            if !clear.is_empty() {
+                write_escape_bytes(&clear);
+            }
+        }
+
+        self.cols = cols;
+        self.rows = rows;
+        if let Some(layer) = self.compositor.layer(id) {
+            let paint = render_layer_paint(layer, rows, cols);
+            if !paint.is_empty() {
+                write_escape_bytes(&paint);
+            }
+            self.status_bar_cache = paint;
+        }
+    }
+
+    /// Returns the cached escape bytes for repainting the status bar.
+    pub fn status_bar_paint_bytes(&self) -> &[u8] {
+        &self.status_bar_cache
+    }
+
+    fn clear_status_bar_layer(&mut self) {
+        if let Some(id) = self.status_bar_id.take() {
+            if let Some(layer) = self.compositor.layer(id) {
+                let clear = render_layer_clear(layer, self.rows, self.cols);
+                if !clear.is_empty() {
+                    write_escape_bytes(&clear);
+                }
+            }
+            self.compositor.remove_layer(id);
+            self.status_bar_cache.clear();
+        }
+    }
 }
 
 #[cfg(unix)]
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        self.clear_status_bar_layer();
         self.clear_overlay();
         if let Some(ref original) = self.original {
             use nix::sys::termios;

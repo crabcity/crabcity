@@ -98,6 +98,10 @@
 		}
 
 		switch (state.type) {
+			case 'Initializing':
+				return { label: 'init', color: 'var(--text-muted)', animate: true, stale: false };
+			case 'Starting':
+				return { label: 'starting', color: 'var(--amber-500)', animate: true, stale: false };
 			case 'Idle':
 				return { label: '', color: 'var(--status-green)', animate: false, stale: false };
 			case 'Thinking': {

@@ -45,6 +45,8 @@ export const currentVerb = derived(
 	[currentInstanceId, claudeState],
 	([$instanceId, $state]) => {
 		if (!$instanceId) return 'Thinking';
+		if ($state.type === 'Initializing') return 'Init';
+		if ($state.type === 'Starting') return 'Boot';
 		if (
 			$state.type === 'Thinking' ||
 			$state.type === 'Responding' ||

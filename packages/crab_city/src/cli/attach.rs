@@ -3,14 +3,57 @@ use futures::{SinkExt, StreamExt};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite;
 
 use crate::cli::daemon::{DaemonError, DaemonInfo};
 use crate::cli::terminal::{TerminalGuard, get_terminal_size};
+use crate::inference::ClaudeState;
 use crate::websocket_proxy::WsMessage;
 
 const DETACH_BYTE: u8 = 0x1D; // Ctrl-]
+
+/// Build status bar text based on current Claude state and elapsed time.
+fn status_bar_text(state: &ClaudeState, started_at: Instant) -> String {
+    match state {
+        ClaudeState::Initializing => {
+            let elapsed = started_at.elapsed().as_secs();
+            let msg = if elapsed < 10 {
+                "Waiting for first byte..."
+            } else if elapsed < 30 {
+                "Process is starting \u{2014} no output yet"
+            } else {
+                "No output received. Ctrl-] to switch instances"
+            };
+            format!(" INIT \u{2502} {} \u{2502} Ctrl-] switch ", msg)
+        }
+        ClaudeState::Starting => {
+            let elapsed = started_at.elapsed().as_secs();
+            let msg = if elapsed < 10 {
+                "Loading Claude Code..."
+            } else if elapsed < 30 {
+                "Claude is taking a moment to initialize..."
+            } else {
+                "Startup is slower than usual \u{2014} network latency or API load"
+            };
+            format!(" STARTING \u{2502} {} \u{2502} Ctrl-] switch ", msg)
+        }
+        ClaudeState::Idle | ClaudeState::WaitingForInput { .. } => {
+            " READY \u{2502} Claude is idle \u{2502} Ctrl-] detach ".to_string()
+        }
+        ClaudeState::Thinking => " ACTIVE \u{2502} Thinking... \u{2502} Ctrl-] detach ".to_string(),
+        ClaudeState::Responding => {
+            " ACTIVE \u{2502} Responding... \u{2502} Ctrl-] detach ".to_string()
+        }
+        ClaudeState::ToolExecuting { tool } => {
+            format!(
+                " ACTIVE \u{2502} Running {}... \u{2502} Ctrl-] detach ",
+                tool
+            )
+        }
+    }
+}
 
 /// What happened when an attach session ended.
 pub enum AttachOutcome {
@@ -60,7 +103,14 @@ async fn attach_session(
     let mut guard = TerminalGuard::new();
     guard.enter_raw_mode();
 
-    // 4. Send initial resize + paint overlay badge
+    // 4. Track Claude state for status bar
+    let mut claude_state = ClaudeState::Initializing;
+    let attach_time = Instant::now();
+    // Timer for updating time-aware status bar text during Starting
+    let status_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    tokio::pin!(status_tick);
+
+    // 5. Send initial resize + paint overlay badge + status bar
     const OVERLAY_TEXT: &str = "attached -- Ctrl-] to detach";
     let overlay_timer = tokio::time::sleep(std::time::Duration::ZERO);
     tokio::pin!(overlay_timer);
@@ -75,6 +125,9 @@ async fn attach_session(
             .as_mut()
             .reset(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
         overlay_armed = true;
+        // Show initial status bar
+        let bar_text = status_bar_text(&claude_state, attach_time);
+        guard.show_status_bar(&bar_text, cols, rows);
     } else {
         // Fallback: inline status when terminal size unavailable
         let mut stdout = std::io::stdout().lock();
@@ -158,11 +211,22 @@ async fn attach_session(
             Some(msg) = ws_read.next() => {
                 match msg {
                     Ok(tungstenite::Message::Text(text)) => {
-                        if let Ok(WsMessage::Output { data }) = serde_json::from_str::<WsMessage>(&text) {
-                            let mut stdout = std::io::stdout().lock();
-                            let _ = stdout.write_all(data.as_bytes());
-                            let _ = stdout.write_all(guard.overlay_paint_bytes());
-                            let _ = stdout.flush();
+                        match serde_json::from_str::<WsMessage>(&text) {
+                            Ok(WsMessage::Output { data }) => {
+                                let mut stdout = std::io::stdout().lock();
+                                let _ = stdout.write_all(data.as_bytes());
+                                let _ = stdout.write_all(guard.overlay_paint_bytes());
+                                let _ = stdout.write_all(guard.status_bar_paint_bytes());
+                                let _ = stdout.flush();
+                            }
+                            Ok(WsMessage::StateChange { state, .. }) => {
+                                claude_state = state;
+                                if let Ok((rows, cols)) = get_terminal_size() {
+                                    let bar_text = status_bar_text(&claude_state, attach_time);
+                                    guard.show_status_bar(&bar_text, cols, rows);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     Ok(tungstenite::Message::Close(_)) | Err(_) => {
@@ -179,6 +243,15 @@ async fn attach_session(
                     let json = serde_json::to_string(&msg)?;
                     let _ = ws_write.send(tungstenite::Message::Text(json)).await;
                     guard.repaint_overlay(cols);
+                    guard.repaint_status_bar(cols, rows);
+                }
+            }
+
+            // Status bar tick — update time-aware text during Starting
+            _ = status_tick.tick(), if matches!(claude_state, ClaudeState::Initializing | ClaudeState::Starting) => {
+                if let Ok((rows, cols)) = get_terminal_size() {
+                    let bar_text = status_bar_text(&claude_state, attach_time);
+                    guard.show_status_bar(&bar_text, cols, rows);
                 }
             }
 

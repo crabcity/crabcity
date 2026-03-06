@@ -61,6 +61,9 @@ export const isActive = derived(claudeState, ($state) =>
 	$state.type === 'Thinking' || $state.type === 'Responding' || $state.type === 'ToolExecuting'
 );
 
+/** Is Claude still booting (PTY spawned, not yet at prompt)? Covers both Initializing and Starting. */
+export const isStarting = derived(claudeState, ($state) => $state.type === 'Initializing' || $state.type === 'Starting');
+
 /** Is Claude in the thinking phase? */
 export const isThinking = derived(claudeState, ($state) => $state.type === 'Thinking');
 
