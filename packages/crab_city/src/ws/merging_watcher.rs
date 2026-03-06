@@ -123,14 +123,19 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
         let mut cross_poll_updated: Vec<String> = Vec::new();
 
         for entry in &entries {
-            // No message → progress event
+            // No message → progress event (preserve extra fields)
             if entry.message.is_none() {
+                let mut data = serde_json::json!({});
+                if let Some(obj) = data.as_object_mut() {
+                    for (key, value) in &entry.extra {
+                        obj.insert(key.clone(), value.clone());
+                    }
+                    obj.insert("uuid".to_string(), serde_json::json!(entry.uuid));
+                    obj.insert("timestamp".to_string(), serde_json::json!(entry.timestamp));
+                }
                 events.push(WatcherEvent::Progress {
                     kind: entry.entry_type.clone(),
-                    data: serde_json::json!({
-                        "uuid": entry.uuid,
-                        "timestamp": entry.timestamp,
-                    }),
+                    data,
                 });
                 continue;
             }
@@ -186,12 +191,17 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
                 }
                 None => {
                     // Entry has message but conversion failed (shouldn't happen)
+                    let mut data = serde_json::json!({});
+                    if let Some(obj) = data.as_object_mut() {
+                        for (key, value) in &entry.extra {
+                            obj.insert(key.clone(), value.clone());
+                        }
+                        obj.insert("uuid".to_string(), serde_json::json!(entry.uuid));
+                        obj.insert("timestamp".to_string(), serde_json::json!(entry.timestamp));
+                    }
                     events.push(WatcherEvent::Progress {
                         kind: entry.entry_type.clone(),
-                        data: serde_json::json!({
-                            "uuid": entry.uuid,
-                            "timestamp": entry.timestamp,
-                        }),
+                        data,
                     });
                 }
             }
@@ -393,6 +403,42 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], WatcherEvent::Turn(_)));
         assert!(matches!(&events[1], WatcherEvent::Progress { .. }));
+    }
+
+    #[test]
+    fn progress_entries_preserve_extra_data() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let claude_dir = temp.path().join(".claude");
+
+        // agent_progress entry with extra fields (agentId, data, etc.)
+        let entries = vec![
+            r#"{"uuid":"u1","type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}"#,
+            r#"{"uuid":"p1","type":"agent_progress","timestamp":"2024-01-01T00:00:01Z","agentId":"agent-123","data":{"type":"agent_progress","agentId":"agent-123","message":{"role":"assistant","content":"Working..."}}}"#,
+        ];
+        create_test_jsonl(&claude_dir, "s1", &entries);
+
+        let mut watcher = MergingWatcher::new(
+            test_manager(&claude_dir),
+            "/test/project".into(),
+            "s1".into(),
+        );
+
+        let events = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], WatcherEvent::Turn(_)));
+
+        if let WatcherEvent::Progress { kind, data } = &events[1] {
+            assert_eq!(kind, "agent_progress");
+            assert_eq!(data["uuid"], "p1");
+            assert_eq!(data["timestamp"], "2024-01-01T00:00:01Z");
+            // Extra fields should be preserved
+            assert_eq!(data["agentId"], "agent-123");
+            assert_eq!(data["data"]["type"], "agent_progress");
+            assert_eq!(data["data"]["agentId"], "agent-123");
+            assert_eq!(data["data"]["message"]["content"], "Working...");
+        } else {
+            panic!("Expected Progress, got {:?}", events[1]);
+        }
     }
 
     #[test]

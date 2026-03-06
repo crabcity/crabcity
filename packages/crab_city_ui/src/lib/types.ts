@@ -51,6 +51,7 @@ export interface ConversationTurn {
 	agent_id?: string;
 	agent_prompt?: string;
 	agent_msg_role?: string;
+	agent_tools?: Array<{name: string; input?: Record<string, unknown>}>;
 	// For progress entries (hook/agent)
 	progress_type?: 'hook' | 'agent';
 	hook_event?: string;
@@ -280,7 +281,7 @@ export interface NotebookCell {
 	progressType?: 'hook' | 'agent';
 	hookEvent?: string;
 	// Agent progress absorbed during tool groups (sub-agent activity log)
-	agentLog?: Array<{ content: string; agentId?: string; role?: string }>;
+	agentLog?: Array<{ content: string; agentId?: string; role?: string; tools?: Array<{name: string; input?: Record<string, unknown>}> }>;
 }
 
 // Pagination and search types

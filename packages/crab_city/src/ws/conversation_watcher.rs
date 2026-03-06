@@ -80,9 +80,11 @@ pub async fn run_server_conversation_watcher(
     let manager = ClaudeConvo::new();
 
     // Phase 1: Discover the session.
-    // First try auto-discovery (single unclaimed candidate). If ambiguous,
-    // the focus path (run_session_discovery) will claim a session and set
-    // session_id on the handle — we just wait for it.
+    // Auto-discovery requires first_input_at — without input, Claude can't have
+    // created a session for this instance, so any candidates would belong to
+    // other instances sharing the same working directory.
+    // The focus path can still override via set_session_id at any time.
+    let mut discovery_attempts = 0u32;
     let session_id = loop {
         if cancel.is_cancelled() {
             return;
@@ -99,24 +101,47 @@ pub async fn run_server_conversation_watcher(
             break sid;
         }
 
-        // Attempt auto-discovery: if exactly one unclaimed candidate, claim it
-        let search_after = state_manager
+        discovery_attempts += 1;
+
+        // Only attempt auto-discovery after first input is detected.
+        // Without input, Claude can't have created a session for this instance,
+        // so any candidates found would belong to other instances.
+        if state_manager
             .get_first_input_at(&instance_id)
             .await
-            .unwrap_or(created_at);
+            .is_none()
+        {
+            if discovery_attempts % 30 == 0 {
+                debug!(
+                    "[SERVER-CONVO {}] Waiting for first input before session discovery (attempt {})",
+                    instance_id, discovery_attempts
+                );
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            continue;
+        }
 
+        // Use created_at as search_after: the session file may have been created
+        // between instance creation and first input (e.g. Claude startup entries).
         let claimed_sessions = state_manager.get_claimed_sessions().await;
-        let candidates: Vec<_> = find_candidate_sessions(&manager, &working_dir, search_after)
+        let candidates: Vec<_> = find_candidate_sessions(&manager, &working_dir, created_at)
             .into_iter()
             .filter(|c| !claimed_sessions.contains(&c.id))
             .collect();
 
         match candidates.len() {
             0 => {
-                info!(
-                    "[SERVER-CONVO {}] No candidate sessions (search_after={}, working_dir={})",
-                    instance_id, search_after, working_dir
-                );
+                if discovery_attempts % 10 == 0 {
+                    info!(
+                        "[SERVER-CONVO {}] No candidate sessions after {} attempts (search_after={}, working_dir={})",
+                        instance_id, discovery_attempts, created_at, working_dir
+                    );
+                } else {
+                    debug!(
+                        "[SERVER-CONVO {}] No candidate sessions (search_after={}, working_dir={})",
+                        instance_id, created_at, working_dir
+                    );
+                }
             }
             1 => {
                 let session = &candidates[0];
@@ -137,10 +162,19 @@ pub async fn run_server_conversation_watcher(
                 }
             }
             n => {
-                debug!(
-                    "[SERVER-CONVO {}] {} ambiguous candidates, waiting for focus-path resolution",
-                    instance_id, n
-                );
+                // Multiple candidates — let the user break the tie via the
+                // focus path (SessionAmbiguous). Don't auto-pick.
+                if discovery_attempts % 10 == 0 {
+                    warn!(
+                        "[SERVER-CONVO {}] {} ambiguous candidates after {} attempts, waiting for user selection",
+                        instance_id, n, discovery_attempts
+                    );
+                } else {
+                    info!(
+                        "[SERVER-CONVO {}] {} ambiguous candidates, waiting for user selection",
+                        instance_id, n
+                    );
+                }
             }
         }
 
@@ -385,10 +419,21 @@ pub async fn run_session_discovery(
             return;
         }
 
-        let search_after = state_manager
+        // Same guard as the server watcher: no input → no session to discover
+        if state_manager
             .get_first_input_at(&instance_id)
             .await
-            .unwrap_or(created_at);
+            .is_none()
+        {
+            debug!(
+                "[SESSION-DISCOVERY {}] No first input yet, waiting...",
+                instance_id
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        let search_after = created_at;
 
         let claimed_sessions = state_manager.get_claimed_sessions().await;
         let candidates: Vec<_> = find_candidate_sessions(&provider, &working_dir, search_after)
@@ -469,93 +514,5 @@ pub async fn run_session_discovery(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use toolpath_claude::ConversationEntry;
-
-    #[test]
-    fn test_filter_entries_since_uuid() {
-        // Create test entries
-        let entries: Vec<ConversationEntry> = vec![
-            serde_json::from_str(
-                r#"{"uuid":"uuid-1","type":"user","timestamp":"2024-01-01T00:00:00Z"}"#,
-            )
-            .unwrap(),
-            serde_json::from_str(
-                r#"{"uuid":"uuid-2","type":"assistant","timestamp":"2024-01-01T00:00:01Z"}"#,
-            )
-            .unwrap(),
-            serde_json::from_str(
-                r#"{"uuid":"uuid-3","type":"user","timestamp":"2024-01-01T00:00:02Z"}"#,
-            )
-            .unwrap(),
-            serde_json::from_str(
-                r#"{"uuid":"uuid-4","type":"assistant","timestamp":"2024-01-01T00:00:03Z"}"#,
-            )
-            .unwrap(),
-        ];
-
-        // Filter since uuid-2 (should return uuid-3, uuid-4)
-        let since_uuid = "uuid-2";
-        let since_idx = entries.iter().position(|e| e.uuid == since_uuid);
-        let filtered: Vec<_> = match since_idx {
-            Some(idx) => entries.into_iter().skip(idx + 1).collect(),
-            None => entries,
-        };
-
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].uuid, "uuid-3");
-        assert_eq!(filtered[1].uuid, "uuid-4");
-    }
-
-    #[test]
-    fn test_filter_entries_since_unknown_uuid() {
-        let entries: Vec<ConversationEntry> = vec![
-            serde_json::from_str(
-                r#"{"uuid":"uuid-1","type":"user","timestamp":"2024-01-01T00:00:00Z"}"#,
-            )
-            .unwrap(),
-            serde_json::from_str(
-                r#"{"uuid":"uuid-2","type":"assistant","timestamp":"2024-01-01T00:00:01Z"}"#,
-            )
-            .unwrap(),
-        ];
-
-        // Filter since unknown UUID (should return all entries)
-        let since_uuid = "unknown-uuid";
-        let since_idx = entries.iter().position(|e| e.uuid == since_uuid);
-        let filtered: Vec<_> = match since_idx {
-            Some(idx) => entries.clone().into_iter().skip(idx + 1).collect(),
-            None => entries.clone(),
-        };
-
-        assert_eq!(filtered.len(), 2);
-    }
-
-    #[test]
-    fn test_filter_entries_since_last_uuid() {
-        let entries: Vec<ConversationEntry> = vec![
-            serde_json::from_str(
-                r#"{"uuid":"uuid-1","type":"user","timestamp":"2024-01-01T00:00:00Z"}"#,
-            )
-            .unwrap(),
-            serde_json::from_str(
-                r#"{"uuid":"uuid-2","type":"assistant","timestamp":"2024-01-01T00:00:01Z"}"#,
-            )
-            .unwrap(),
-        ];
-
-        // Filter since last UUID (should return empty)
-        let since_uuid = "uuid-2";
-        let since_idx = entries.iter().position(|e| e.uuid == since_uuid);
-        let filtered: Vec<_> = match since_idx {
-            Some(idx) => entries.into_iter().skip(idx + 1).collect(),
-            None => entries,
-        };
-
-        assert_eq!(filtered.len(), 0);
     }
 }

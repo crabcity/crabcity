@@ -1008,6 +1008,55 @@ mod tests {
         assert_eq!(claimed.len(), 2);
     }
 
+    #[tokio::test]
+    async fn test_first_input_gate_prevents_cross_claim() {
+        // Simulates the multi-instance race:
+        // Instance A (no input) must not claim Instance B's session.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // Instance B marks first input
+        assert!(state_mgr.mark_first_input("inst-b").await);
+
+        // Instance A has no first_input_at — should be gated from discovery
+        assert!(state_mgr.get_first_input_at("inst-a").await.is_none());
+
+        // Instance B has first_input_at — discovery proceeds
+        assert!(state_mgr.get_first_input_at("inst-b").await.is_some());
+
+        // B claims its session
+        assert!(state_mgr.try_claim_session("sess-b", "inst-b").await);
+
+        // Even if A were to try (bypassing the gate), it can't steal
+        let claimed = state_mgr.get_claimed_sessions().await;
+        assert!(claimed.contains("sess-b"));
+        assert!(!state_mgr.try_claim_session("sess-b", "inst-a").await);
+    }
+
+    #[tokio::test]
+    async fn test_two_instances_sequential_input_correct_claims() {
+        // A gets input first, claims its session.
+        // B gets input second, sees A's claim, claims its own session.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // A marks first input and claims session-a
+        state_mgr.mark_first_input("inst-a").await;
+        assert!(state_mgr.try_claim_session("sess-a", "inst-a").await);
+
+        // B marks first input
+        state_mgr.mark_first_input("inst-b").await;
+
+        // B sees sess-a is claimed
+        let claimed = state_mgr.get_claimed_sessions().await;
+        assert!(claimed.contains("sess-a"));
+
+        // B claims sess-b (unclaimed)
+        assert!(state_mgr.try_claim_session("sess-b", "inst-b").await);
+
+        // Both sessions claimed by correct instances
+        assert!(!state_mgr.try_claim_session("sess-a", "inst-b").await);
+        assert!(!state_mgr.try_claim_session("sess-b", "inst-a").await);
+    }
+
     // =========================================================================
     // Attribution queue tests
     // =========================================================================

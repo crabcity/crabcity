@@ -248,22 +248,101 @@ pub async fn format_turn_with_attribution(
 
 /// Format a progress event from a `WatcherEvent::Progress { kind, data }`.
 ///
-/// The watcher currently emits minimal data (uuid + timestamp) for progress events.
-/// This produces a placeholder JSON entry. Full progress formatting (hook_progress,
-/// agent_progress) requires richer data from the watcher — see TOOLPATH_GAPS.md.
+/// For `agent_progress` events, extracts structured sub-agent data (content,
+/// tool uses, agent ID) so the frontend can populate the Task card's activity
+/// timeline. Other progress kinds produce a minimal placeholder entry.
 pub fn format_progress_event(kind: &str, data: &serde_json::Value) -> serde_json::Value {
     let uuid = data.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
     let timestamp = data.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
-
     let empty_tools: Vec<String> = vec![];
-    serde_json::json!({
+
+    // Detect agent_progress: the nested "data" object carries the real payload.
+    let inner = data.get("data");
+    let is_agent_progress =
+        inner.and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("agent_progress");
+
+    if !is_agent_progress {
+        return serde_json::json!({
+            "uuid": uuid,
+            "role": "Unknown",
+            "content": "",
+            "timestamp": timestamp,
+            "tools": empty_tools,
+            "entry_type": kind,
+        });
+    }
+
+    let inner = inner.unwrap();
+    let agent_id = inner.get("agentId").and_then(|v| v.as_str()).unwrap_or("");
+
+    // The message lives at data.message.message (outer is the wrapper, inner is the API message).
+    let msg = inner.get("message");
+    let inner_msg = msg.and_then(|m| m.get("message")).or(msg);
+
+    let agent_msg_role = inner_msg
+        .and_then(|m| m.get("role"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Extract content: string or array of content parts
+    let raw_content = inner_msg.and_then(|m| m.get("content"));
+
+    let (content_text, agent_tools) = match raw_content {
+        Some(serde_json::Value::String(s)) => (s.clone(), vec![]),
+        Some(serde_json::Value::Array(parts)) => {
+            let mut texts = Vec::new();
+            let mut tools: Vec<serde_json::Value> = Vec::new();
+            for part in parts {
+                match part.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                            texts.push(t.to_string());
+                        }
+                    }
+                    Some("tool_use") => {
+                        let name = part
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let mut tool_obj = serde_json::json!({ "name": name });
+                        if let Some(input) = part.get("input") {
+                            tool_obj["input"] = input.clone();
+                        }
+                        tools.push(tool_obj);
+                    }
+                    _ => {}
+                }
+            }
+            (texts.join("\n"), tools)
+        }
+        // Fallback chain: toolUseResult → prompt → empty
+        None => {
+            let fallback = inner
+                .get("toolUseResult")
+                .and_then(|v| v.as_str())
+                .or_else(|| inner.get("prompt").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            (fallback.to_string(), vec![])
+        }
+        _ => (String::new(), vec![]),
+    };
+
+    let mut result = serde_json::json!({
         "uuid": uuid,
-        "role": "Unknown",
-        "content": "",
+        "role": "AgentProgress",
+        "content": normalize_whitespace(&content_text),
         "timestamp": timestamp,
         "tools": empty_tools,
-        "entry_type": kind,
-    })
+        "entry_type": "agent_progress",
+        "agent_id": agent_id,
+        "agent_msg_role": format!("agent_{}", agent_msg_role),
+    });
+
+    if !agent_tools.is_empty() {
+        result["agent_tools"] = serde_json::Value::Array(agent_tools);
+    }
+
+    result
 }
 
 /// Extract title from a Turn's text, truncated to `limit` chars.
@@ -316,11 +395,139 @@ mod tests {
     #[test]
     fn progress_event_missing_fields_defaults_empty() {
         let data = json!({});
-        let result = format_progress_event("agent_progress", &data);
+        let result = format_progress_event("some_progress", &data);
 
         assert_eq!(result["uuid"], "");
         assert_eq!(result["timestamp"], "");
+        assert_eq!(result["entry_type"], "some_progress");
+        assert_eq!(result["role"], "Unknown");
+    }
+
+    #[test]
+    fn agent_progress_string_content() {
+        let data = json!({
+            "uuid": "p1",
+            "timestamp": "2024-06-01T12:00:00Z",
+            "agentId": "agent-1",
+            "data": {
+                "type": "agent_progress",
+                "agentId": "agent-1",
+                "message": {
+                    "role": "assistant",
+                    "content": "Reading the file now."
+                }
+            }
+        });
+        let result = format_progress_event("agent_progress", &data);
+
+        assert_eq!(result["role"], "AgentProgress");
+        assert_eq!(result["content"], "Reading the file now.");
+        assert_eq!(result["agent_id"], "agent-1");
+        assert_eq!(result["agent_msg_role"], "agent_assistant");
         assert_eq!(result["entry_type"], "agent_progress");
+        assert!(result.get("agent_tools").is_none());
+    }
+
+    #[test]
+    fn agent_progress_array_content_with_tool_uses() {
+        let data = json!({
+            "uuid": "p2",
+            "timestamp": "2024-06-01T12:00:01Z",
+            "data": {
+                "type": "agent_progress",
+                "agentId": "agent-2",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Checking files."},
+                        {"type": "tool_use", "id": "t1", "name": "Read", "input": {"path": "/foo"}},
+                        {"type": "tool_use", "id": "t2", "name": "Grep", "input": {"pattern": "TODO"}}
+                    ]
+                }
+            }
+        });
+        let result = format_progress_event("agent_progress", &data);
+
+        assert_eq!(result["role"], "AgentProgress");
+        assert_eq!(result["content"], "Checking files.");
+        assert_eq!(result["agent_id"], "agent-2");
+        let tools = result["agent_tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["name"], "Read");
+        assert_eq!(tools[0]["input"]["path"], "/foo");
+        assert_eq!(tools[1]["name"], "Grep");
+    }
+
+    #[test]
+    fn agent_progress_fallback_chain() {
+        // No message.content → falls back to toolUseResult
+        let data = json!({
+            "uuid": "p3",
+            "timestamp": "2024-06-01T12:00:02Z",
+            "data": {
+                "type": "agent_progress",
+                "agentId": "agent-3",
+                "toolUseResult": "File contents here"
+            }
+        });
+        let result = format_progress_event("agent_progress", &data);
+
+        assert_eq!(result["role"], "AgentProgress");
+        assert_eq!(result["content"], "File contents here");
+
+        // No toolUseResult → falls back to prompt
+        let data2 = json!({
+            "uuid": "p4",
+            "timestamp": "2024-06-01T12:00:03Z",
+            "data": {
+                "type": "agent_progress",
+                "agentId": "agent-4",
+                "prompt": "Find the bug"
+            }
+        });
+        let result2 = format_progress_event("agent_progress", &data2);
+        assert_eq!(result2["content"], "Find the bug");
+    }
+
+    #[test]
+    fn non_agent_progress_unchanged() {
+        let data = json!({
+            "uuid": "h1",
+            "timestamp": "2024-06-01T12:00:00Z",
+            "data": {
+                "type": "hook_progress",
+                "hookId": "pre-commit"
+            }
+        });
+        let result = format_progress_event("hook_progress", &data);
+
+        assert_eq!(result["role"], "Unknown");
+        assert_eq!(result["content"], "");
+        assert_eq!(result["entry_type"], "hook_progress");
+    }
+
+    #[test]
+    fn agent_progress_nested_message_message() {
+        // Some progress events wrap message inside message.message
+        let data = json!({
+            "uuid": "p5",
+            "timestamp": "2024-06-01T12:00:00Z",
+            "data": {
+                "type": "agent_progress",
+                "agentId": "agent-5",
+                "message": {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Nested content"
+                    }
+                }
+            }
+        });
+        let result = format_progress_event("agent_progress", &data);
+
+        assert_eq!(result["role"], "AgentProgress");
+        assert_eq!(result["content"], "Nested content");
+        assert_eq!(result["agent_msg_role"], "agent_assistant");
     }
 
     // ── extract_title_from_turn ───────────────────────────────────

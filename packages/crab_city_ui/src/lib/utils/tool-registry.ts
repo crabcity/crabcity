@@ -159,14 +159,7 @@ export const TOOL_REGISTRY: Record<string, ToolWidgetConfig> = {
 	},
 	Task: {
 		icon: '\u{1F4CB}',
-		renderMode: 'badge',
-		badgeLabel: badgeFromKey('description'),
-		expandedFields: (tool) => {
-			const fields: ExpandedField[] = [];
-			if (tool.input['description'] != null) fields.push({ label: 'TASK', value: String(tool.input['description']) });
-			if (tool.input['prompt'] != null) fields.push({ label: 'PROMPT', value: truncateField(String(tool.input['prompt'])) });
-			return fields;
-		},
+		renderMode: 'card',
 	},
 	AskUserQuestion: {
 		icon: '\u2753',
