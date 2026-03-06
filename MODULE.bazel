@@ -62,6 +62,14 @@ use_repo(rust, "rust_toolchains")
 
 register_toolchains("@rust_toolchains//:all")
 
+# Single-source the crab_city version from Cargo.toml
+cargo_version = use_extension("//bazel:cargo_version.bzl", "cargo_version")
+cargo_version.parse(
+    name = "crab_version",
+    cargo_toml = "//packages/crab_city:Cargo.toml",
+)
+use_repo(cargo_version, "crab_version")
+
 crate_index = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
 
 # Core utilities

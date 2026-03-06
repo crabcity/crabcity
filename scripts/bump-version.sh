@@ -3,8 +3,9 @@
 # Bump the crab version interactively.
 #
 # Reads the current version from Cargo.toml, prompts for bump type
-# (major/minor/patch) or a custom version, then updates Cargo.toml
-# and version.bzl (the Bazel mirror).
+# (major/minor/patch) or a custom version, then updates Cargo.toml.
+# Bazel reads the version from Cargo.toml at repo-setup time via
+# the cargo_version module extension — no manual sync needed.
 #
 # Usage:
 #   scripts/bump-version.sh
@@ -13,7 +14,6 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CARGO_TOML="$REPO_ROOT/packages/crab_city/Cargo.toml"
-VERSION_BZL="$REPO_ROOT/packages/crab_city/version.bzl"
 
 # Parse current version from Cargo.toml
 CURRENT=$(grep '^version = ' "$CARGO_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
@@ -55,16 +55,10 @@ echo ""
 echo "Bumping $CURRENT → $NEW_VERSION"
 echo ""
 
-# Update Cargo.toml
+# Update Cargo.toml (Bazel picks this up automatically)
 sed -i.bak "s/^version = \"$CURRENT\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
 rm -f "$CARGO_TOML.bak"
 
-# Update version.bzl (Bazel mirror)
-sed -i.bak "s/^CRAB_VERSION = \"$CURRENT\"/CRAB_VERSION = \"$NEW_VERSION\"/" "$VERSION_BZL"
-rm -f "$VERSION_BZL.bak"
-
-echo "Updated:"
-echo "  $CARGO_TOML"
-echo "  $VERSION_BZL"
+echo "Updated: $CARGO_TOML"
 echo ""
 echo "Run 'git diff' to review, then commit when ready."
