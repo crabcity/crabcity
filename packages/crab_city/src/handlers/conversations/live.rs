@@ -4,10 +4,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, Utc};
 use toolpath_claude::ClaudeConvo;
 use toolpath_convo::ConversationProvider;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::format::{format_progress_event, format_turn_with_attribution};
 use crate::AppState;
@@ -26,81 +25,18 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
         .into_response();
     }
 
+    // Session discovery is handled by the server-owned conversation watcher.
+    // The HTTP handler only reads from an already-discovered session.
+    let session_id = match &instance.session_id {
+        Some(sid) => sid.clone(),
+        None => {
+            debug!("No session discovered yet for instance {}", id);
+            return Json(serde_json::json!({ "turns": [] })).into_response();
+        }
+    };
+
     let convo_manager = ClaudeConvo::new();
     let working_dir = &instance.working_dir;
-
-    let session_id = if let Some(sid) = &instance.session_id {
-        info!("Using cached session_id: {}", sid);
-        sid.clone()
-    } else {
-        info!(
-            "Detecting session for instance {} (created_at: {})",
-            instance.id, instance.created_at
-        );
-
-        let instance_created: DateTime<Utc> = match instance.created_at.parse() {
-            Ok(dt) => dt,
-            Err(e) => {
-                tracing::error!("Failed to parse instance created_at: {}", e);
-                return Json(serde_json::json!({
-                    "error": "Failed to parse instance timestamp",
-                    "turns": []
-                }))
-                .into_response();
-            }
-        };
-
-        let metadata = match ConversationProvider::list_metadata(&convo_manager, working_dir) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("Failed to list conversations: {}", e);
-                return Json(serde_json::json!({
-                    "error": format!("Failed to list conversations: {}", e),
-                    "turns": []
-                }))
-                .into_response();
-            }
-        };
-
-        info!(
-            "Found {} conversations in {}, filtering by created_at >= {}",
-            metadata.len(),
-            working_dir,
-            instance_created
-        );
-
-        let candidates: Vec<_> = metadata
-            .iter()
-            .filter(|m| {
-                if let Some(started) = m.started_at {
-                    started >= instance_created
-                } else {
-                    false
-                }
-            })
-            .collect();
-
-        info!("Found {} candidate conversations", candidates.len());
-
-        if candidates.is_empty() {
-            debug!("No conversation found for instance yet");
-            return Json(serde_json::json!({
-                "turns": []
-            }))
-            .into_response();
-        }
-
-        let detected_session = &candidates[0].id;
-        info!("Detected session_id: {}", detected_session);
-
-        if let Some(handle) = state.instance_manager.get_handle(&id).await
-            && let Err(e) = handle.set_session_id(detected_session.clone()).await
-        {
-            tracing::warn!("Failed to cache session_id: {}", e);
-        }
-
-        detected_session.clone()
-    };
 
     match ConversationProvider::load_conversation(&convo_manager, working_dir, &session_id) {
         Ok(view) => {
@@ -160,52 +96,11 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
     let session_id = match &instance.session_id {
         Some(sid) => sid.clone(),
         None => {
-            let convo_manager = ClaudeConvo::new();
-            let instance_created: DateTime<Utc> = match instance.created_at.parse() {
-                Ok(dt) => dt,
-                Err(_) => {
-                    return Json(serde_json::json!({
-                        "new_turns": [],
-                        "waiting": true
-                    }))
-                    .into_response();
-                }
-            };
-
-            let metadata =
-                match ConversationProvider::list_metadata(&convo_manager, &instance.working_dir) {
-                    Ok(m) => m,
-                    Err(_) => {
-                        return Json(serde_json::json!({
-                            "new_turns": [],
-                            "waiting": true
-                        }))
-                        .into_response();
-                    }
-                };
-
-            let candidates: Vec<_> = metadata
-                .iter()
-                .filter(|m| m.started_at.map(|s| s >= instance_created).unwrap_or(false))
-                .collect();
-
-            if candidates.is_empty() {
-                return Json(serde_json::json!({
-                    "new_turns": [],
-                    "waiting": true
-                }))
-                .into_response();
-            }
-
-            let detected = candidates[0].id.clone();
-
-            if let Some(handle) = state.instance_manager.get_handle(&id).await
-                && let Err(e) = handle.set_session_id(detected.clone()).await
-            {
-                warn!(instance = %id, session = %detected, "Failed to cache session ID: {}", e);
-            }
-
-            detected
+            return Json(serde_json::json!({
+                "new_turns": [],
+                "waiting": true
+            }))
+            .into_response();
         }
     };
 
