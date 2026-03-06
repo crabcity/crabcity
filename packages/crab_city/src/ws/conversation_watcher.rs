@@ -41,8 +41,12 @@ fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
         }
         WatcherEvent::TurnUpdated(_) => None,
         WatcherEvent::Progress { kind, data } => {
+            // Claude Code JSONL entries have "type" (→ entry_type → kind) and
+            // "subtype" (→ entry.extra → data bag).  The top-level "type" field
+            // was consumed into entry_type during parsing; what remains in the
+            // Progress data is the "subtype" key from entry.extra.
             let subtype = data
-                .get("type")
+                .get("subtype")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             Some(StateSignal::ConversationEntry {
@@ -221,7 +225,11 @@ pub async fn run_server_conversation_watcher(
                         // Skip on initial poll — no prior state to update
                     }
                     WatcherEvent::Progress { kind, data } => {
-                        turns.push(crate::handlers::format_progress_event(kind, data));
+                        // System metadata (turn_duration, init, etc.) is for state
+                        // inference only — not conversation display.
+                        if kind != "system" {
+                            turns.push(crate::handlers::format_progress_event(kind, data));
+                        }
                     }
                 }
             }
@@ -314,7 +322,10 @@ pub async fn run_server_conversation_watcher(
                                     }
                                 }
                                 WatcherEvent::Progress { kind, data } => {
-                                    new_turns.push(crate::handlers::format_progress_event(kind, data));
+                                    // System metadata → state inference only, not UI.
+                                    if kind != "system" {
+                                        new_turns.push(crate::handlers::format_progress_event(kind, data));
+                                    }
                                 }
                             }
                         }
@@ -514,5 +525,181 @@ pub async fn run_session_discovery(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use toolpath_convo::{Role, Turn};
+
+    fn make_turn(id: &str, role: Role) -> Turn {
+        Turn {
+            id: id.to_string(),
+            parent_id: None,
+            role,
+            timestamp: "2024-06-01T12:00:00Z".to_string(),
+            text: String::new(),
+            thinking: None,
+            tool_uses: vec![],
+            model: None,
+            stop_reason: None,
+            token_usage: None,
+            environment: None,
+            delegations: vec![],
+            extra: HashMap::new(),
+        }
+    }
+
+    // ── watcher_event_to_signal: Turn path ──────────────────────────
+
+    #[test]
+    fn signal_from_user_turn() {
+        let event = WatcherEvent::Turn(Box::new(make_turn("u1", Role::User)));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                stop_reason,
+            } => {
+                assert_eq!(entry_type, "human");
+                assert!(subtype.is_none());
+                assert!(stop_reason.is_none());
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_assistant_turn_with_end_turn() {
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.stop_reason = Some("end_turn".to_string());
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                stop_reason,
+                ..
+            } => {
+                assert_eq!(entry_type, "assistant");
+                assert_eq!(stop_reason.as_deref(), Some("end_turn"));
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_system_turn_with_subtype() {
+        let mut turn = make_turn("s1", Role::System);
+        turn.extra.insert(
+            "subtype".to_string(),
+            serde_json::Value::String("turn_duration".to_string()),
+        );
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                ..
+            } => {
+                assert_eq!(entry_type, "system");
+                assert_eq!(subtype.as_deref(), Some("turn_duration"));
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    // ── watcher_event_to_signal: Progress path ──────────────────────
+    //
+    // This is the critical path: system metadata entries (turn_duration,
+    // init, etc.) have no message field, so merging_watcher emits them
+    // as Progress events.  The subtype must be extracted from the data
+    // bag's "subtype" key — NOT "type" (which was consumed during parsing).
+
+    #[test]
+    fn signal_from_system_progress_turn_duration() {
+        let event = WatcherEvent::Progress {
+            kind: "system".to_string(),
+            data: json!({
+                "subtype": "turn_duration",
+                "uuid": "td1",
+                "timestamp": "2024-06-01T12:00:00Z",
+                "durationMs": 1234,
+            }),
+        };
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                stop_reason,
+            } => {
+                assert_eq!(entry_type, "system");
+                assert_eq!(
+                    subtype.as_deref(),
+                    Some("turn_duration"),
+                    "turn_duration subtype must be extracted from Progress data"
+                );
+                assert!(stop_reason.is_none());
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_system_progress_init() {
+        let event = WatcherEvent::Progress {
+            kind: "system".to_string(),
+            data: json!({"subtype": "init", "uuid": "i1", "timestamp": "2024-06-01T12:00:00Z"}),
+        };
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                ..
+            } => {
+                assert_eq!(entry_type, "system");
+                assert_eq!(subtype.as_deref(), Some("init"));
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_agent_progress_has_no_subtype() {
+        let event = WatcherEvent::Progress {
+            kind: "agent_progress".to_string(),
+            data: json!({
+                "uuid": "ap1",
+                "timestamp": "2024-06-01T12:00:00Z",
+                "data": {"type": "agent_progress", "agentId": "a1"},
+            }),
+        };
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                ..
+            } => {
+                assert_eq!(entry_type, "agent_progress");
+                assert!(subtype.is_none(), "agent_progress has no top-level subtype");
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    // ── TurnUpdated produces no signal ──────────────────────────────
+
+    #[test]
+    fn turn_updated_produces_no_signal() {
+        let event = WatcherEvent::TurnUpdated(Box::new(make_turn("u1", Role::Assistant)));
+        assert!(watcher_event_to_signal(&event).is_none());
     }
 }
