@@ -3,12 +3,14 @@
 	import { isActive, isStarting } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
+	import { getDraft, setDraft } from '$lib/stores/drafts';
 	import { voiceBackendOverride } from '$lib/stores/metrics';
 	import { onMount } from 'svelte';
 	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
 	import VoiceVisualizer from './VoiceVisualizer.svelte';
 
-	let message = $state('');
+	// Restore draft from the persisted store (survives instance switches & reloads)
+	let message = $state($currentInstanceId ? getDraft($currentInstanceId) : '');
 	let inputEl: HTMLTextAreaElement;
 
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
@@ -201,6 +203,14 @@
 		message;
 		if (inputEl) {
 			autoResize(inputEl);
+		}
+	});
+
+	// Persist draft to store on every change (survives instance switches & reloads)
+	$effect(() => {
+		const id = $currentInstanceId;
+		if (id) {
+			setDraft(id, message);
 		}
 	});
 </script>
