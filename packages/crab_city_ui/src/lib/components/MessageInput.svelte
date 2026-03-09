@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { sendMessage, connectionStatus, hasPendingInput } from '$lib/stores/websocket';
+	import { sendMessage, connectionStatus, hasPendingInput, reconnect, shutdownReason } from '$lib/stores/websocket';
 	import { isActive, isStarting } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
@@ -13,7 +13,8 @@
 
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
-	let showBanner = $derived(isDisconnected || isReconnecting || $hasPendingInput);
+	let isServerGone = $derived($connectionStatus === 'server_gone');
+	let showBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
 	let showStartupBanner = $derived($isStarting);
 
 	// Queue flash confirmation
@@ -204,7 +205,7 @@
 	});
 </script>
 
-<div class="input-container" class:disconnected={isDisconnected} class:reconnecting={isReconnecting}>
+<div class="input-container" class:disconnected={isDisconnected || isServerGone} class:reconnecting={isReconnecting}>
 	{#if $stagedTask}
 		<div class="staged-banner">
 			<svg class="staged-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -247,8 +248,14 @@
 		</div>
 	{/if}
 	{#if showBanner}
-		<div class="status-banner" class:warning={isDisconnected} class:info={isReconnecting && !isDisconnected}>
-			{#if isDisconnected}
+		<div class="status-banner" class:warning={isDisconnected || isServerGone} class:info={isReconnecting && !isDisconnected && !isServerGone}>
+			{#if isServerGone}
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
+				</svg>
+				<span>{$shutdownReason || 'Server is offline'}</span>
+				<button class="retry-btn" onclick={() => reconnect()}>Retry Now</button>
+			{:else if isDisconnected}
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
 				</svg>
@@ -273,7 +280,7 @@
 			bind:value={message}
 			onkeydown={handleKeydown}
 			oninput={() => inputEl && autoResize(inputEl)}
-			placeholder={isDisconnected ? "Type here — will send when reconnected..." : $isStarting ? "Type here — will queue as task while Claude starts..." : "Message Claude..."}
+			placeholder={isServerGone ? "Server is offline — message will send when it restarts..." : isDisconnected ? "Type here — will send when reconnected..." : $isStarting ? "Type here — will queue as task while Claude starts..." : "Message Claude..."}
 			rows="1"
 			class:voice-draft={showDraftBanner}
 			class:voice-correcting={showCorrectingBanner}
@@ -395,6 +402,27 @@
 	@keyframes spin {
 		from { transform: rotate(0deg); }
 		to { transform: rotate(360deg); }
+	}
+
+	.retry-btn {
+		margin-left: auto;
+		padding: 4px 10px;
+		background: var(--tint-focus);
+		border: 1px solid var(--status-red-border);
+		border-radius: 4px;
+		font-size: 10px;
+		font-weight: 600;
+		font-family: inherit;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--status-red-text);
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.retry-btn:hover {
+		background: var(--status-red-tint);
+		border-color: var(--status-red);
 	}
 
 	.pending-badge {

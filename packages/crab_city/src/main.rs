@@ -746,12 +746,28 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             info!("Server restarted on http://{}", actual_addr);
         }
 
-        // Create shutdown signal handler
-        let shutdown_signal = async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
-            info!("Received shutdown signal, cleaning up...");
+        // Create shutdown signal handler (SIGINT from Ctrl-C, SIGTERM from `stop_daemon`)
+        let shutdown_gsm = global_state_manager.clone();
+        let shutdown_signal = async move {
+            let ctrl_c = tokio::signal::ctrl_c();
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("Failed to install SIGTERM handler");
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.expect("Failed to install Ctrl+C handler");
+            }
+            info!("Received shutdown signal, notifying clients...");
+            shutdown_gsm.broadcast_lifecycle(ws::ServerMessage::Shutdown {
+                reason: "Server shutting down".to_string(),
+            });
         };
 
         // Race: serve vs restart signal

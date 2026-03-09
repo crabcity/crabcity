@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
-	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence } from '$lib/stores/websocket';
+	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence, reconnect, shutdownReason } from '$lib/stores/websocket';
 	import { currentTerminalHasOutput, consumeTerminalOutput } from '$lib/stores/terminal';
 	import { currentInstanceId, consumeTerminalFocus } from '$lib/stores/instances';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
@@ -54,7 +54,8 @@
 	// Derived state for showing status banner
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
-	let showStatusBanner = $derived(isDisconnected || isReconnecting || $hasPendingInput);
+	let isServerGone = $derived($connectionStatus === 'server_gone');
+	let showStatusBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
 
 	// Multi-user lock state
 	let presence = $derived($currentInstanceId ? $instancePresence.get($currentInstanceId) ?? [] : []);
@@ -247,8 +248,14 @@
 		</div>
 	{/if}
 	{#if showStatusBanner && isReady}
-		<div class="status-banner" class:warning={isDisconnected} class:info={isReconnecting && !isDisconnected}>
-			{#if isDisconnected}
+		<div class="status-banner" class:warning={isDisconnected || isServerGone} class:info={isReconnecting && !isDisconnected && !isServerGone}>
+			{#if isServerGone}
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
+				</svg>
+				<span>{$shutdownReason || 'Server is offline'} — will reconnect automatically when it restarts</span>
+				<button class="retry-btn" onclick={() => reconnect()}>Retry Now</button>
+			{:else if isDisconnected}
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
 				</svg>
@@ -388,6 +395,27 @@
 
 	.spinner-icon {
 		animation: spin 1s linear infinite;
+	}
+
+	.retry-btn {
+		margin-left: auto;
+		padding: 4px 10px;
+		background: var(--tint-focus);
+		border: 1px solid var(--status-red-border);
+		border-radius: 4px;
+		font-size: 10px;
+		font-weight: 600;
+		font-family: inherit;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--status-red-text);
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.retry-btn:hover {
+		background: var(--status-red-tint);
+		border-color: var(--status-red);
 	}
 
 	.pending-badge {

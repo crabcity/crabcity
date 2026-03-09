@@ -92,6 +92,10 @@ When adding new real-time features:
 2. Handle it in `ws/handler.rs` (server side)
 3. Handle it in `stores/ws-handlers.ts` (client side)
 
+### Graceful Shutdown
+
+On SIGTERM/Ctrl-C the server broadcasts `ServerMessage::Shutdown { reason }` to all connected WebSocket clients before draining. Clients that receive this immediately transition to `server_gone` state. Clients that were not connected at shutdown time detect the server is gone after 3 consecutive failed reconnect attempts (~7 seconds) and escalate from `reconnecting` to `server_gone`. Reconnection continues in the background — if the server restarts, the client recovers automatically.
+
 ## State Detection Pipeline
 
 Claude's state (idle, thinking, tool use, streaming) is detected by two complementary systems:

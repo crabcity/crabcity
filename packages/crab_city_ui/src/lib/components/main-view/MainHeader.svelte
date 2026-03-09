@@ -42,7 +42,7 @@
 		switch (status) {
 			case 'connected': return '#10b981';
 			case 'connecting': case 'reconnecting': return '#f59e0b';
-			case 'error': return '#ef4444';
+			case 'error': case 'server_gone': return '#ef4444';
 			default: return '#6b7280';
 		}
 	}
@@ -51,7 +51,9 @@
 		switch (status) {
 			case 'connected': return 'Link Active';
 			case 'connecting': return 'Connecting...';
-			case 'reconnecting': case 'error': return 'Signal Lost';
+			case 'reconnecting': return 'Signal Lost';
+			case 'server_gone': return 'Server Offline';
+			case 'error': return 'Signal Lost';
 			default: return 'No Signal';
 		}
 	}
@@ -61,7 +63,7 @@
 
 	$effect(() => {
 		const status = $connectionStatus;
-		if (status === 'connected' && (prevConnectionStatus === 'error' || prevConnectionStatus === 'reconnecting')) {
+		if (status === 'connected' && (prevConnectionStatus === 'error' || prevConnectionStatus === 'reconnecting' || prevConnectionStatus === 'server_gone')) {
 			showRestored = true;
 			setTimeout(() => { showRestored = false; }, 2000);
 		}
@@ -104,7 +106,8 @@
 		{/if}
 		<span
 			class="connection-status"
-			class:signal-lost={$connectionStatus === 'error' || $connectionStatus === 'reconnecting' || $connectionStatus === 'disconnected'}
+			class:signal-lost={$connectionStatus === 'error' || $connectionStatus === 'reconnecting' || $connectionStatus === 'disconnected' || $connectionStatus === 'server_gone'}
+			class:server-offline={$connectionStatus === 'server_gone'}
 			class:signal-restored={showRestored}
 			style="color: {getStatusColor($connectionStatus)}"
 		>
@@ -313,8 +316,13 @@
 		font-family: var(--font-mono);
 	}
 
-	.connection-status.signal-lost {
+	.connection-status.signal-lost:not(.server-offline) {
 		animation: signal-pulse 1.5s ease-in-out infinite;
+	}
+
+	/* Server offline: steady red, no pulsing — this isn't transient */
+	.connection-status.server-offline {
+		animation: none;
 	}
 
 	@keyframes signal-pulse {

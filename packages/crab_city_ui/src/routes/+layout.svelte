@@ -364,6 +364,15 @@
 		--ambient-tint: rgba(251, 191, 36, 0.01);
 	}
 
+	/* Server offline — more muted than transient disconnection */
+	:global([data-connection="server_gone"]) {
+		--amber-glow: rgba(251, 146, 60, 0.08);
+		--amber-glow-strong: rgba(251, 146, 60, 0.15);
+		--ambient-scanline-opacity: 0.18;
+		--ambient-glow: rgba(251, 146, 60, 0.1);
+		--ambient-tint: rgba(0, 0, 0, 0.05);
+	}
+
 	/* ==========================================================================
 	   ANALOG THEME — Ink on Paper
 	   Material shift: phosphor screen → printed page
@@ -539,6 +548,13 @@
 		--amber-glow-strong: rgba(106, 85, 16, 0.12);
 		--ambient-glow: rgba(106, 85, 16, 0.06);
 		--ambient-tint: rgba(106, 85, 16, 0.01);
+	}
+
+	:global([data-theme="analog"][data-connection="server_gone"]) {
+		--amber-glow: rgba(42, 31, 24, 0.02);
+		--amber-glow-strong: rgba(42, 31, 24, 0.04);
+		--ambient-glow: rgba(42, 31, 24, 0.02);
+		--ambient-tint: rgba(20, 18, 16, 0.03);
 	}
 
 	/* Analog: font family swap — serif for body, keep mono for code */
