@@ -19,6 +19,29 @@ use crate::repository::ConversationRepository;
 use super::session_discovery::find_candidate_sessions;
 use super::state_manager::{ConversationBroadcast, ConversationEvent, GlobalStateManager};
 
+/// Check if a state signal is a text-only assistant entry (no tool uses, no subtype).
+/// These can be mid-turn explanatory text and need special handling to avoid
+/// green flashes — see `docs/state-inference.md` §"Why Text-Only Assistant
+/// Signals Are Deferred".
+fn is_text_only_assistant(signal: &StateSignal) -> bool {
+    matches!(
+        signal,
+        StateSignal::ConversationEntry {
+            entry_type,
+            tool_names,
+            subtype: None,
+            ..
+        } if entry_type == "assistant" && tool_names.is_empty()
+    )
+}
+
+/// Check if a watcher event is substantive (a conversation Turn or TurnUpdated,
+/// as opposed to a Progress metadata event). Used to decide whether a held
+/// text-only signal was mid-turn or turn-ending.
+fn is_substantive_event(event: &WatcherEvent) -> bool {
+    matches!(event, WatcherEvent::Turn(_) | WatcherEvent::TurnUpdated(_))
+}
+
 /// Extract a state signal from a WatcherEvent.
 fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
     match event {
@@ -358,6 +381,13 @@ pub async fn run_server_conversation_watcher(
     // Poll loop
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
 
+    // Text-only assistant signals are held for one poll cycle before being
+    // sent. If the next poll brings substantive events (Turn/TurnUpdated),
+    // the text was mid-turn — discard it. If the next poll is empty or has
+    // only progress events, it was turn-ending — send it.
+    // See docs/state-inference.md §"Why Text-Only Assistant Signals Are Deferred".
+    let mut held_text_only: Option<StateSignal> = None;
+
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -372,13 +402,46 @@ pub async fn run_server_conversation_watcher(
                             instance_id, events.len()
                         );
 
-                        // Signal state manager for each event
-                        for event in &events {
-                            if let Some(signal) = watcher_event_to_signal(event)
-                                && signal_tx.send(signal).await.is_err()
-                            {
+                        // Resolve held text-only signal from previous poll.
+                        // If substantive events arrived, the text was mid-turn.
+                        // If only progress/metadata events, the text was turn-ending.
+                        if let Some(held) = held_text_only.take() {
+                            if events.iter().any(is_substantive_event) {
+                                debug!(
+                                    "[SERVER-CONVO {}] Discarding held text-only signal (new events arrived)",
+                                    instance_id
+                                );
+                            } else if signal_tx.send(held).await.is_err() {
                                 warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
                                 return;
+                            }
+                        }
+
+                        // Signal state manager for each event, with text-only
+                        // assistant deferral to prevent mid-turn green flashes.
+                        for (i, event) in events.iter().enumerate() {
+                            if let Some(signal) = watcher_event_to_signal(event) {
+                                if is_text_only_assistant(&signal) {
+                                    // Suppress if a substantive event follows in this batch
+                                    if events[i + 1..].iter().any(is_substantive_event) {
+                                        debug!(
+                                            "[SERVER-CONVO {}] Suppressing text-only assistant (followed by more events)",
+                                            instance_id
+                                        );
+                                        continue;
+                                    }
+                                    // Last in batch — hold for next poll cycle
+                                    debug!(
+                                        "[SERVER-CONVO {}] Holding text-only assistant for next poll",
+                                        instance_id
+                                    );
+                                    held_text_only = Some(signal);
+                                    continue;
+                                }
+                                if signal_tx.send(signal).await.is_err() {
+                                    warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
+                                    return;
+                                }
                             }
                         }
 
@@ -476,7 +539,20 @@ pub async fn run_server_conversation_watcher(
                     Err(e) => {
                         warn!("[SERVER-CONVO {}] Poll error: {}", instance_id, e);
                     }
-                    _ => {}
+                    _ => {
+                        // Empty poll — if we held a text-only signal, the turn
+                        // is over (no more entries coming). Send it now.
+                        if let Some(held) = held_text_only.take() {
+                            debug!(
+                                "[SERVER-CONVO {}] Sending held text-only signal (empty poll)",
+                                instance_id
+                            );
+                            if signal_tx.send(held).await.is_err() {
+                                warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
+                                return;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -958,5 +1034,91 @@ mod tests {
             }
             _ => panic!("Expected ConversationEntry"),
         }
+    }
+
+    // ── is_text_only_assistant helper ─────────────────────────────────
+
+    #[test]
+    fn text_only_assistant_detected() {
+        let signal = StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec![],
+        };
+        assert!(is_text_only_assistant(&signal));
+    }
+
+    #[test]
+    fn assistant_with_tools_not_text_only() {
+        let signal = StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["Read".to_string()],
+        };
+        assert!(!is_text_only_assistant(&signal));
+    }
+
+    #[test]
+    fn user_signal_not_text_only_assistant() {
+        let signal = StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        };
+        assert!(!is_text_only_assistant(&signal));
+    }
+
+    #[test]
+    fn system_signal_not_text_only_assistant() {
+        let signal = StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        };
+        assert!(!is_text_only_assistant(&signal));
+    }
+
+    #[test]
+    fn terminal_output_not_text_only_assistant() {
+        let signal = StateSignal::TerminalOutput {
+            data: "hello".to_string(),
+        };
+        assert!(!is_text_only_assistant(&signal));
+    }
+
+    // ── is_substantive_event helper ──────────────────────────────────
+
+    #[test]
+    fn turn_is_substantive() {
+        let event = WatcherEvent::Turn(Box::new(make_turn("u1", Role::User)));
+        assert!(is_substantive_event(&event));
+    }
+
+    #[test]
+    fn turn_updated_is_substantive() {
+        let event = WatcherEvent::TurnUpdated(Box::new(make_turn("a1", Role::Assistant)));
+        assert!(is_substantive_event(&event));
+    }
+
+    #[test]
+    fn progress_is_not_substantive() {
+        let event = WatcherEvent::Progress {
+            kind: "progress".to_string(),
+            data: json!({}),
+        };
+        assert!(!is_substantive_event(&event));
+    }
+
+    #[test]
+    fn system_progress_is_not_substantive() {
+        let event = WatcherEvent::Progress {
+            kind: "system".to_string(),
+            data: json!({"subtype": "turn_duration"}),
+        };
+        assert!(!is_substantive_event(&event));
     }
 }

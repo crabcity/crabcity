@@ -161,7 +161,7 @@ pub enum StateSignal {
 |---|---|---|
 | `ConversationEntry(user)` | **Yes** → `Thinking` | Authoritative: user submitted a message |
 | `ConversationEntry(system, turn_duration)` | **Yes** → `WaitingForInput` (definitive) | Authoritative: turn is over |
-| `ConversationEntry(assistant, no tools)` | **Yes** → `WaitingForInput` (non-definitive) | Text-only response — turn is ending |
+| `ConversationEntry(assistant, no tools)` | **Deferred** → `WaitingForInput` (non-definitive) | Text-only — held one poll cycle; suppressed if more entries follow |
 | `ConversationEntry(assistant, interactive tool)` | **Yes** → `WaitingForInput` (non-definitive) | Claude is asking the user something |
 | `ConversationEntry(assistant, non-interactive tools)` | **No** | Mid-turn — prevents flickering between tool calls |
 | `TerminalOutput` (with tool pattern) | **Yes** → `ToolExecuting` | Fast heuristic feedback (unless definitive idle) |
@@ -214,13 +214,18 @@ pub enum StateSignal {
    - Sets `definitive_idle = false`
    - Indicates the user submitted a message (or answered a tool prompt)
 
-3. `entry_type == "assistant"` + no tool uses (`tool_names` empty) or interactive tool:
+3. `entry_type == "assistant"` + interactive tool (AskUserQuestion, etc.):
    - → `WaitingForInput { prompt: None }` (tentative, not definitive)
    - Sets `definitive_idle = false`
    - Clears `current_tool`
-   - Text-only = turn ending, interactive = needs user input
 
-4. `entry_type == "assistant"` + non-interactive tools only:
+4. `entry_type == "assistant"` + no tool uses (`tool_names` empty):
+   - **Deferred** — the signal is held for one poll cycle by the conversation
+     watcher. If the next poll brings more entries, the signal is suppressed
+     (it was mid-turn text). If the next poll is empty, the signal is sent →
+     `WaitingForInput` (tentative). See [mid-turn text handling](#why-text-only-assistant-signals-are-deferred).
+
+5. `entry_type == "assistant"` + non-interactive tools only:
    - **No state change** (this is critical — see [flickering prevention](#why-non-interactive-tool-entries-dont-change-state))
 
 **TerminalOutput signals (heuristic):**
@@ -268,9 +273,10 @@ only non-interactive tool uses, the state manager does NOT change state — this
 a mid-turn signal (tool results will follow, then another API call). Terminal
 heuristics handle the `ToolExecuting` display.
 
-**No tools** (text-only assistant entries) mean the model chose to stop
-generating. This transitions to `WaitingForInput` (tentative) because the turn
-is ending. `turn_duration` later confirms it definitively.
+**No tools** (text-only assistant entries) can mean the model finished
+responding OR can be mid-turn explanatory text (see [claude-jsonl-protocol.md
+§3](claude-jsonl-protocol.md#3-assistant-entries-are-written-per-content-block-not-per-api-call)).
+The signal is **deferred** for one poll cycle before being applied.
 
 ### Why This Three-Way Split Matters
 
@@ -279,9 +285,9 @@ is ending. `turn_duration` later confirms it definitively.
 - **Read/Bash/etc.** → no state change: The agentic loop continues. Without
   this, the UI would briefly flash "ready" between each tool call in a
   10-tool sequence — a distracting flickering effect.
-- **Text-only** → `WaitingForInput`: Claude finished responding. Without this,
-  the UI would stay "verbing..." after Claude is done if `turn_duration` is
-  delayed or arrives in a later poll.
+- **Text-only** → deferred `WaitingForInput`: May be turn-ending OR mid-turn.
+  Held for one poll cycle to prevent green flashes from mid-turn text. If no
+  more entries arrive, applied as tentative WaitingForInput.
 
 ## Definitive vs Tentative Idle
 
@@ -290,7 +296,9 @@ can override a `WaitingForInput` state.
 
 ### Definitive Idle
 
-Set by: `turn_duration` system entry (the only source).
+Set by: `turn_duration` system entry (the only source). Note: `turn_duration` is
+not always present — see [claude-jsonl-protocol.md
+§2](claude-jsonl-protocol.md#2-turn_duration-is-not-always-present).
 
 Behavior: Terminal output with tool patterns (e.g. `Read(`) is **ignored**. This
 prevents false positives when Claude's response text mentions tool names after
@@ -408,10 +416,40 @@ The fix: assistant entries with **only non-interactive tools** cause **no state
 change**. The state stays at whatever the terminal heuristics set it to (usually
 `ToolExecuting` or `Responding`).
 
-Assistant entries with **no tool uses** (text-only final responses) DO transition
-to `WaitingForInput` because they signal the model stopped generating — the turn
-is ending. This is a tentative idle that `turn_duration` later confirms as
-definitive.
+Assistant entries with **no tool uses** (text-only) are handled separately — see
+the next section.
+
+### Why Text-Only Assistant Signals Are Deferred
+
+Claude Code writes separate JSONL entries for thinking, text, and tool_use
+content blocks within a single API response. This means text-only assistant
+entries can appear **mid-turn** as explanatory text between tool batches:
+
+```
+assistant  |                              ← thinking (empty, text-only)
+assistant  | Let me find some files...    ← explanatory text (text-only)
+assistant  tools=['Glob'] |               ← tool_use (has tools)
+...
+assistant  | Now let me read the files... ← explanatory text (text-only)
+assistant  tools=['Read'] |               ← tool_use
+...
+assistant  | Here are the results...      ← final response (text-only)
+```
+
+If text-only entries immediately set `WaitingForInput`, the UI would flash
+green between tool batches — every time Claude writes an explanatory message.
+
+However, text-only entries are also the primary end-of-turn signal when
+`turn_duration` is absent (which is common in short sessions). So we can't
+ignore them entirely.
+
+The fix: the **conversation watcher defers** text-only assistant signals by
+one poll cycle (500ms). If the next poll brings more entries, the text was
+mid-turn — the held signal is discarded. If the next poll is empty, the text
+was turn-ending — the signal is sent to the state manager.
+
+This adds at most 500ms delay to showing "ready" at end of turn, which is
+imperceptible to users and eliminates green flashes entirely.
 
 ### Why TurnUpdated Emits a User Signal
 

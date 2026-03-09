@@ -291,25 +291,31 @@ A typical conversation turn follows this sequence in the JSONL:
 
 ```
 1. user       → User sends initial prompt
-2. assistant  → Claude responds with text + tool_use
-3. user       → Tool result(s) (tool_result_only, no human text)
-4. assistant  → Claude continues with more text/tools
-5. user       → More tool results
-6. assistant  → Final response (text only, no tool_use)
-7. system     → turn_duration (end of turn)
+2. assistant  → Claude thinking (empty/extended thinking text)
+3. assistant  → Claude explanatory text ("Let me find some files...")
+4. assistant  → Claude responds with tool_use (e.g., Glob)
+5. user       → Tool result(s) (tool_result_only, no human text)
+6. assistant  → Claude explanatory text ("Now let me read...")
+7. assistant  → Claude responds with tool_use (e.g., Read)
+8. user       → More tool results
+9. assistant  → Final response (text only, e.g., summary table)
+10. system    → turn_duration (end of turn) — NOT ALWAYS PRESENT
 ```
 
 ### Key Observations
 
-- **Multiple assistant entries per agentic turn**: Each API call produces a
-  separate `assistant` entry. A turn that uses 5 tools will have multiple
-  assistant + user entry pairs.
+- **Multiple assistant entries per API call**: Claude Code writes **separate
+  JSONL entries** for thinking blocks, text blocks, and tool_use blocks from
+  the same API response. A single API call can produce 2-3 assistant entries.
+- **Text-only assistant entries appear mid-turn**: Explanatory text between
+  tool batches (e.g., "Now let me read the files...") is a text-only assistant
+  entry followed by a tool_use assistant entry. These are NOT turn-ending.
 - **Tool results arrive as `user` entries**: The Messages API requires tool
   results under the `user` role. These user entries contain only `tool_result`
   content parts and no human-authored text.
-- **`turn_duration` marks the true end of a turn**: This system entry appears
-  only when Claude is genuinely done with the entire turn -- after all tool
-  calls, all API roundtrips, and any follow-up reasoning.
+- **`turn_duration` is NOT always present**: This system entry often appears
+  only in long-running sessions. Short sessions (single-turn interactions)
+  frequently lack `turn_duration` entirely. See the edge case below.
 
 ---
 
@@ -420,11 +426,15 @@ let stop_reason = turn.stop_reason.clone().or_else(|| {
 });
 ```
 
-### 2. `turn_duration` is the ONLY Reliable End-of-Turn Signal
+### 2. `turn_duration` is NOT Always Present
 
-Since `stop_reason` is null, the `system` entry with `subtype: "turn_duration"`
-is the **sole authoritative signal** that a complete turn has ended. It appears
-after:
+The `system` entry with `subtype: "turn_duration"` is the most authoritative
+end-of-turn signal, but it is **not reliably present in all sessions**.
+Empirically, short sessions and single-turn interactions often lack
+`turn_duration` entirely. It appears reliably only in long-running sessions
+with multiple turns.
+
+When present, `turn_duration` appears after:
 - All tool calls in the agentic loop have completed
 - All API roundtrips are done
 - Claude has produced its final response
@@ -434,16 +444,29 @@ terminal heuristics (tool pattern matching) cannot override the WaitingForInput
 state. This prevents false positives from tool names appearing in Claude's text
 output (e.g., "I used Read(file) to check the contents").
 
-### 3. Assistant Entries are Written Mid-Stream
+**Implication**: The codebase cannot rely on `turn_duration` as the sole idle
+signal. It must also use heuristics (text-only assistant entries, terminal
+inactivity) to detect turn completion when `turn_duration` is absent.
 
-During an agentic turn, multiple `assistant` entries appear -- one per API call.
-Each assistant entry means "this API call completed," but does NOT mean the
-overall turn is finished. Claude may continue with more tool calls.
+### 3. Assistant Entries are Written Per Content Block, Not Per API Call
 
-The state manager treats each assistant entry as "tentative idle"
-(WaitingForInput). Terminal heuristics CAN override tentative idle, which allows
-non-interactive tools (Read, Bash) to show as `ToolExecuting` between the
-assistant entry and the tool's completion.
+Claude Code writes **separate JSONL entries for each content block** in an API
+response. A single API call that produces thinking + text + tool_use generates
+three assistant entries:
+
+```
+assistant  |                              ← thinking/extended thinking (empty text)
+assistant  | Let me find some files...    ← explanatory text
+assistant  tools=['Glob'] |               ← tool_use
+```
+
+This means **text-only assistant entries can appear mid-turn**. An entry with no
+`tool_use` blocks does NOT necessarily mean the turn is over — it could be
+explanatory text between tool batches. The only reliable distinction is temporal:
+if no further entries arrive after a text-only assistant, the turn is likely over.
+
+The state manager handles this by holding text-only assistant signals for one
+poll cycle before applying them, allowing subsequent entries to suppress them.
 
 ### 4. Tool-Result-Only User Entries are Not Standalone Turns
 
