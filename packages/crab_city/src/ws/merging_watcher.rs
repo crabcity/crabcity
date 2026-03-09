@@ -513,4 +513,120 @@ mod tests {
             panic!("Expected TurnUpdated");
         }
     }
+
+    /// Verify that the REAL Claude Code JSONL format (stop_reason: null) produces
+    /// a Turn with stop_reason: None.  The downstream watcher_event_to_signal
+    /// infers end_turn/tool_use from the Turn's tool_uses field.
+    #[test]
+    fn real_jsonl_null_stop_reason_produces_none() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let claude_dir = temp.path().join(".claude");
+
+        // Real Claude Code format: stop_reason is always null in the message
+        let entries = vec![
+            r#"{"uuid":"u1","type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}"#,
+            r#"{"uuid":"a1","type":"assistant","timestamp":"2024-01-01T00:00:01Z","message":{"role":"assistant","content":"Hi there!","stop_reason":null,"stop_sequence":null}}"#,
+        ];
+        create_test_jsonl(&claude_dir, "s1", &entries);
+
+        let mut watcher = MergingWatcher::new(
+            test_manager(&claude_dir),
+            "/test/project".into(),
+            "s1".into(),
+        );
+
+        let events = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+        let assistant_turn = events.iter().find_map(|e| match e {
+            WatcherEvent::Turn(t) if t.role == Role::Assistant => Some(t),
+            _ => None,
+        });
+
+        let turn = assistant_turn.expect("Expected an assistant Turn");
+        assert!(
+            turn.stop_reason.is_none(),
+            "Real JSONL null stop_reason must produce None (not Some(\"null\"))"
+        );
+        assert!(
+            turn.tool_uses.is_empty(),
+            "Text-only assistant entry should have no tool_uses"
+        );
+    }
+
+    /// Verify that stop_reason from assistant entries makes it through to_turn().
+    #[test]
+    fn assistant_turn_carries_stop_reason() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let claude_dir = temp.path().join(".claude");
+
+        let entries = vec![
+            r#"{"uuid":"u1","type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}"#,
+            r#"{"uuid":"a1","type":"assistant","timestamp":"2024-01-01T00:00:01Z","message":{"role":"assistant","content":"Hi there!","stop_reason":"end_turn"}}"#,
+        ];
+        create_test_jsonl(&claude_dir, "s1", &entries);
+
+        let mut watcher = MergingWatcher::new(
+            test_manager(&claude_dir),
+            "/test/project".into(),
+            "s1".into(),
+        );
+
+        let events = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+        let assistant_turn = events.iter().find_map(|e| match e {
+            WatcherEvent::Turn(t) if t.role == Role::Assistant => Some(t),
+            _ => None,
+        });
+
+        let turn = assistant_turn.expect("Expected an assistant Turn");
+        assert_eq!(
+            turn.stop_reason.as_deref(),
+            Some("end_turn"),
+            "stop_reason must propagate through to_turn() into turn.stop_reason"
+        );
+    }
+
+    /// Verify that system/turn_duration JSONL entries produce a Progress event
+    /// with "subtype" in the data bag (not "type", which is consumed during parsing).
+    #[test]
+    fn system_turn_duration_progress_data_shape() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let claude_dir = temp.path().join(".claude");
+
+        let entries = vec![
+            r#"{"uuid":"u1","type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}"#,
+            r#"{"uuid":"a1","type":"assistant","timestamp":"2024-01-01T00:00:01Z","message":{"role":"assistant","content":"Hi","stop_reason":"end_turn"}}"#,
+            r#"{"uuid":"td1","type":"system","subtype":"turn_duration","timestamp":"2024-01-01T00:00:02Z","durationMs":1234,"costUSD":0.05}"#,
+        ];
+        create_test_jsonl(&claude_dir, "s1", &entries);
+
+        let mut watcher = MergingWatcher::new(
+            test_manager(&claude_dir),
+            "/test/project".into(),
+            "s1".into(),
+        );
+
+        let events = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+
+        let system_progress = events
+            .iter()
+            .find(|e| matches!(e, WatcherEvent::Progress { kind, .. } if kind == "system"));
+
+        assert!(
+            system_progress.is_some(),
+            "Expected a Progress event with kind='system'"
+        );
+
+        if let WatcherEvent::Progress { kind, data } = system_progress.unwrap() {
+            assert_eq!(kind, "system");
+            // "subtype" must be in the data bag (not "type" — consumed during parsing)
+            assert_eq!(
+                data.get("subtype").and_then(|v| v.as_str()),
+                Some("turn_duration"),
+                "subtype must be extractable from Progress data"
+            );
+            assert!(
+                data.get("type").is_none(),
+                "'type' key should NOT be in Progress data (consumed into entry_type)"
+            );
+        }
+    }
 }
