@@ -70,24 +70,21 @@ impl MergingWatcher {
         result: ToolResult,
     ) -> bool {
         for event in events.iter_mut().rev() {
-            if let WatcherEvent::Turn(turn) | WatcherEvent::TurnUpdated(turn) = event {
-                if let Some(inv) = turn
+            if let WatcherEvent::Turn(turn) | WatcherEvent::TurnUpdated(turn) = event
+                && let Some(inv) = turn
                     .tool_uses
                     .iter_mut()
                     .find(|tu| tu.id == tool_use_id && tu.result.is_none())
+            {
+                inv.result = Some(result.clone());
+                // Keep emitted_turns in sync
+                if let Some(stored) = self.emitted_turns.get_mut(&turn.id)
+                    && let Some(sinv) = stored.tool_uses.iter_mut().find(|tu| tu.id == tool_use_id)
                 {
-                    inv.result = Some(result.clone());
-                    // Keep emitted_turns in sync
-                    if let Some(stored) = self.emitted_turns.get_mut(&turn.id) {
-                        if let Some(sinv) =
-                            stored.tool_uses.iter_mut().find(|tu| tu.id == tool_use_id)
-                        {
-                            sinv.result = Some(result);
-                        }
-                    }
-                    self.pending_tool_uses.remove(tool_use_id);
-                    return true;
+                    sinv.result = Some(result);
                 }
+                self.pending_tool_uses.remove(tool_use_id);
+                return true;
             }
         }
         false
@@ -96,14 +93,13 @@ impl MergingWatcher {
     /// Re-derive delegation results for a turn after tool results were merged.
     fn update_delegation_results(turn: &mut Turn) {
         for delegation in &mut turn.delegations {
-            if delegation.result.is_none() {
-                if let Some(tu) = turn
+            if delegation.result.is_none()
+                && let Some(tu) = turn
                     .tool_uses
                     .iter()
                     .find(|tu| tu.id == delegation.agent_id)
-                {
-                    delegation.result = tu.result.as_ref().map(|r| r.content.clone());
-                }
+            {
+                delegation.result = tu.result.as_ref().map(|r| r.content.clone());
             }
         }
     }
@@ -157,17 +153,17 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
                     }
 
                     // Cross-poll merge: find the turn that had this tool_use
-                    if let Some(turn_id) = self.pending_tool_uses.remove(&tool_use_id) {
-                        if let Some(stored) = self.emitted_turns.get_mut(&turn_id) {
-                            if let Some(inv) =
-                                stored.tool_uses.iter_mut().find(|tu| tu.id == tool_use_id)
-                            {
-                                inv.result = Some(result);
-                            }
-                            Self::update_delegation_results(stored);
-                            if !cross_poll_updated.contains(&turn_id) {
-                                cross_poll_updated.push(turn_id);
-                            }
+                    if let Some(turn_id) = self.pending_tool_uses.remove(&tool_use_id)
+                        && let Some(stored) = self.emitted_turns.get_mut(&turn_id)
+                    {
+                        if let Some(inv) =
+                            stored.tool_uses.iter_mut().find(|tu| tu.id == tool_use_id)
+                        {
+                            inv.result = Some(result);
+                        }
+                        Self::update_delegation_results(stored);
+                        if !cross_poll_updated.contains(&turn_id) {
+                            cross_poll_updated.push(turn_id);
                         }
                     }
                     // If no match found anywhere, silently drop

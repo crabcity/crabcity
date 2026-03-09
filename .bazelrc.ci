@@ -1,0 +1,5 @@
+# CI-specific Bazel settings
+# Usage: bazel --bazelrc=.bazelrc.ci <command> ...
+#
+# Cache paths are managed by bazel-contrib/setup-bazel in GitHub Actions.
+# This file holds non-cache CI overrides only.

@@ -14,6 +14,7 @@
 #   --all-files        Show coverage for all files (not just worst)
 #   --skip-tests       Skip running tests, use existing coverage data
 #   --check PCT        Check coverage meets threshold, exit 1 if below (for CI)
+#   --verbose          Stream bazel output live (useful for CI)
 #   --quiet            Suppress normal output (useful with --check)
 #   --exclude PATTERN  Exclude files matching regex from threshold check (repeatable)
 #   --targets PATTERN  Bazel target pattern to test (default: auto-discover rust_test targets)
@@ -43,6 +44,7 @@ _all_files=0
 _skip_tests=0
 _check_threshold=""
 _quiet=0
+_verbose=0
 _exclude_patterns=""
 _targets=""
 
@@ -56,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --skip-tests)  _skip_tests=1; shift ;;
         --check)       _check_threshold="$2"; shift 2 ;;
         --quiet)       _quiet=1; shift ;;
+        --verbose)     _verbose=1; shift ;;
         --exclude)     _exclude_patterns="${_exclude_patterns:+$_exclude_patterns|}$2"; shift 2 ;;
         --targets)     _targets="$2"; shift 2 ;;
         --help|-h)     _help=1; shift ;;
@@ -134,9 +137,15 @@ if [[ $_skip_tests -eq 0 ]]; then
     trap 'rm -f "$_stats" "$_bazel_log"' EXIT
 
     # shellcheck disable=SC2086
-    if ! bazel coverage $_targets $_bazel_extra >"$_bazel_log" 2>&1; then
-        cat "$_bazel_log" >&2
-        exit 1
+    if [[ $_verbose -eq 1 ]]; then
+        if ! bazel coverage $_targets $_bazel_extra 2>&1 | tee "$_bazel_log"; then
+            exit 1
+        fi
+    else
+        if ! bazel coverage $_targets $_bazel_extra >"$_bazel_log" 2>&1; then
+            cat "$_bazel_log" >&2
+            exit 1
+        fi
     fi
 fi
 

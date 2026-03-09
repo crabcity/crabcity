@@ -7,14 +7,15 @@
 #
 # Gates: format, clippy, test, coverage
 # No args runs all gates. Prefix with - to exclude a gate.
-# When coverage runs, test is skipped (coverage subsumes it).
+# Coverage subsumes test; test and coverage include clippy automatically.
 #
 # Options:
 #   --verbose    Stream all output (useful for CI)
 #
 # Examples:
-#   scripts/quality_gates.sh              # all gates (format clippy coverage)
-#   scripts/quality_gates.sh test         # just tests
+#   scripts/quality_gates.sh              # all gates (format + coverage+clippy)
+#   scripts/quality_gates.sh test         # just tests (+clippy)
+#   scripts/quality_gates.sh clippy       # just clippy (standalone)
 #   scripts/quality_gates.sh -coverage    # format clippy test
 #   scripts/quality_gates.sh --verbose    # all gates, full output
 #
@@ -46,15 +47,19 @@ gate_format() {
 }
 
 gate_clippy() {
-    cargo clippy --all 2>&1
+    bazel build //... --config=clippy $_bazel_extra 2>&1
 }
 
 gate_test() {
-    bazel test //... --test_output=errors $_bazel_extra 2>&1
+    local test_output=errors
+    [[ $_verbose -eq 1 ]] && test_output=all
+    bazel test //... --config=clippy --test_output=$test_output $_bazel_extra 2>&1
 }
 
 gate_coverage() {
-    scripts/coverage.sh --check 75 2>&1
+    local verbose_flag=""
+    [[ $_verbose -eq 1 ]] && verbose_flag="--verbose"
+    BAZEL_EXTRA_ARGS="--config=clippy ${BAZEL_EXTRA_ARGS:-}" scripts/coverage.sh --check 75 $verbose_flag 2>&1
 }
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -144,12 +149,22 @@ if [[ ${#excludes[@]} -gt 0 ]]; then
     gates=("${filtered[@]}")
 fi
 
-# Coverage subsumes test — skip test when both are present
+# Coverage subsumes test — skip test when both are present.
+# Test and coverage subsume clippy — skip standalone clippy when either runs.
 _has_gate() { for g in "${gates[@]}"; do [[ "$g" == "$1" ]] && return 0; done; return 1; }
+subsumed=()
 if _has_gate test && _has_gate coverage; then
     filtered=()
     for g in "${gates[@]}"; do [[ "$g" != "test" ]] && filtered+=("$g"); done
     gates=("${filtered[@]}")
+    subsumed+=("test via coverage")
+fi
+if _has_gate clippy && { _has_gate test || _has_gate coverage; }; then
+    local_host="test"; _has_gate coverage && local_host="coverage"
+    filtered=()
+    for g in "${gates[@]}"; do [[ "$g" != "clippy" ]] && filtered+=("$g"); done
+    gates=("${filtered[@]}")
+    subsumed+=("clippy via $local_host")
 fi
 
 # ── Run gates ─────────────────────────────────────────────────────────────────
@@ -157,7 +172,25 @@ fi
 passed=0
 total=${#gates[@]}
 
-echo "${_bld}Running: ${gates[*]}${_rst} ${_dim}(skip with -gate, e.g. -coverage)${_rst}"
+# Test and coverage always include clippy — note it even if clippy wasn't requested.
+# Skip if clippy was already noted as subsumed above.
+_has_subsumed_clippy=0
+for s in "${subsumed[@]+"${subsumed[@]}"}"; do [[ "$s" == clippy* ]] && _has_subsumed_clippy=1 && break; done
+if [[ $_has_subsumed_clippy -eq 0 ]] && ! _has_gate clippy; then
+    if _has_gate test && ! _has_gate coverage; then
+        subsumed+=("clippy via test")
+    elif _has_gate coverage; then
+        subsumed+=("clippy via coverage")
+    fi
+fi
+
+_run_line="${_bld}Running: ${gates[*]}${_rst}"
+if [[ ${#subsumed[@]} -gt 0 ]]; then
+    _inc=$(printf '%s, ' "${subsumed[@]}"); _inc="${_inc%, }"
+    _run_line+=" ${_dim}(includes ${_inc})${_rst}"
+fi
+_run_line+=" ${_dim}(skip with -gate, e.g. -coverage)${_rst}"
+echo "$_run_line"
 echo ""
 
 for gate in "${gates[@]}"; do

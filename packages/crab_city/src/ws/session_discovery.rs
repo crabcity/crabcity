@@ -40,7 +40,8 @@ pub fn find_candidate_sessions(
 /// Selects the candidate whose `started_at` is closest to `search_after`
 /// by absolute time distance. This is almost always the session created
 /// for this specific instance.
-pub fn pick_best_candidate(
+#[cfg(test)]
+fn pick_best_candidate(
     candidates: &[ConversationMeta],
     search_after: DateTime<Utc>,
 ) -> Option<&ConversationMeta> {
