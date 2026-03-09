@@ -307,6 +307,10 @@ pub enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         expires_in_secs: Option<u64>,
     },
+
+    // === Server lifecycle ===
+    /// Server is shutting down — tells connected clients to show offline state immediately
+    Shutdown { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

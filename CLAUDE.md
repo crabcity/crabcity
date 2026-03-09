@@ -84,6 +84,8 @@ Two WebSocket endpoints:
 
 The multiplexed protocol uses `ServerMessage` (defined in `ws/protocol.rs`) — a tagged enum serialized as JSON. When adding new real-time features, add a variant to `ServerMessage` and handle it in `ws/handler.rs` (server) and `stores/ws-handlers.ts` (client).
 
+On graceful shutdown the server broadcasts `ServerMessage::Shutdown` to all connected clients. The frontend connection state machine has 6 states: `disconnected → connecting → connected → reconnecting → server_gone` (plus `error`). After 3 failed reconnect attempts the client escalates from `reconnecting` to `server_gone`, showing "Server Offline" instead of "Reconnecting...". Background retry continues indefinitely.
+
 ### Inference Engine
 
 Claude's state (idle/thinking/tool-use/streaming) is detected by two systems:

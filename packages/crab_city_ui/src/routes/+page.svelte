@@ -7,6 +7,7 @@
 	import TaskPanel from '$lib/components/TaskPanel.svelte';
 	import BootSequence from '$lib/components/BootSequence.svelte';
 	import ChannelChange from '$lib/components/ChannelChange.svelte';
+	import ServerShutdownModal from '$lib/components/ServerShutdownModal.svelte';
 	import { sidebarOpen, closeSidebar, isDesktop } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen, closeExplorer } from '$lib/stores/files';
 	import { isChatOpen, closeChat, toggleChat, composeOpen, closeCompose, selectionMode, exitSelectionMode } from '$lib/stores/chat';
@@ -149,6 +150,7 @@
 </div>
 
 <ChannelChange />
+<ServerShutdownModal />
 
 {#if showBoot}
 	<BootSequence onComplete={() => showBoot = false} wsConnected={$connectionStatus === 'connected'} />

@@ -20,14 +20,15 @@ import { createMessageHandler, type MuxClientMessage, type MuxServerMessage } fr
 // Connection State (formerly connection.ts)
 // =============================================================================
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'server_gone';
 
 export type ConnectionState =
 	| { status: 'disconnected' }
 	| { status: 'connecting'; instanceId: string }
 	| { status: 'connected'; instanceId: string }
 	| { status: 'reconnecting'; instanceId: string }
-	| { status: 'error'; instanceId: string; error?: string };
+	| { status: 'error'; instanceId: string; error?: string }
+	| { status: 'server_gone'; instanceId: string; reason?: string };
 
 export const connectionState = writable<ConnectionState>({ status: 'disconnected' });
 
@@ -41,6 +42,9 @@ export const isConnectionActive = derived(
 	connectionState,
 	($state) => $state.status !== 'disconnected'
 );
+
+/** Reason from the server's Shutdown message, if any */
+export const shutdownReason = writable<string | null>(null);
 
 function setConnecting(instanceId: string): void {
 	connectionState.set({ status: 'connecting', instanceId });
@@ -56,6 +60,10 @@ function setReconnecting(instanceId: string): void {
 
 function setError(instanceId: string, error?: string): void {
 	connectionState.set({ status: 'error', instanceId, error });
+}
+
+function setServerGone(instanceId: string, reason?: string): void {
+	connectionState.set({ status: 'server_gone', instanceId, reason });
 }
 
 function setDisconnected(): void {
@@ -88,6 +96,9 @@ const STALE_THRESHOLD_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const CONVERSATION_SYNC_TIMEOUT_MS = 10_000;
 
+/** After this many consecutive failed reconnects, escalate to server_gone */
+const SERVER_GONE_THRESHOLD = 3;
+
 // =============================================================================
 // Message Handler (from ws-handlers.ts)
 // =============================================================================
@@ -110,6 +121,13 @@ const handleMultiplexedMessage = createMessageHandler({
 	},
 	setConnected,
 	setError,
+	setServerGone: (reason?: string) => {
+		shutdownReason.set(reason ?? null);
+		const selectedId = get(currentInstanceId);
+		if (selectedId) {
+			setServerGone(selectedId, reason);
+		}
+	},
 });
 
 // =============================================================================
@@ -374,6 +392,7 @@ function connectMultiplexed(onConnected?: () => void): void {
 	socket.onopen = () => {
 		console.log('[WebSocket] Connected');
 		reconnectAttempt = 0;
+		shutdownReason.set(null);
 
 		const pendingFocus = get(currentInstanceId);
 		if (pendingFocus) {
@@ -507,7 +526,20 @@ function scheduleReconnect(): void {
 	reconnectAttempt++;
 	recordWebSocketReconnect();
 
-	console.log(`[WebSocket] Reconnecting in ${delay}ms...`);
+	// After repeated failures, escalate from "reconnecting" to "server gone"
+	if (reconnectAttempt >= SERVER_GONE_THRESHOLD) {
+		const selectedId = get(currentInstanceId);
+		if (selectedId) {
+			const currentState = get(connectionState);
+			// Only escalate if we haven't already
+			if (currentState.status !== 'server_gone') {
+				console.log(`[WebSocket] ${reconnectAttempt} failed attempts — server appears offline`);
+				setServerGone(selectedId);
+			}
+		}
+	}
+
+	console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
 
 	reconnectTimeout = setTimeout(() => {
 		reconnectTimeout = null;

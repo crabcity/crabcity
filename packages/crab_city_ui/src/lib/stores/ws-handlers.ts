@@ -75,7 +75,8 @@ export type MuxServerMessage =
 	| { type: 'ChatHistoryResponse'; scope: string; messages: ChatMessageData[]; has_more: boolean }
 	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] }
 	| { type: 'TaskUpdate'; task: Task }
-	| { type: 'TaskDeleted'; task_id: number };
+	| { type: 'TaskDeleted'; task_id: number }
+	| { type: 'Shutdown'; reason: string };
 
 // =============================================================================
 // Handler Context — mutable state owned by websocket.ts
@@ -96,6 +97,8 @@ export interface HandlerContext {
 	/** Connection state setters */
 	setConnected: (instanceId: string) => void;
 	setError: (instanceId: string, error?: string) => void;
+	/** Server shutdown notification */
+	setServerGone: (reason?: string) => void;
 }
 
 // =============================================================================
@@ -289,6 +292,11 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 
 			case 'TaskDeleted':
 				handleTaskDeleted(msg.task_id);
+				break;
+
+			case 'Shutdown':
+				console.warn('[WebSocket] Server shutting down:', msg.reason);
+				ctx.setServerGone(msg.reason);
 				break;
 		}
 	};
