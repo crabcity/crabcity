@@ -13,6 +13,7 @@ use toolpath_convo::{ConversationProvider, Role, WatcherEvent};
 use tracing::{debug, info, warn};
 
 use crate::inference::StateSignal;
+use crate::models::attribution_content_matches;
 use crate::repository::ConversationRepository;
 
 use super::session_discovery::find_candidate_sessions;
@@ -22,8 +23,11 @@ use super::state_manager::{ConversationBroadcast, ConversationEvent, GlobalState
 fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
     match event {
         WatcherEvent::Turn(turn) => {
+            // Map roles to the entry_type strings the StateManager expects.
+            // Claude Code JSONL uses "human" for user entries, but our state
+            // manager checks for "user" (the conceptually clearer name).
             let entry_type = match &turn.role {
-                Role::User => "human".to_string(),
+                Role::User => "user".to_string(),
                 Role::Assistant => "assistant".to_string(),
                 Role::System => "system".to_string(),
                 Role::Other(s) => s.clone(),
@@ -33,13 +37,44 @@ fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
                 .get("subtype")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            // Infer stop_reason when not explicitly set.
+            // Claude Code JSONL always writes stop_reason: null (the API streaming
+            // field isn't populated at write time).  Every assistant entry means
+            // an API call completed — the model is no longer generating.  The
+            // inference manager uses this to set tentative WaitingForInput, which
+            // terminal heuristics can override for non-interactive tools.
+            let stop_reason = turn.stop_reason.clone().or_else(|| {
+                if matches!(turn.role, Role::Assistant) {
+                    Some("end_turn".to_string())
+                } else {
+                    None
+                }
+            });
+
+            let tool_names: Vec<String> = if matches!(turn.role, Role::Assistant) {
+                turn.tool_uses.iter().map(|tu| tu.name.clone()).collect()
+            } else {
+                vec![]
+            };
+
             Some(StateSignal::ConversationEntry {
                 entry_type,
                 subtype,
-                stop_reason: turn.stop_reason.clone(),
+                stop_reason,
+                tool_names,
             })
         }
-        WatcherEvent::TurnUpdated(_) => None,
+        WatcherEvent::TurnUpdated(_) => {
+            // TurnUpdated means a tool_result_only user entry was merged into
+            // an assistant turn (cross-poll). This IS user input — emit a `user`
+            // signal so the state machine transitions to Thinking.
+            Some(StateSignal::ConversationEntry {
+                entry_type: "user".to_string(),
+                subtype: None,
+                stop_reason: None,
+                tool_names: vec![],
+            })
+        }
         WatcherEvent::Progress { kind, data } => {
             // Claude Code JSONL entries have "type" (→ entry_type → kind) and
             // "subtype" (→ entry.extra → data bag).  The top-level "type" field
@@ -53,6 +88,7 @@ fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
                 entry_type: kind.clone(),
                 subtype,
                 stop_reason: None,
+                tool_names: vec![],
             })
         }
     }
@@ -149,13 +185,48 @@ pub async fn run_server_conversation_watcher(
             }
             1 => {
                 let session = &candidates[0];
-                if state_manager
-                    .try_claim_session(&session.id, &instance_id)
-                    .await
+
+                // Content-match gate: verify this session contains input
+                // we actually sent to *this* instance before auto-claiming.
+                let content_prefixes = state_manager
+                    .get_discovery_content_prefixes(&instance_id)
+                    .await;
+
+                let content_ok = if content_prefixes.is_empty() {
+                    // No content recorded (unauthenticated user, control chars
+                    // only, etc.) — fall back to timestamp-only auto-claim.
+                    true
+                } else {
+                    // Load the conversation and check if any stored prefix
+                    // matches any user turn's text.
+                    match manager.load_conversation(&working_dir, &session.id) {
+                        Ok(view) => view.turns.iter().any(|turn| {
+                            matches!(turn.role, toolpath_convo::Role::User)
+                                && content_prefixes
+                                    .iter()
+                                    .any(|prefix| attribution_content_matches(prefix, &turn.text))
+                        }),
+                        Err(e) => {
+                            debug!(
+                                "[SERVER-CONVO {}] Failed to load candidate session {} for content check: {}",
+                                instance_id, session.id, e
+                            );
+                            // Can't verify — skip this cycle, retry next poll.
+                            false
+                        }
+                    }
+                };
+
+                if content_ok
+                    && state_manager
+                        .try_claim_session(&session.id, &instance_id)
+                        .await
                 {
                     info!(
-                        "[SERVER-CONVO {}] Auto-claimed session {}",
-                        instance_id, session.id
+                        "[SERVER-CONVO {}] Auto-claimed session {} (content_verified={})",
+                        instance_id,
+                        session.id,
+                        !content_prefixes.is_empty()
                     );
                     if let Some(handle) = state_manager.get_handle(&instance_id).await
                         && let Err(e) = handle.set_session_id(session.id.clone()).await
@@ -163,6 +234,11 @@ pub async fn run_server_conversation_watcher(
                         warn!(instance = %instance_id, session = %session.id, "Failed to set session ID: {}", e);
                     }
                     break session.id.clone();
+                } else if !content_ok {
+                    debug!(
+                        "[SERVER-CONVO {}] Content mismatch for candidate session {}, retrying next poll",
+                        instance_id, session.id
+                    );
                 }
             }
             n => {
@@ -564,8 +640,12 @@ mod tests {
                 entry_type,
                 subtype,
                 stop_reason,
+                ..
             } => {
-                assert_eq!(entry_type, "human");
+                assert_eq!(
+                    entry_type, "user",
+                    "Role::User must map to 'user' for the state manager"
+                );
                 assert!(subtype.is_none());
                 assert!(stop_reason.is_none());
             }
@@ -638,6 +718,7 @@ mod tests {
                 entry_type,
                 subtype,
                 stop_reason,
+                ..
             } => {
                 assert_eq!(entry_type, "system");
                 assert_eq!(
@@ -695,11 +776,141 @@ mod tests {
         }
     }
 
-    // ── TurnUpdated produces no signal ──────────────────────────────
+    // ── stop_reason inference from Turn content ────────────────────
+    //
+    // Claude Code JSONL always writes stop_reason: null (the API streaming
+    // field isn't populated at write time).  We infer it from structure:
+    // - Assistant with no tool_uses → end_turn
+    // - Assistant with tool_uses → None (let terminal heuristics track)
 
     #[test]
-    fn turn_updated_produces_no_signal() {
-        let event = WatcherEvent::TurnUpdated(Box::new(make_turn("u1", Role::Assistant)));
-        assert!(watcher_event_to_signal(&event).is_none());
+    fn signal_from_assistant_null_stop_reason_no_tools_infers_end_turn() {
+        // Real Claude Code format: stop_reason is always None in JSONL
+        let turn = make_turn("a1", Role::Assistant);
+        assert!(turn.stop_reason.is_none());
+        assert!(turn.tool_uses.is_empty());
+
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                stop_reason,
+                ..
+            } => {
+                assert_eq!(entry_type, "assistant");
+                assert_eq!(
+                    stop_reason.as_deref(),
+                    Some("end_turn"),
+                    "Assistant turn with no tool_uses and no stop_reason must infer end_turn"
+                );
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_assistant_with_tools_passes_tool_names() {
+        // Tool names from assistant entries are passed through for interactive
+        // tool detection (AskUserQuestion → WaitingForInput).
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.tool_uses = vec![toolpath_convo::ToolInvocation {
+            id: "tu1".to_string(),
+            name: "Read".to_string(),
+            input: json!({"path": "/foo"}),
+            result: None,
+            category: None,
+        }];
+
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                tool_names,
+                ..
+            } => {
+                assert_eq!(entry_type, "assistant");
+                assert_eq!(tool_names, vec!["Read".to_string()]);
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_assistant_with_ask_user_question_passes_tool_name() {
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.tool_uses = vec![toolpath_convo::ToolInvocation {
+            id: "tu1".to_string(),
+            name: "AskUserQuestion".to_string(),
+            input: json!({"question": "Which?"}),
+            result: None,
+            category: None,
+        }];
+
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry { tool_names, .. } => {
+                assert_eq!(tool_names, vec!["AskUserQuestion".to_string()]);
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn signal_from_user_turn_does_not_infer_stop_reason() {
+        // User turns should never get inferred stop_reason
+        let turn = make_turn("u1", Role::User);
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry { stop_reason, .. } => {
+                assert!(stop_reason.is_none());
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn explicit_stop_reason_takes_precedence_over_inference() {
+        // If stop_reason IS set (hypothetical future JSONL format), use it as-is
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.stop_reason = Some("max_tokens".to_string());
+        // Even with no tool_uses, explicit stop_reason wins
+        let event = WatcherEvent::Turn(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry { stop_reason, .. } => {
+                assert_eq!(stop_reason.as_deref(), Some("max_tokens"));
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    // ── TurnUpdated produces user signal (tool_result merge) ───────
+
+    #[test]
+    fn turn_updated_produces_user_signal() {
+        // TurnUpdated means a tool_result_only user entry was merged into
+        // an assistant turn. This IS user input, so emit a user signal.
+        let event = WatcherEvent::TurnUpdated(Box::new(make_turn("a1", Role::Assistant)));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry {
+                entry_type,
+                subtype,
+                stop_reason,
+                ..
+            } => {
+                assert_eq!(
+                    entry_type, "user",
+                    "TurnUpdated must produce a 'user' signal (tool_result merge)"
+                );
+                assert!(subtype.is_none());
+                assert!(stop_reason.is_none());
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
     }
 }

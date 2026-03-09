@@ -315,7 +315,7 @@ pub async fn handle_multiplexed_ws(
                                         // Record first input time for causation-based session discovery.
                                         // Only relevant if this instance hasn't claimed a session yet.
                                         if handle.get_session_id().await.is_none() {
-                                            state_mgr.mark_first_input(&instance_id).await;
+                                            state_mgr.mark_first_input(&instance_id, &data).await;
                                         }
 
                                         // Keep terminal lock activity fresh

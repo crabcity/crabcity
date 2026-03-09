@@ -82,8 +82,8 @@ pub struct StateManagerConfig {
 impl Default for StateManagerConfig {
     fn default() -> Self {
         Self {
-            // Fallback timeout - authoritative signals (end_turn, turn_duration) are preferred
-            // This is a safety net for cases where those signals are missed
+            // Used for terminal staleness tracking (not state transitions).
+            // Authoritative signals (end_turn, turn_duration, tool_use) drive state.
             idle_timeout: Duration::from_secs(10),
         }
     }
@@ -102,6 +102,11 @@ pub struct StateManager {
     sent_idle: bool,
     /// Last entry role from conversation (for idle detection)
     last_convo_role: Option<String>,
+    /// Whether WaitingForInput was set by a definitive signal (turn_duration).
+    /// Definitive idle is "sticky" — terminal heuristics cannot override it.
+    /// Tentative idle (from assistant entries) IS overridable, allowing
+    /// non-interactive tools to recover to ToolExecuting via heuristics.
+    definitive_idle: bool,
 }
 
 impl StateManager {
@@ -114,6 +119,7 @@ impl StateManager {
             current_tool: None,
             sent_idle: false,
             last_convo_role: None,
+            definitive_idle: false,
         }
     }
 
@@ -123,15 +129,12 @@ impl StateManager {
 
         match &signal {
             StateSignal::TerminalInput { .. } => {
-                // User sent input - transition to Thinking
-                // Note: We DON'T reset convo activity here - that's for convo entries only
+                // Terminal input fires on every keystroke (arrow keys, typing,
+                // navigating menus), not just message submission. Do NOT use it
+                // for state transitions — the authoritative signals are:
+                // - JSONL `user` ConversationEntry for direct user messages
+                // - JSONL TurnUpdated (→ `user` signal) for tool_result_only answers
                 self.sent_idle = false;
-                if matches!(
-                    self.state,
-                    ClaudeState::Idle | ClaudeState::WaitingForInput { .. }
-                ) {
-                    self.state = ClaudeState::Thinking;
-                }
             }
 
             StateSignal::TerminalOutput { data } => {
@@ -139,9 +142,19 @@ impl StateManager {
                 self.last_terminal_activity = Instant::now();
                 self.sent_idle = false;
 
-                // Check for tool patterns
-                if let Some(tool) = self.detect_tool(data) {
+                // WaitingForInput has two modes:
+                // - Definitive (from turn_duration): truly sticky, ignores all heuristics.
+                //   This prevents false positives from tool patterns in Claude's text
+                //   (e.g. "I used Read(file) to check") after the turn is over.
+                // - Tentative (from assistant entry): overridable by tool patterns.
+                //   This allows non-interactive tools (Read, Bash) to show ToolExecuting
+                //   after the assistant entry signals the API call completed.
+                if matches!(self.state, ClaudeState::WaitingForInput { .. }) && self.definitive_idle
+                {
+                    // Definitive idle — ignore terminal heuristics
+                } else if let Some(tool) = self.detect_tool(data) {
                     self.current_tool = Some(tool.clone());
+                    self.definitive_idle = false;
                     self.state = ClaudeState::ToolExecuting { tool };
                 } else if matches!(self.state, ClaudeState::Thinking) {
                     // First output after thinking -> responding
@@ -153,10 +166,11 @@ impl StateManager {
                 entry_type,
                 subtype,
                 stop_reason,
+                tool_names,
             } => {
                 debug!(
-                    "ConversationEntry signal: type={}, subtype={:?}, stop_reason={:?}",
-                    entry_type, subtype, stop_reason
+                    "ConversationEntry signal: type={}, subtype={:?}, stop_reason={:?}, tools={:?}",
+                    entry_type, subtype, stop_reason, tool_names
                 );
                 // Only conversation entries reset the idle timer
                 self.last_convo_activity = Instant::now();
@@ -166,6 +180,7 @@ impl StateManager {
                 if entry_type == "system" && subtype.as_deref() == Some("turn_duration") {
                     debug!("Got turn_duration -> WaitingForInput (definitive)");
                     self.current_tool = None;
+                    self.definitive_idle = true;
                     self.state = ClaudeState::WaitingForInput { prompt: None };
                     return Some(self.state.clone()); // Early return - this is authoritative
                 }
@@ -173,24 +188,39 @@ impl StateManager {
                 self.last_convo_role = Some(entry_type.clone());
 
                 if entry_type == "user" {
+                    self.definitive_idle = false;
                     self.state = ClaudeState::Thinking;
                 } else if entry_type == "assistant" {
-                    if stop_reason.as_deref() == Some("end_turn") {
-                        debug!("Got end_turn -> WaitingForInput");
+                    // Interactive tools (AskUserQuestion, plan mode) require user
+                    // input — transition to WaitingForInput so the UI shows "ready."
+                    // Non-interactive tools (Read, Bash, etc.) execute automatically
+                    // — do NOT change state, or we'd flicker between tool calls.
+                    if tool_names
+                        .iter()
+                        .any(|name| Self::is_interactive_tool(name))
+                    {
+                        debug!(
+                            "Got assistant entry with interactive tool {:?} -> WaitingForInput",
+                            tool_names
+                        );
                         self.current_tool = None;
+                        self.definitive_idle = false;
                         self.state = ClaudeState::WaitingForInput { prompt: None };
-                    } else if !matches!(self.state, ClaudeState::ToolExecuting { .. }) {
-                        self.state = ClaudeState::Responding;
+                    } else {
+                        debug!(
+                            "Got assistant entry (tools={:?}) -> no state change",
+                            tool_names
+                        );
                     }
                 }
             }
 
             StateSignal::Tick => {
-                // Tick is now only used for staleness tracking, not state transitions.
+                // Tick is only used for staleness tracking, not state transitions.
                 // State transitions rely on authoritative signals:
                 // - end_turn: assistant finished responding
                 // - turn_duration: definitive turn completion
-                // No timeout-based idle detection - it causes false positives.
+                // - tool_use: assistant paused for tool execution (interactive or not)
             }
         }
 
@@ -235,6 +265,13 @@ impl StateManager {
         self.current_tool = None;
         self.sent_idle = false;
         self.last_convo_role = None;
+        self.definitive_idle = false;
+    }
+
+    /// Tools that require user input (questions, permission, plan mode).
+    /// These should transition to WaitingForInput, not stay "verbing."
+    fn is_interactive_tool(name: &str) -> bool {
+        matches!(name, "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode")
     }
 
     fn detect_tool(&self, output: &str) -> Option<String> {
@@ -301,20 +338,52 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_input_transitions_to_thinking() {
+    fn test_terminal_input_from_idle_does_not_transition() {
+        // User typing at the prompt (Idle state) should not trigger Thinking.
+        // Only the JSONL `user` entry triggers Idle→Thinking.
         let mut manager = default_manager();
         let result = manager.process(StateSignal::TerminalInput {
             data: "hello".to_string(),
         });
-        assert_eq!(result, Some(ClaudeState::Thinking));
-        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert_eq!(result, None, "Keystroke from Idle must not change state");
+        assert_eq!(*manager.state(), ClaudeState::Idle);
+    }
+
+    #[test]
+    fn test_terminal_input_during_tool_executing_no_change() {
+        // Terminal input (keystrokes) must never change state, even during
+        // active tool execution.
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "⠋ Read(file.rs)".to_string(),
+        });
+        assert!(matches!(manager.state(), ClaudeState::ToolExecuting { .. }));
+
+        let result = manager.process(StateSignal::TerminalInput {
+            data: "y".to_string(),
+        });
+        assert_eq!(
+            result, None,
+            "TerminalInput must never trigger state transitions"
+        );
+        assert!(matches!(manager.state(), ClaudeState::ToolExecuting { .. }));
     }
 
     #[test]
     fn test_terminal_output_transitions_thinking_to_responding() {
         let mut manager = default_manager();
-        manager.process(StateSignal::TerminalInput {
-            data: "hello".to_string(),
+        // JSONL user entry is the authoritative Thinking trigger
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
         let result = manager.process(StateSignal::TerminalOutput {
             data: "Hi there!".to_string(),
@@ -326,8 +395,11 @@ mod tests {
     #[test]
     fn test_terminal_output_with_tool_pattern() {
         let mut manager = default_manager();
-        manager.process(StateSignal::TerminalInput {
-            data: "read file".to_string(),
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
         manager.process(StateSignal::TerminalOutput {
             data: "Starting...".to_string(),
@@ -345,8 +417,11 @@ mod tests {
     fn test_conversation_entry_turn_duration_transitions_to_waiting() {
         let mut manager = default_manager();
         // Start in Responding state
-        manager.process(StateSignal::TerminalInput {
-            data: "hello".to_string(),
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
         manager.process(StateSignal::TerminalOutput {
             data: "response".to_string(),
@@ -358,6 +433,7 @@ mod tests {
             entry_type: "system".to_string(),
             subtype: Some("turn_duration".to_string()),
             stop_reason: None,
+            tool_names: vec![],
         });
 
         assert_eq!(result, Some(ClaudeState::WaitingForInput { prompt: None }));
@@ -368,25 +444,33 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_entry_end_turn_transitions_to_waiting() {
+    fn test_conversation_entry_assistant_does_not_change_state() {
+        // Assistant entries must NOT change state — that causes flickering
+        // between tool calls in an agentic turn.  Only turn_duration sets
+        // WaitingForInput.
         let mut manager = default_manager();
         // Start in Responding state
-        manager.process(StateSignal::TerminalInput {
-            data: "hello".to_string(),
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
         manager.process(StateSignal::TerminalOutput {
             data: "response".to_string(),
         });
         assert_eq!(*manager.state(), ClaudeState::Responding);
 
-        // Send assistant entry with end_turn
+        // Assistant entry should NOT change state
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: Some("end_turn".to_string()),
+            tool_names: vec![],
         });
 
-        assert_eq!(result, Some(ClaudeState::WaitingForInput { prompt: None }));
+        assert_eq!(result, None, "Assistant entry must not change state");
+        assert_eq!(*manager.state(), ClaudeState::Responding);
     }
 
     #[test]
@@ -400,25 +484,33 @@ mod tests {
             entry_type: "user".to_string(),
             subtype: None,
             stop_reason: None,
+            tool_names: vec![],
         });
 
         assert_eq!(result, Some(ClaudeState::Thinking));
     }
 
     #[test]
-    fn test_conversation_entry_assistant_without_end_turn() {
+    fn test_conversation_entry_assistant_without_stop_reason_no_state_change() {
+        // Assistant entries must not change state (prevents flickering).
         let mut manager = default_manager();
-        manager.process(StateSignal::TerminalInput {
-            data: "hello".to_string(),
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
-        // Should transition to Responding on assistant entry without end_turn
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: None,
+            tool_names: vec![],
         });
 
-        assert_eq!(result, Some(ClaudeState::Responding));
+        assert_eq!(result, None, "Assistant entry must not change state");
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
     }
 
     #[test]
@@ -436,24 +528,33 @@ mod tests {
         for initial_state in states_to_test {
             let mut manager = default_manager();
 
-            // Force to initial state
+            // Force to initial state via authoritative signals
             match &initial_state {
                 ClaudeState::Thinking => {
-                    manager.process(StateSignal::TerminalInput {
-                        data: "x".to_string(),
+                    manager.process(StateSignal::ConversationEntry {
+                        entry_type: "user".to_string(),
+                        subtype: None,
+                        stop_reason: None,
+                        tool_names: vec![],
                     });
                 }
                 ClaudeState::Responding => {
-                    manager.process(StateSignal::TerminalInput {
-                        data: "x".to_string(),
+                    manager.process(StateSignal::ConversationEntry {
+                        entry_type: "user".to_string(),
+                        subtype: None,
+                        stop_reason: None,
+                        tool_names: vec![],
                     });
                     manager.process(StateSignal::TerminalOutput {
                         data: "y".to_string(),
                     });
                 }
                 ClaudeState::ToolExecuting { .. } => {
-                    manager.process(StateSignal::TerminalInput {
-                        data: "x".to_string(),
+                    manager.process(StateSignal::ConversationEntry {
+                        entry_type: "user".to_string(),
+                        subtype: None,
+                        stop_reason: None,
+                        tool_names: vec![],
                     });
                     manager.process(StateSignal::TerminalOutput {
                         data: "Read(file)".to_string(),
@@ -466,6 +567,7 @@ mod tests {
                 entry_type: "system".to_string(),
                 subtype: Some("turn_duration".to_string()),
                 stop_reason: None,
+                tool_names: vec![],
             });
 
             assert_eq!(
@@ -478,10 +580,104 @@ mod tests {
     }
 
     #[test]
+    fn test_terminal_output_does_not_override_waiting_for_input() {
+        let mut manager = default_manager();
+        // Get to WaitingForInput via authoritative conversation signal
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+
+        // Terminal output with tool pattern should NOT override WaitingForInput.
+        // This is the false-positive scenario: Claude's response text mentions
+        // "Read(" but the conversation is already over.
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "I used Read(file.rs) to check".to_string(),
+        });
+        assert_eq!(
+            result, None,
+            "Tool pattern in terminal must not override WaitingForInput"
+        );
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None },
+            "State must remain WaitingForInput after false-positive tool pattern"
+        );
+    }
+
+    #[test]
+    fn test_terminal_input_does_not_exit_definitive_waiting() {
+        // When turn is over (definitive WaitingForInput from turn_duration),
+        // keystrokes must not exit WaitingForInput — user is just typing
+        // their next message. Only the JSONL `user` entry transitions.
+        let mut manager = default_manager();
+        // Get to definitive WaitingForInput via turn_duration
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+        assert!(manager.definitive_idle);
+
+        // User typing should NOT exit definitive WaitingForInput
+        let result = manager.process(StateSignal::TerminalInput {
+            data: "next question".to_string(),
+        });
+        assert_eq!(
+            result, None,
+            "Keystroke must not change definitive WaitingForInput"
+        );
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+    }
+
+    #[test]
+    fn test_user_conversation_entry_triggers_thinking() {
+        let mut manager = default_manager();
+        // User entry from conversation watcher should transition to Thinking
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            result,
+            Some(ClaudeState::Thinking),
+            "entry_type 'user' must trigger Thinking (was broken when watcher sent 'human')"
+        );
+    }
+
+    #[test]
     fn test_repeated_terminal_output_no_state_change() {
         let mut manager = default_manager();
-        manager.process(StateSignal::TerminalInput {
-            data: "hello".to_string(),
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
         });
         manager.process(StateSignal::TerminalOutput {
             data: "response".to_string(),
@@ -526,6 +722,7 @@ mod tests {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: None,
+            tool_names: vec![],
         });
         assert!(!manager.is_conversation_stale());
     }
@@ -641,5 +838,259 @@ mod tests {
         // Should NOT match without open paren
         assert_eq!(manager.detect_tool("Read file"), None);
         assert_eq!(manager.detect_tool("Reading"), None);
+    }
+
+    // ==========================================
+    // Tick behavior tests
+    // ==========================================
+
+    #[test]
+    fn test_assistant_with_tool_use_does_not_change_state() {
+        // Assistant entries (even with tool_use) must not change state.
+        // Terminal heuristics handle the tool detection, TurnUpdated
+        // handles the "user answered" transition.
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("tool_use".to_string()),
+            tool_names: vec![],
+        });
+
+        assert_eq!(result, None, "Assistant entry must not change state");
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+    }
+
+    #[test]
+    fn test_multi_tool_sequence_no_flickering() {
+        // Simulate 3 Reads in sequence: state should stay "active" throughout,
+        // never briefly showing WaitingForInput between tool calls.
+        let mut manager = default_manager();
+
+        // User sends message
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+
+        // Terminal shows first tool
+        manager.process(StateSignal::TerminalOutput {
+            data: "⠋ Read(file1.rs)".to_string(),
+        });
+        assert!(matches!(
+            manager.state(),
+            ClaudeState::ToolExecuting { tool } if tool == "Read"
+        ));
+
+        // Assistant entry arrives (tool_use:Read) — must not flicker to ready
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec![],
+        });
+        assert_eq!(result, None, "No flickering between tool calls");
+
+        // Tool result merged (TurnUpdated) → user signal → Thinking
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+
+        // Terminal shows second tool
+        manager.process(StateSignal::TerminalOutput {
+            data: "⠋ Read(file2.rs)".to_string(),
+        });
+        assert!(matches!(
+            manager.state(),
+            ClaudeState::ToolExecuting { tool } if tool == "Read"
+        ));
+
+        // Another assistant entry — still no flickering
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec![],
+        });
+        assert_eq!(result, None, "No flickering between tool calls");
+
+        // Turn ends
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+    }
+
+    #[test]
+    fn test_interactive_tool_ask_user_question_sets_waiting() {
+        // AskUserQuestion requires user input → WaitingForInput
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["AskUserQuestion".to_string()],
+        });
+        assert_eq!(
+            result,
+            Some(ClaudeState::WaitingForInput { prompt: None }),
+            "AskUserQuestion must transition to WaitingForInput"
+        );
+    }
+
+    #[test]
+    fn test_non_interactive_tool_does_not_set_waiting() {
+        // Read is non-interactive → no state change from assistant entry
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["Read".to_string()],
+        });
+        assert_eq!(result, None, "Non-interactive tool must not change state");
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+    }
+
+    #[test]
+    fn test_tick_does_not_transition_state() {
+        // Tick is for staleness tracking only — state transitions come from
+        // authoritative conversation signals (end_turn, turn_duration, tool_use).
+        let mut manager = StateManager::new(StateManagerConfig {
+            idle_timeout: Duration::from_millis(50),
+        });
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let result = manager.process(StateSignal::Tick);
+        assert_eq!(result, None, "Tick must not cause state transitions");
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+    }
+
+    // ==========================================
+    // Definitive vs tentative idle tests
+    // ==========================================
+
+    #[test]
+    fn test_turn_duration_sets_definitive_idle() {
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+        assert!(
+            manager.definitive_idle,
+            "turn_duration must set definitive_idle"
+        );
+    }
+
+    #[test]
+    fn test_definitive_idle_not_overridable_by_tool_pattern() {
+        // End of turn: turn_duration → definitive WaitingForInput
+        // → terminal false positive "Read(" → must NOT override
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert!(manager.definitive_idle);
+
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "I used Read(file.rs) to check".to_string(),
+        });
+        assert_eq!(
+            result, None,
+            "Tool pattern must NOT override definitive WaitingForInput"
+        );
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+    }
+
+    #[test]
+    fn test_user_entry_clears_definitive_idle() {
+        let mut manager = default_manager();
+        // Set definitive idle
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert!(manager.definitive_idle);
+
+        // User types → Thinking, clears definitive
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert!(!manager.definitive_idle);
     }
 }
