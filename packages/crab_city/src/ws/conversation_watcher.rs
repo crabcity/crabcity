@@ -64,12 +64,31 @@ fn watcher_event_to_signal(event: &WatcherEvent) -> Option<StateSignal> {
                 tool_names,
             })
         }
-        WatcherEvent::TurnUpdated(_) => {
+        WatcherEvent::TurnUpdated(turn) => {
             // TurnUpdated means a tool_result_only user entry was merged into
-            // an assistant turn (cross-poll). This IS user input — emit a `user`
-            // signal so the state machine transitions to Thinking.
+            // an assistant turn (cross-poll).
+            //
+            // Interactive tools (AskUserQuestion, EnterPlanMode, ExitPlanMode)
+            // mean the user answered a prompt → emit "user" signal → Thinking.
+            //
+            // Non-interactive tools (Read, Bash, etc.) are mid-chain merges.
+            // Emit "tool_result" so the state manager knows Claude is processing
+            // input, but without causing a Thinking flash between tool calls.
+            let has_interactive = turn.tool_uses.iter().any(|tu| {
+                matches!(
+                    tu.name.as_str(),
+                    "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode"
+                )
+            });
+
+            let entry_type = if has_interactive {
+                "user"
+            } else {
+                "tool_result"
+            };
+
             Some(StateSignal::ConversationEntry {
-                entry_type: "user".to_string(),
+                entry_type: entry_type.to_string(),
                 subtype: None,
                 stop_reason: None,
                 tool_names: vec![],
@@ -891,24 +910,51 @@ mod tests {
     // ── TurnUpdated produces user signal (tool_result merge) ───────
 
     #[test]
-    fn turn_updated_produces_user_signal() {
-        // TurnUpdated means a tool_result_only user entry was merged into
-        // an assistant turn. This IS user input, so emit a user signal.
-        let event = WatcherEvent::TurnUpdated(Box::new(make_turn("a1", Role::Assistant)));
+    fn turn_updated_interactive_produces_user_signal() {
+        // TurnUpdated with interactive tools means the user answered a
+        // prompt (e.g. AskUserQuestion) → emit "user" signal → Thinking.
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.tool_uses = vec![toolpath_convo::ToolInvocation {
+            id: "tu1".to_string(),
+            name: "AskUserQuestion".to_string(),
+            input: json!({}),
+            result: None,
+            category: None,
+        }];
+        let event = WatcherEvent::TurnUpdated(Box::new(turn));
         let signal = watcher_event_to_signal(&event).unwrap();
         match signal {
-            StateSignal::ConversationEntry {
-                entry_type,
-                subtype,
-                stop_reason,
-                ..
-            } => {
+            StateSignal::ConversationEntry { entry_type, .. } => {
                 assert_eq!(
                     entry_type, "user",
-                    "TurnUpdated must produce a 'user' signal (tool_result merge)"
+                    "TurnUpdated with interactive tool must produce 'user' signal"
                 );
-                assert!(subtype.is_none());
-                assert!(stop_reason.is_none());
+            }
+            _ => panic!("Expected ConversationEntry"),
+        }
+    }
+
+    #[test]
+    fn turn_updated_non_interactive_produces_tool_result_signal() {
+        // TurnUpdated with only non-interactive tools is a mid-chain
+        // tool result merge → "tool_result" signal (not "user", to avoid
+        // Thinking flash between tool calls).
+        let mut turn = make_turn("a1", Role::Assistant);
+        turn.tool_uses = vec![toolpath_convo::ToolInvocation {
+            id: "tu1".to_string(),
+            name: "Read".to_string(),
+            input: json!({}),
+            result: None,
+            category: None,
+        }];
+        let event = WatcherEvent::TurnUpdated(Box::new(turn));
+        let signal = watcher_event_to_signal(&event).unwrap();
+        match signal {
+            StateSignal::ConversationEntry { entry_type, .. } => {
+                assert_eq!(
+                    entry_type, "tool_result",
+                    "Non-interactive TurnUpdated must produce 'tool_result' signal"
+                );
             }
             _ => panic!("Expected ConversationEntry"),
         }
