@@ -220,6 +220,24 @@ impl StateManager {
                 if entry_type == "user" {
                     self.definitive_idle = false;
                     self.state = ClaudeState::Thinking;
+                } else if entry_type == "tool_result" {
+                    // Non-interactive tool result merged (TurnUpdated from mid-chain).
+                    // If already in an active state (Thinking/Responding/ToolExecuting),
+                    // don't change — avoids a Thinking flash between tool calls.
+                    // If in Idle or tentative WaitingForInput, transition to Thinking
+                    // so the state reflects that Claude is processing input.
+                    if !self.definitive_idle
+                        && matches!(
+                            self.state,
+                            ClaudeState::Idle | ClaudeState::WaitingForInput { .. }
+                        )
+                    {
+                        debug!("Got tool_result from inactive state -> Thinking");
+                        self.definitive_idle = false;
+                        self.state = ClaudeState::Thinking;
+                    } else {
+                        debug!("Got tool_result while active -> no state change");
+                    }
                 } else if entry_type == "assistant" {
                     // Assistant entries with ONLY non-interactive tool uses are
                     // mid-turn (the agentic loop will continue with tool results
@@ -1253,6 +1271,68 @@ mod tests {
         let result = manager.process(StateSignal::Tick);
         assert_eq!(result, None, "Tick must not cause state transitions");
         assert_eq!(*manager.state(), ClaudeState::Responding);
+    }
+
+    // ==========================================
+    // tool_result signal tests (non-interactive TurnUpdated)
+    // ==========================================
+
+    #[test]
+    fn test_tool_result_from_idle_transitions_to_thinking() {
+        let mut manager = default_manager();
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "tool_result".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(result, Some(ClaudeState::Thinking));
+    }
+
+    #[test]
+    fn test_tool_result_from_active_state_no_change() {
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "⠋ Read(file.rs)".to_string(),
+        });
+        assert!(matches!(manager.state(), ClaudeState::ToolExecuting { .. }));
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "tool_result".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(result, None, "tool_result from active state must not flash");
+    }
+
+    #[test]
+    fn test_tool_result_from_definitive_waiting_no_change() {
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert!(manager.definitive_idle);
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "tool_result".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            result, None,
+            "tool_result must not override definitive idle"
+        );
     }
 
     // ==========================================
