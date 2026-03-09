@@ -191,26 +191,33 @@ impl StateManager {
                     self.definitive_idle = false;
                     self.state = ClaudeState::Thinking;
                 } else if entry_type == "assistant" {
-                    // Interactive tools (AskUserQuestion, plan mode) require user
-                    // input — transition to WaitingForInput so the UI shows "ready."
-                    // Non-interactive tools (Read, Bash, etc.) execute automatically
-                    // — do NOT change state, or we'd flicker between tool calls.
-                    if tool_names
-                        .iter()
-                        .any(|name| Self::is_interactive_tool(name))
-                    {
+                    // Assistant entries with ONLY non-interactive tool uses are
+                    // mid-turn (the agentic loop will continue with tool results
+                    // and another API call). Don't change state or we'd flicker
+                    // between sequential tool calls.
+                    //
+                    // All other assistant entries mean the model stopped generating:
+                    //   - No tool uses (text-only) → turn is ending
+                    //   - Interactive tool (AskUserQuestion) → needs user input
+                    // In both cases → WaitingForInput (tentative, not definitive).
+                    let mid_turn = !tool_names.is_empty()
+                        && !tool_names
+                            .iter()
+                            .any(|name| Self::is_interactive_tool(name));
+
+                    if mid_turn {
                         debug!(
-                            "Got assistant entry with interactive tool {:?} -> WaitingForInput",
+                            "Got assistant entry (tools={:?}) -> no state change (mid-turn)",
+                            tool_names
+                        );
+                    } else {
+                        debug!(
+                            "Got assistant entry (tools={:?}) -> WaitingForInput (tentative)",
                             tool_names
                         );
                         self.current_tool = None;
                         self.definitive_idle = false;
                         self.state = ClaudeState::WaitingForInput { prompt: None };
-                    } else {
-                        debug!(
-                            "Got assistant entry (tools={:?}) -> no state change",
-                            tool_names
-                        );
                     }
                 }
             }
@@ -444,12 +451,10 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_entry_assistant_does_not_change_state() {
-        // Assistant entries must NOT change state — that causes flickering
-        // between tool calls in an agentic turn.  Only turn_duration sets
-        // WaitingForInput.
+    fn test_text_only_assistant_transitions_to_waiting() {
+        // Assistant entries with no tool uses (text-only response) signal the
+        // end of the turn → WaitingForInput (tentative).
         let mut manager = default_manager();
-        // Start in Responding state
         manager.process(StateSignal::ConversationEntry {
             entry_type: "user".to_string(),
             subtype: None,
@@ -461,7 +466,6 @@ mod tests {
         });
         assert_eq!(*manager.state(), ClaudeState::Responding);
 
-        // Assistant entry should NOT change state
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
@@ -469,7 +473,40 @@ mod tests {
             tool_names: vec![],
         });
 
-        assert_eq!(result, None, "Assistant entry must not change state");
+        assert_eq!(
+            result,
+            Some(ClaudeState::WaitingForInput { prompt: None }),
+            "Text-only assistant entry must transition to WaitingForInput"
+        );
+    }
+
+    #[test]
+    fn test_assistant_with_non_interactive_tools_does_not_change_state() {
+        // Assistant entries with non-interactive tool uses are mid-turn
+        // (agentic loop) — don't change state or we'd flicker.
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::TerminalOutput {
+            data: "response".to_string(),
+        });
+        assert_eq!(*manager.state(), ClaudeState::Responding);
+
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["Read".to_string()],
+        });
+
+        assert_eq!(
+            result, None,
+            "Mid-turn assistant entry (non-interactive tools) must not change state"
+        );
         assert_eq!(*manager.state(), ClaudeState::Responding);
     }
 
@@ -491,8 +528,9 @@ mod tests {
     }
 
     #[test]
-    fn test_conversation_entry_assistant_without_stop_reason_no_state_change() {
-        // Assistant entries must not change state (prevents flickering).
+    fn test_text_only_assistant_from_thinking_transitions_to_waiting() {
+        // Even from Thinking, a text-only assistant entry means the model
+        // finished generating — transition to WaitingForInput.
         let mut manager = default_manager();
         manager.process(StateSignal::ConversationEntry {
             entry_type: "user".to_string(),
@@ -509,8 +547,11 @@ mod tests {
             tool_names: vec![],
         });
 
-        assert_eq!(result, None, "Assistant entry must not change state");
-        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert_eq!(
+            result,
+            Some(ClaudeState::WaitingForInput { prompt: None }),
+            "Text-only assistant must transition to WaitingForInput"
+        );
     }
 
     #[test]
@@ -845,10 +886,10 @@ mod tests {
     // ==========================================
 
     #[test]
-    fn test_assistant_with_tool_use_does_not_change_state() {
-        // Assistant entries (even with tool_use) must not change state.
-        // Terminal heuristics handle the tool detection, TurnUpdated
-        // handles the "user answered" transition.
+    fn test_assistant_with_non_interactive_tool_use_does_not_change_state() {
+        // Mid-turn assistant entries (with non-interactive tool uses) must
+        // not change state. Terminal heuristics handle tool detection,
+        // TurnUpdated handles "user answered" transitions.
         let mut manager = default_manager();
         manager.process(StateSignal::ConversationEntry {
             entry_type: "user".to_string(),
@@ -865,17 +906,21 @@ mod tests {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: Some("tool_use".to_string()),
-            tool_names: vec![],
+            tool_names: vec!["Read".to_string()],
         });
 
-        assert_eq!(result, None, "Assistant entry must not change state");
+        assert_eq!(
+            result, None,
+            "Mid-turn assistant entry (non-interactive tools) must not change state"
+        );
         assert_eq!(*manager.state(), ClaudeState::Responding);
     }
 
     #[test]
     fn test_multi_tool_sequence_no_flickering() {
-        // Simulate 3 Reads in sequence: state should stay "active" throughout,
-        // never briefly showing WaitingForInput between tool calls.
+        // Simulate 2 Reads then a final text response: state should stay
+        // "active" during tool calls, never briefly showing WaitingForInput
+        // between them. Only the final text-only assistant entry shows ready.
         let mut manager = default_manager();
 
         // User sends message
@@ -896,12 +941,12 @@ mod tests {
             ClaudeState::ToolExecuting { tool } if tool == "Read"
         ));
 
-        // Assistant entry arrives (tool_use:Read) — must not flicker to ready
+        // Assistant entry arrives with Read tool — mid-turn, must not flicker
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: Some("end_turn".to_string()),
-            tool_names: vec![],
+            tool_names: vec!["Read".to_string()],
         });
         assert_eq!(result, None, "No flickering between tool calls");
 
@@ -923,16 +968,37 @@ mod tests {
             ClaudeState::ToolExecuting { tool } if tool == "Read"
         ));
 
-        // Another assistant entry — still no flickering
+        // Another mid-turn assistant entry with tools — still no flickering
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["Read".to_string()],
+        });
+        assert_eq!(result, None, "No flickering between tool calls");
+
+        // Tool result → user signal → Thinking
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+
+        // Final text-only assistant entry → WaitingForInput (tentative)
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: Some("end_turn".to_string()),
             tool_names: vec![],
         });
-        assert_eq!(result, None, "No flickering between tool calls");
+        assert_eq!(
+            result,
+            Some(ClaudeState::WaitingForInput { prompt: None }),
+            "Final text-only assistant entry must show ready"
+        );
 
-        // Turn ends
+        // Turn ends (definitive)
         manager.process(StateSignal::ConversationEntry {
             entry_type: "system".to_string(),
             subtype: Some("turn_duration".to_string()),
