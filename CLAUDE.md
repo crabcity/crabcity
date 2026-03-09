@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Documentation
+
+When changing code, **update the associated docs in the same change**. Key files: `docs/architecture.md` (system design), `docs/web-terminal.md` (client terminal), `docs/configuration.md` (config), `packages/crab_city_ui/CLAUDE.md` (frontend conventions), this file (build/architecture notes). Stale docs are worse than no docs.
+
 ## Build System
 
 This is a monorepo with Bazel, Cargo, and TS/JS build systems. Everything must stay in sync.

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ToolCell } from '$lib/types';
+	import { setTerminalMode } from '$lib/stores/instances';
 
 	interface Props {
 		tool: ToolCell;
@@ -161,10 +162,10 @@
 				<pre class="result-value">{resultText}</pre>
 			</div>
 		{:else if isPending}
-			<div class="pending-banner">
+			<button class="pending-banner" onclick={() => setTerminalMode(true)}>
 				<span class="pending-icon">⌨</span>
 				<span class="pending-text">Switch to the Terminal view to answer this question</span>
-			</div>
+			</button>
 		{/if}
 	{/if}
 </div>
@@ -452,8 +453,18 @@
 		align-items: center;
 		gap: 8px;
 		padding: 8px 14px;
+		border: none;
 		border-top: 1px solid var(--amber-600);
+		border-radius: 0;
 		background: var(--tint-active);
+		width: 100%;
+		cursor: pointer;
+		font-family: inherit;
+		transition: background 0.15s ease;
+	}
+
+	.pending-banner:hover {
+		background: var(--amber-600);
 	}
 
 	.pending-icon {

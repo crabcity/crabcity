@@ -3,7 +3,7 @@
 	import { get } from 'svelte/store';
 	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence } from '$lib/stores/websocket';
 	import { currentTerminalHasOutput, consumeTerminalOutput } from '$lib/stores/terminal';
-	import { currentInstanceId } from '$lib/stores/instances';
+	import { currentInstanceId, consumeTerminalFocus } from '$lib/stores/instances';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
 	import { theme } from '$lib/stores/settings';
 
@@ -60,6 +60,13 @@
 	let presence = $derived($currentInstanceId ? $instancePresence.get($currentInstanceId) ?? [] : []);
 	let isMultiUser = $derived(presence.length > 1);
 	let showLockBanner = $derived($isLockedByOther || $iHoldLock);
+
+	// When the terminal becomes ready, consume any pending focus request
+	$effect(() => {
+		if (isReady && consumeTerminalFocus()) {
+			terminal?.focus();
+		}
+	});
 
 	// Set up output subscription after terminal is ready
 	function setupOutputSubscription() {
