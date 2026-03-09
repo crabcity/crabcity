@@ -163,6 +163,18 @@ Multiple clients share a single PTY per instance:
 - `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
 
+## Web Terminal (Client-Side)
+
+The web UI renders PTY output via **xterm.js** in `components/Terminal.svelte`. Key aspects:
+
+- **Conditional rendering** — Terminal and ConversationView are `{#if}`/`{:else}` branches in MainView; one fully unmounts while the other mounts
+- **Output buffering** — `stores/terminal.ts` buffers WebSocket output per instance, decoupling the data stream from the xterm component lifecycle
+- **Cross-view focus handoff** — a flag-and-consume pattern in `stores/instances.ts` passes intent (e.g. "focus terminal") across the mount boundary deterministically via `$effect`
+- **Multi-user locking** — `stores/terminalLock.ts` gates input when 2+ users share an instance; server is source of truth
+- **Dimension negotiation** — Terminal sends `TerminalVisible`/`TerminalHidden` messages so the server can set PTY size to `min(all active viewports)`
+
+For detailed documentation including data flow diagrams, the mount sequence, auto-scroll behavior, theming, and overlay banners, see **[Web Terminal](web-terminal.md)**.
+
 ## Server Internals
 
 - **Server loop** supports hot restart via `restart_tx` watch channel (config reload without process restart)

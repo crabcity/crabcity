@@ -356,6 +356,16 @@ export function initViewStateFromUrl(): {
 /** Writable store for terminal mode, synced to URL */
 export const showTerminal = writable<boolean>(false);
 
+/** When true, the Terminal component should grab focus once it mounts. */
+const pendingTerminalFocus = writable<boolean>(false);
+
+/** Consume (read and clear) a pending terminal focus request. */
+export function consumeTerminalFocus(): boolean {
+	const pending = get(pendingTerminalFocus);
+	if (pending) pendingTerminalFocus.set(false);
+	return pending;
+}
+
 /** Read terminal mode from URL (call once on init) */
 export function initTerminalModeFromUrl(): boolean {
 	const url = new URL(window.location.href);
@@ -367,6 +377,7 @@ export function initTerminalModeFromUrl(): boolean {
 /** Update terminal mode in URL and store */
 export function setTerminalMode(show: boolean): void {
 	showTerminal.set(show);
+	if (show) pendingTerminalFocus.set(true);
 	// Only add param if terminal=true (conversation is the default)
 	updateUrl({ terminal: show ? 'true' : null });
 }
