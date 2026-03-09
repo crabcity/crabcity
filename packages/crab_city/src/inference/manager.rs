@@ -135,13 +135,15 @@ impl StateManager {
                 // - JSONL `user` ConversationEntry for direct user messages
                 // - JSONL TurnUpdated (→ `user` signal) for tool_result_only answers
                 self.sent_idle = false;
-                // During boot (Initializing/Starting), terminal input is the only
-                // signal we have — transition to Thinking for responsiveness.
-                // From Idle/WaitingForInput, do NOT transition — wait for the
-                // authoritative JSONL `user` entry instead.
-                if matches!(
+                if self.definitive_idle {
+                    // Definitive idle (from turn_duration) — user is typing their
+                    // next message. Wait for the JSONL `user` entry instead.
+                } else if matches!(
                     self.state,
-                    ClaudeState::Initializing | ClaudeState::Starting
+                    ClaudeState::Initializing
+                        | ClaudeState::Starting
+                        | ClaudeState::Idle
+                        | ClaudeState::WaitingForInput { .. }
                 ) {
                     self.state = ClaudeState::Thinking;
                 }
@@ -440,17 +442,17 @@ mod tests {
     }
 
     #[test]
-    fn test_initializing_to_idle_on_conversation_entry() {
+    fn test_initializing_to_waiting_on_text_only_assistant_entry() {
         let mut manager = default_manager();
-        // An assistant entry while Initializing → Idle (boot transition).
-        // Non-interactive assistant entries don't change state further.
+        // An assistant entry while Initializing → Idle (boot transition),
+        // then text-only assistant → WaitingForInput (tentative).
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: None,
             tool_names: vec![],
         });
-        assert_eq!(result, Some(ClaudeState::Idle));
+        assert_eq!(result, Some(ClaudeState::WaitingForInput { prompt: None }));
     }
 
     #[test]
@@ -500,17 +502,17 @@ mod tests {
     }
 
     #[test]
-    fn test_starting_to_idle_on_conversation_entry() {
+    fn test_starting_to_waiting_on_text_only_assistant_entry() {
         let mut manager = starting_manager();
-        // An assistant entry while Starting → Idle (boot transition).
-        // Non-interactive assistant entries don't change state further.
+        // An assistant entry while Starting → Idle (boot transition),
+        // then text-only assistant → WaitingForInput (tentative).
         let result = manager.process(StateSignal::ConversationEntry {
             entry_type: "assistant".to_string(),
             subtype: None,
             stop_reason: None,
             tool_names: vec![],
         });
-        assert_eq!(result, Some(ClaudeState::Idle));
+        assert_eq!(result, Some(ClaudeState::WaitingForInput { prompt: None }));
     }
 
     #[test]
@@ -526,15 +528,13 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_input_from_idle_does_not_transition() {
-        // User typing at the prompt (Idle state) should not trigger Thinking.
-        // Only the JSONL `user` entry triggers Idle→Thinking.
+    fn test_terminal_input_from_idle_transitions_to_thinking() {
         let mut manager = idle_manager();
         let result = manager.process(StateSignal::TerminalInput {
             data: "hello".to_string(),
         });
-        assert_eq!(result, None, "Keystroke from Idle must not change state");
-        assert_eq!(*manager.state(), ClaudeState::Idle);
+        assert_eq!(result, Some(ClaudeState::Thinking));
+        assert_eq!(*manager.state(), ClaudeState::Thinking);
     }
 
     #[test]
