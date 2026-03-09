@@ -161,8 +161,9 @@ pub enum StateSignal {
 |---|---|---|
 | `ConversationEntry(user)` | **Yes** → `Thinking` | Authoritative: user submitted a message |
 | `ConversationEntry(system, turn_duration)` | **Yes** → `WaitingForInput` (definitive) | Authoritative: turn is over |
+| `ConversationEntry(assistant, no tools)` | **Yes** → `WaitingForInput` (non-definitive) | Text-only response — turn is ending |
 | `ConversationEntry(assistant, interactive tool)` | **Yes** → `WaitingForInput` (non-definitive) | Claude is asking the user something |
-| `ConversationEntry(assistant, non-interactive)` | **No** | Prevents flickering between tool calls |
+| `ConversationEntry(assistant, non-interactive tools)` | **No** | Mid-turn — prevents flickering between tool calls |
 | `TerminalOutput` (with tool pattern) | **Yes** → `ToolExecuting` | Fast heuristic feedback (unless definitive idle) |
 | `TerminalOutput` (plain text, from Thinking) | **Yes** → `Responding` | First output after user message |
 | `TerminalOutput` (plain text, other states) | **No** | Already responding or executing |
@@ -213,13 +214,14 @@ pub enum StateSignal {
    - Sets `definitive_idle = false`
    - Indicates the user submitted a message (or answered a tool prompt)
 
-3. `entry_type == "assistant"` + interactive tool in `tool_names`:
-   - → `WaitingForInput { prompt: None }`
+3. `entry_type == "assistant"` + no tool uses (`tool_names` empty) or interactive tool:
+   - → `WaitingForInput { prompt: None }` (tentative, not definitive)
    - Sets `definitive_idle = false`
    - Clears `current_tool`
+   - Text-only = turn ending, interactive = needs user input
 
-4. `entry_type == "assistant"` + no interactive tools:
-   - **No state change** (this is critical — see [flickering prevention](#why-assistant-entries-dont-change-state))
+4. `entry_type == "assistant"` + non-interactive tools only:
+   - **No state change** (this is critical — see [flickering prevention](#why-non-interactive-tool-entries-dont-change-state))
 
 **TerminalOutput signals (heuristic):**
 
@@ -261,18 +263,25 @@ When the state manager sees an assistant entry with an interactive tool, it
 transitions to `WaitingForInput` so the UI shows "ready."
 
 **Non-interactive tools** (Read, Write, Edit, Bash, Glob, Grep, Task, etc.)
-execute automatically without user involvement. The state manager does NOT
-change state for these — terminal heuristics handle the `ToolExecuting` display,
-and the next `user` entry (from `TurnUpdated`) or `turn_duration` handles the
-completion.
+execute automatically without user involvement. When an assistant entry contains
+only non-interactive tool uses, the state manager does NOT change state — this is
+a mid-turn signal (tool results will follow, then another API call). Terminal
+heuristics handle the `ToolExecuting` display.
 
-### Why This Matters
+**No tools** (text-only assistant entries) mean the model chose to stop
+generating. This transitions to `WaitingForInput` (tentative) because the turn
+is ending. `turn_duration` later confirms it definitively.
 
-Without this distinction:
-- **AskUserQuestion** would stay showing "verbing..." while Claude waits for the
-  user to select an option — wrong, the user needs to act.
-- **Read/Bash/etc.** would briefly flash "ready" between tool calls in an agentic
-  turn with 10+ tools — a distracting flickering effect.
+### Why This Three-Way Split Matters
+
+- **AskUserQuestion** → `WaitingForInput`: Claude is waiting for the user to
+  select an option. Without this, the UI would show "verbing..." while idle.
+- **Read/Bash/etc.** → no state change: The agentic loop continues. Without
+  this, the UI would briefly flash "ready" between each tool call in a
+  10-tool sequence — a distracting flickering effect.
+- **Text-only** → `WaitingForInput`: Claude finished responding. Without this,
+  the UI would stay "verbing..." after Claude is done if `turn_duration` is
+  delayed or arrives in a later poll.
 
 ## Definitive vs Tentative Idle
 
@@ -377,7 +386,7 @@ a selection menu.
 The authoritative signal for "user submitted a message" is the JSONL `user`
 entry, which only appears after Claude actually receives and logs the message.
 
-### Why Assistant Entries Don't Change State
+### Why Non-Interactive Tool Entries Don't Change State
 
 During an agentic turn, Claude makes many API calls in sequence:
 
@@ -385,19 +394,24 @@ During an agentic turn, Claude makes many API calls in sequence:
 assistant (Read file1) → user (tool_result) → assistant (Read file2) → user (tool_result) → ...
 ```
 
-Each assistant entry represents one completed API call. If each one set
-`WaitingForInput`, the UI would rapidly flicker between "ready" and "verbing..."
-as terminal heuristics detect the next tool:
+Each assistant entry with tool uses represents one completed API call where more
+work is expected (tool results will come back, then another API call). If each
+one set `WaitingForInput`, the UI would rapidly flicker between "ready" and
+"verbing..." as terminal heuristics detect the next tool:
 
 ```
 ToolExecuting(Read) → WaitingForInput → ToolExecuting(Read) → WaitingForInput → ...
                       ^^^ 50ms flicker                        ^^^ 50ms flicker
 ```
 
-The fix: assistant entries with non-interactive tools cause **no state change**.
-The state stays at whatever the terminal heuristics set it to (usually
-`ToolExecuting` or `Responding`), and the turn ends definitively with
-`turn_duration`.
+The fix: assistant entries with **only non-interactive tools** cause **no state
+change**. The state stays at whatever the terminal heuristics set it to (usually
+`ToolExecuting` or `Responding`).
+
+Assistant entries with **no tool uses** (text-only final responses) DO transition
+to `WaitingForInput` because they signal the model stopped generating — the turn
+is ending. This is a tentative idle that `turn_duration` later confirms as
+definitive.
 
 ### Why TurnUpdated Emits a User Signal
 

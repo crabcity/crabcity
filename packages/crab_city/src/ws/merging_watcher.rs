@@ -114,9 +114,6 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
             .map_err(|e| ConvoError::Provider(e.to_string()))?;
 
         let mut events: Vec<WatcherEvent> = Vec::new();
-        // Track which stored turns were updated cross-poll in this batch,
-        // so we emit one TurnUpdated per turn rather than per tool result.
-        let mut cross_poll_updated: Vec<String> = Vec::new();
 
         for entry in &entries {
             // No message → progress event (preserve extra fields)
@@ -136,9 +133,14 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
                 continue;
             }
 
-            // Tool-result-only entries get merged, not emitted as turns
+            // Tool-result-only entries get merged, not emitted as turns.
+            // Cross-poll merges emit TurnUpdated HERE (at the natural position
+            // of the tool_result entry) rather than at the end of the batch.
+            // This preserves correct ordering: the user's answer signal must
+            // arrive BEFORE the subsequent turn_duration signal.
             if Self::is_tool_result_only(entry) {
                 let msg = entry.message.as_ref().unwrap();
+                let mut updated_this_entry: Vec<String> = Vec::new();
 
                 for tr in msg.tool_results() {
                     let tool_use_id = tr.tool_use_id.to_string();
@@ -162,11 +164,18 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
                             inv.result = Some(result);
                         }
                         Self::update_delegation_results(stored);
-                        if !cross_poll_updated.contains(&turn_id) {
-                            cross_poll_updated.push(turn_id);
+                        if !updated_this_entry.contains(&turn_id) {
+                            updated_this_entry.push(turn_id);
                         }
                     }
                     // If no match found anywhere, silently drop
+                }
+
+                // Emit TurnUpdated at this position in the event stream
+                for turn_id in updated_this_entry {
+                    if let Some(turn) = self.emitted_turns.get(&turn_id) {
+                        events.push(WatcherEvent::TurnUpdated(Box::new(turn.clone())));
+                    }
                 }
                 continue;
             }
@@ -200,13 +209,6 @@ impl toolpath_convo::ConversationWatcher for MergingWatcher {
                         data,
                     });
                 }
-            }
-        }
-
-        // Emit TurnUpdated for any cross-poll merges
-        for turn_id in cross_poll_updated {
-            if let Some(turn) = self.emitted_turns.get(&turn_id) {
-                events.push(WatcherEvent::TurnUpdated(Box::new(turn.clone())));
             }
         }
 
@@ -581,6 +583,69 @@ mod tests {
             turn.stop_reason.as_deref(),
             Some("end_turn"),
             "stop_reason must propagate through to_turn() into turn.stop_reason"
+        );
+    }
+
+    /// Regression test: cross-poll TurnUpdated must come BEFORE subsequent events
+    /// in the same batch (like turn_duration). Without this, the signal ordering
+    /// is [assistant, turn_duration, TurnUpdated] which causes the "user" signal
+    /// from TurnUpdated to override the definitive WaitingForInput from turn_duration,
+    /// leaving the state stuck at Thinking forever.
+    #[test]
+    fn cross_poll_turn_updated_comes_before_subsequent_events() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let claude_dir = temp.path().join(".claude");
+
+        // Phase 1: user asks question, assistant uses AskUserQuestion
+        let entries_phase1 = vec![
+            r#"{"uuid":"u1","type":"user","timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"Do the thing"}}"#,
+            r#"{"uuid":"a1","type":"assistant","timestamp":"2024-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Which option?"},{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"question":"Which?"}}]}}"#,
+        ];
+        create_test_jsonl(&claude_dir, "s1", &entries_phase1);
+
+        let mut watcher = MergingWatcher::new(
+            test_manager(&claude_dir),
+            "/test/project".into(),
+            "s1".into(),
+        );
+        let _ = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+
+        // Phase 2: user answers + Claude responds + turn_duration, all in one batch.
+        // This is the real scenario: tool_result, new assistant entry, and turn_duration
+        // all arrive in the same poll.
+        use std::io::Write;
+        let project_dir = claude_dir.join("projects/-test-project");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(project_dir.join("s1.jsonl"))
+            .unwrap();
+        // tool_result for AskUserQuestion
+        writeln!(file, r#"{{"uuid":"u2","type":"user","timestamp":"2024-01-01T00:00:02Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"Option A","is_error":false}}]}}}}"#).unwrap();
+        // Claude's response after getting the answer
+        writeln!(file, r#"{{"uuid":"a2","type":"assistant","timestamp":"2024-01-01T00:00:03Z","message":{{"role":"assistant","content":"OK, doing option A."}}}}"#).unwrap();
+        // Turn duration (end of turn)
+        writeln!(file, r#"{{"uuid":"td1","type":"system","subtype":"turn_duration","timestamp":"2024-01-01T00:00:04Z","durationMs":4000}}"#).unwrap();
+
+        let events2 = toolpath_convo::ConversationWatcher::poll(&mut watcher).unwrap();
+
+        // Critical ordering: TurnUpdated must come BEFORE the assistant Turn and
+        // turn_duration Progress. This ensures the state signal ordering is:
+        //   user(Thinking) → assistant(no change) → turn_duration(WaitingForInput)
+        // NOT:
+        //   assistant(no change) → turn_duration(WaitingForInput) → user(Thinking!) ← BUG
+        assert_eq!(events2.len(), 3, "Expected TurnUpdated + Turn + Progress");
+        assert!(
+            matches!(&events2[0], WatcherEvent::TurnUpdated(_)),
+            "First event must be TurnUpdated, got {:?}",
+            std::mem::discriminant(&events2[0])
+        );
+        assert!(
+            matches!(&events2[1], WatcherEvent::Turn(_)),
+            "Second event must be Turn (assistant response)"
+        );
+        assert!(
+            matches!(&events2[2], WatcherEvent::Progress { kind, .. } if kind == "system"),
+            "Third event must be Progress (turn_duration)"
         );
     }
 
