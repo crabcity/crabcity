@@ -111,7 +111,7 @@ pub async fn run_server_conversation_watcher(
             .await
             .is_none()
         {
-            if discovery_attempts % 30 == 0 {
+            if discovery_attempts.is_multiple_of(30) {
                 debug!(
                     "[SERVER-CONVO {}] Waiting for first input before session discovery (attempt {})",
                     instance_id, discovery_attempts
@@ -131,7 +131,7 @@ pub async fn run_server_conversation_watcher(
 
         match candidates.len() {
             0 => {
-                if discovery_attempts % 10 == 0 {
+                if discovery_attempts.is_multiple_of(10) {
                     info!(
                         "[SERVER-CONVO {}] No candidate sessions after {} attempts (search_after={}, working_dir={})",
                         instance_id, discovery_attempts, created_at, working_dir
@@ -164,7 +164,7 @@ pub async fn run_server_conversation_watcher(
             n => {
                 // Multiple candidates — let the user break the tie via the
                 // focus path (SessionAmbiguous). Don't auto-pick.
-                if discovery_attempts % 10 == 0 {
+                if discovery_attempts.is_multiple_of(10) {
                     warn!(
                         "[SERVER-CONVO {}] {} ambiguous candidates after {} attempts, waiting for user selection",
                         instance_id, n, discovery_attempts
@@ -271,11 +271,11 @@ pub async fn run_server_conversation_watcher(
 
                         // Signal state manager for each event
                         for event in &events {
-                            if let Some(signal) = watcher_event_to_signal(event) {
-                                if signal_tx.send(signal).await.is_err() {
-                                    warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
-                                    return;
-                                }
+                            if let Some(signal) = watcher_event_to_signal(event)
+                                && signal_tx.send(signal).await.is_err()
+                            {
+                                warn!("[SERVER-CONVO {}] State signal channel closed", instance_id);
+                                return;
                             }
                         }
 
@@ -351,10 +351,10 @@ pub async fn run_server_conversation_watcher(
                             state_manager.try_claim_session(to_session, &instance_id).await;
 
                             // Update session_id on the instance handle
-                            if let Some(handle) = state_manager.get_handle(&instance_id).await {
-                                if let Err(e) = handle.set_session_id(to_session.clone()).await {
-                                    warn!(instance = %instance_id, "Failed to update session ID on rotation: {}", e);
-                                }
+                            if let Some(handle) = state_manager.get_handle(&instance_id).await
+                                && let Err(e) = handle.set_session_id(to_session.clone()).await
+                            {
+                                warn!(instance = %instance_id, "Failed to update session ID on rotation: {}", e);
                             }
 
                             // Broadcast rotation event to clients
