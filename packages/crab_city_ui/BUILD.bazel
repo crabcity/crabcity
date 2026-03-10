@@ -144,6 +144,8 @@ ts_project(
     srcs = [
         "src/lib/utils/authGuard.test.ts",
         "src/lib/utils/authGuard.ts",
+        "src/lib/utils/draft-map.test.ts",
+        "src/lib/utils/draft-map.ts",
         "src/lib/utils/fileLinkMatch.test.ts",
         "src/lib/utils/fileLinkMatch.ts",
         "src/lib/utils/fuzzy.test.ts",

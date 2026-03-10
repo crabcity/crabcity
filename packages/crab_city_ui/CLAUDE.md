@@ -18,6 +18,8 @@ All shared state lives in `src/lib/stores/`. Stores use Svelte 5 runes (`$state`
 
 Stores must handle WebSocket broadcasts **idempotently** (upsert by ID, not blind append) because the originating client receives both its HTTP response and its own broadcast echo.
 
+**localStorage-backed stores** (`settings.ts`, `drafts.ts`) persist client-only preferences and draft input across page reloads. Keep business logic in pure utility modules (`utils/draft-map.ts`) and limit the store to wiring reactivity + persistence. Debounce writes; flush synchronously on `beforeunload`.
+
 ### Cross-View Handoffs
 
 Terminal and ConversationView are `{#if}`/`{:else}` branches — they never coexist. To pass intent across the mount boundary (e.g. focus terminal after switching), use the flag-and-consume pattern in `stores/instances.ts`. See [docs/web-terminal.md](../../docs/web-terminal.md#view-switching-and-focus-handoff).

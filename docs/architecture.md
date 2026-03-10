@@ -176,6 +176,7 @@ The web UI renders PTY output via **xterm.js** in `components/Terminal.svelte`. 
 - **Cross-view focus handoff** — a flag-and-consume pattern in `stores/instances.ts` passes intent (e.g. "focus terminal") across the mount boundary deterministically via `$effect`
 - **Multi-user locking** — `stores/terminalLock.ts` gates input when 2+ users share an instance; server is source of truth
 - **Dimension negotiation** — Terminal sends `TerminalVisible`/`TerminalHidden` messages so the server can set PTY size to `min(all active viewports)`
+- **Draft persistence** — `stores/drafts.ts` persists per-instance message drafts to `localStorage` (debounced, flushed on `beforeunload`). Pure map logic lives in `utils/draft-map.ts`. Drafts survive instance switches and page reloads; cleared on send or instance deletion
 
 For detailed documentation including data flow diagrams, the mount sequence, auto-scroll behavior, theming, and overlay banners, see **[Web Terminal](web-terminal.md)**.
 
