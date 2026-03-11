@@ -63,6 +63,8 @@ pub enum StateSignal {
         entry_type: String,
         subtype: Option<String>,
         stop_reason: Option<String>,
+        /// Tool names from assistant entry tool_uses (empty for non-assistant entries)
+        tool_names: Vec<String>,
     },
 
     /// Periodic tick for timeout detection (fallback)

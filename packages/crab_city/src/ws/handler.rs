@@ -10,7 +10,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::ServerConfig;
-use crate::inference::StateSignal;
 use crate::instance_manager::InstanceManager;
 use crate::metrics::ServerMetrics;
 use crate::repository::ConversationRepository;
@@ -285,22 +284,10 @@ pub async fn handle_multiplexed_ws(
                                 data,
                                 task_id,
                             } => {
-                                // Use instance_id from the message, NOT focused_clone
-                                // This ensures input goes to the correct instance regardless of focus state
-
-                                // Send to state manager for tool detection
-                                state_mgr
-                                    .send_signal(
-                                        &instance_id,
-                                        StateSignal::TerminalInput { data: data.clone() },
-                                    )
-                                    .await;
-
-                                // Send to PTY
-                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
-                                    if let Err(e) = handle.write_input(&data).await {
+                                // Shared input ceremony: state signal + session discovery + PTY write
+                                match state_mgr.write_input(&instance_id, &data).await {
+                                    Err(e) => {
                                         error!(instance = %instance_id, "Failed to write to PTY: {}", e);
-                                        // Notify client of the error
                                         if tx_input
                                             .send(ServerMessage::Error {
                                                 instance_id: Some(instance_id.clone()),
@@ -311,13 +298,8 @@ pub async fn handle_multiplexed_ws(
                                         {
                                             warn!(instance = %instance_id, "Failed to send error notification - channel closed");
                                         }
-                                    } else {
-                                        // Record first input time for causation-based session discovery.
-                                        // Only relevant if this instance hasn't claimed a session yet.
-                                        if handle.get_session_id().await.is_none() {
-                                            state_mgr.mark_first_input(&instance_id).await;
-                                        }
-
+                                    }
+                                    Ok(()) => {
                                         // Keep terminal lock activity fresh
                                         state_mgr
                                             .touch_terminal_lock(&instance_id, &connection_id_clone)
@@ -369,19 +351,6 @@ pub async fn handle_multiplexed_ws(
                                                 }
                                             }
                                         }
-                                    }
-                                } else {
-                                    // Instance handle disappeared (instance may have died)
-                                    warn!(instance = %instance_id, "Instance handle not found for input");
-                                    if tx_input
-                                        .send(ServerMessage::Error {
-                                            instance_id: Some(instance_id.clone()),
-                                            message: "Instance no longer available".to_string(),
-                                        })
-                                        .await
-                                        .is_err()
-                                    {
-                                        warn!(instance = %instance_id, "Failed to send error notification - channel closed");
                                     }
                                 }
                             }
