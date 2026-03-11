@@ -92,9 +92,26 @@ impl Compositor {
     }
 
     /// Render a positioned paint sequence for a single layer (for live updates).
+    /// Wrapped in DECSC/DECRC — suitable for one-shot paints.
     pub fn paint_layer(&self, id: LayerId, screen_rows: u16, screen_cols: u16) -> Option<Vec<u8>> {
         let layer = self.layer(id)?;
         Some(render::render_layer_paint(layer, screen_rows, screen_cols))
+    }
+
+    /// Render a positioned paint sequence **without** DECSC/DECRC wrapper.
+    /// Use for hot-path repaints where the caller restores cursor via CUP.
+    pub fn paint_layer_raw(
+        &self,
+        id: LayerId,
+        screen_rows: u16,
+        screen_cols: u16,
+    ) -> Option<Vec<u8>> {
+        let layer = self.layer(id)?;
+        Some(render::render_layer_paint_raw(
+            layer,
+            screen_rows,
+            screen_cols,
+        ))
     }
 
     /// Render a clear sequence for a single layer.
@@ -322,7 +339,7 @@ mod tests {
         assert!(s.contains("Hello"));
 
         // Resize the parser too, then compose again
-        parser.set_size(40, 120);
+        parser.screen_mut().set_size(40, 120);
         parser.process(b"\x1b[H\x1b[2JNew content");
         let out = c.compose(parser.screen());
         let s = String::from_utf8_lossy(&out);

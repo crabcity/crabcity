@@ -38,8 +38,26 @@ pub fn render_grid(cells: &[Cell], rows: u16, cols: u16, cursor: (u16, u16)) -> 
 }
 
 /// Render a positioned layer as ANSI paint sequence.
-/// Uses save/restore cursor for non-disruptive overlay.
+/// Uses save/restore cursor (DECSC/DECRC) for non-disruptive overlay.
+/// Suitable for one-shot paints (initialization, resize) where clobbering the
+/// terminal's save/restore stack is acceptable.
 pub fn render_layer_paint(layer: &Layer, screen_rows: u16, screen_cols: u16) -> Vec<u8> {
+    let raw = render_layer_paint_raw(layer, screen_rows, screen_cols);
+    if raw.is_empty() {
+        return raw;
+    }
+    let mut out = Vec::with_capacity(raw.len() + 4);
+    out.extend_from_slice(b"\x1b7"); // DECSC
+    out.extend_from_slice(&raw);
+    out.extend_from_slice(b"\x1b8"); // DECRC
+    out
+}
+
+/// Render a positioned layer as ANSI paint sequence **without** DECSC/DECRC
+/// save/restore cursor wrapper.  Use this for hot-path repaints where the
+/// caller manages cursor positioning (e.g. via an explicit CUP from the VT
+/// parser's authoritative cursor state).
+pub fn render_layer_paint_raw(layer: &Layer, screen_rows: u16, screen_cols: u16) -> Vec<u8> {
     if !layer.visible {
         return Vec::new();
     }
@@ -48,8 +66,6 @@ pub fn render_layer_paint(layer: &Layer, screen_rows: u16, screen_cols: u16) -> 
     };
 
     let mut out = Vec::new();
-    // Save cursor
-    out.extend_from_slice(b"\x1b7");
 
     for row in 0..layer.height {
         let screen_row = top_row + row;
@@ -72,8 +88,8 @@ pub fn render_layer_paint(layer: &Layer, screen_rows: u16, screen_cols: u16) -> 
         }
     }
 
-    // Reset attributes and restore cursor
-    out.extend_from_slice(b"\x1b[0m\x1b8");
+    // Reset attributes (no cursor restore — caller handles that)
+    out.extend_from_slice(b"\x1b[0m");
     out
 }
 
@@ -290,6 +306,45 @@ mod tests {
         layer.fill_text(0, 0, "hi", Attrs::default());
         let out = render_layer_paint(&layer, 24, 80);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn render_layer_paint_raw_no_save_restore() {
+        let mut layer = Layer::new(1, Anchor::TopRight(0, 0), 5, 1, 0);
+        let attrs = Attrs {
+            inverse: true,
+            ..Default::default()
+        };
+        layer.fill_text(0, 0, "hello", attrs);
+
+        let raw = render_layer_paint_raw(&layer, 24, 80);
+        let s = String::from_utf8_lossy(&raw);
+        // Must NOT contain DECSC/DECRC
+        assert!(!s.contains("\x1b7"), "raw paint must not contain DECSC");
+        assert!(!s.contains("\x1b8"), "raw paint must not contain DECRC");
+        // Should still contain the cell content and positioning
+        assert!(s.contains("\x1b[7m")); // reverse video
+        assert!(s.contains("h"));
+        assert!(s.contains("o"));
+        assert!(s.contains("\x1b[1;76H")); // position
+        // Should end with SGR reset
+        assert!(s.ends_with("\x1b[0m"));
+    }
+
+    #[test]
+    fn render_layer_paint_wraps_raw() {
+        let mut layer = Layer::new(1, Anchor::TopLeft(0, 0), 3, 1, 0);
+        layer.fill_text(0, 0, "abc", Attrs::default());
+
+        let raw = render_layer_paint_raw(&layer, 24, 80);
+        let wrapped = render_layer_paint(&layer, 24, 80);
+
+        // Wrapped should be: DECSC + raw + DECRC
+        let s = String::from_utf8_lossy(&wrapped);
+        assert!(s.starts_with("\x1b7"));
+        assert!(s.ends_with("\x1b8"));
+        // Inner content should match
+        assert_eq!(&wrapped[2..wrapped.len() - 2], &raw[..]);
     }
 
     #[test]

@@ -9,4 +9,4 @@ name = "virtual_terminal"
 path = "src/lib.rs"
 
 [dependencies]
-vt100 = "0.15"
+vt100 = "0.16"

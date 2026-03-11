@@ -41,7 +41,7 @@ impl From<&vt100::Cell> for Cell {
             contents: if contents.is_empty() {
                 " ".to_string()
             } else {
-                contents
+                contents.to_string()
             },
             attrs: Attrs {
                 fg: convert_color(cell.fgcolor()),

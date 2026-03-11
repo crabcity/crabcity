@@ -169,7 +169,6 @@ pub async fn handle_focus(
     instance_manager: Arc<InstanceManager>,
     tx: mpsc::Sender<ServerMessage>,
     session_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
-    max_history_bytes: usize,
 ) {
     debug!("Focusing on instance: {}", instance_id);
 
@@ -212,8 +211,9 @@ pub async fn handle_focus(
         }
     };
 
-    // Send terminal history (bounded by config)
-    if send_output_history(&handle, &instance_id, max_history_bytes, &tx)
+    // Send full terminal state (scrollback + visible screen) — the server
+    // owns the buffer, so clients always get the complete aggregated replay.
+    if send_output_history(&handle, &instance_id, usize::MAX, &tx)
         .await
         .is_err()
     {
@@ -314,6 +314,7 @@ pub async fn handle_focus(
                             && tx_output.send(ServerMessage::Output {
                                 instance_id: instance_id_output.clone(),
                                 data,
+                                cursor: Some(event.cursor),
                             }).await.is_err() {
                                 break;
                             }
@@ -699,7 +700,7 @@ mod tests {
     /// Helper: create a state manager with conversation turns pre-loaded.
     async fn setup_state_with_turns(turns: Vec<serde_json::Value>) -> Arc<GlobalStateManager> {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         mgr.set_test_conversation_turns("inst-1", turns).await;
         mgr
@@ -795,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn send_nothing_when_store_empty() {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         let (tx, mut rx) = mpsc::channel(16);
 
@@ -810,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_sent_when_buffer_nonempty() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         vt.write()
             .await
             .process_output(b"Hello from test\r\nLine 2");
@@ -835,7 +836,7 @@ mod tests {
         // Even a fresh VT produces a screen-dump keyframe, so OutputHistory
         // is always sent. This is correct — the client gets a blank screen
         // rather than stale content.
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, &tx)
@@ -852,7 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_err_on_closed_channel() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, rx) = mpsc::channel(16);
         drop(rx); // close the receiver

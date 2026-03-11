@@ -17,10 +17,7 @@ use crate::repository::ConversationRepository;
 use crate::virtual_terminal::ClientType;
 
 use super::focus::{handle_focus, send_conversation_since, send_output_history};
-use super::protocol::{
-    BackpressureStats, ClientMessage, DEFAULT_MAX_HISTORY_BYTES, PresenceUser, ServerMessage,
-    WsUser,
-};
+use super::protocol::{BackpressureStats, ClientMessage, PresenceUser, ServerMessage, WsUser};
 use super::state_manager::{GlobalStateManager, TERMINAL_LOCK_TIMEOUT_SECS};
 
 /// Handle a multiplexed WebSocket connection
@@ -28,7 +25,7 @@ pub async fn handle_multiplexed_ws(
     socket: WebSocket,
     instance_manager: Arc<InstanceManager>,
     state_manager: Arc<GlobalStateManager>,
-    server_config: Option<Arc<ServerConfig>>,
+    _server_config: Option<Arc<ServerConfig>>,
     server_metrics: Option<Arc<ServerMetrics>>,
     ws_user: Option<WsUser>,
     repository: Option<Arc<ConversationRepository>>,
@@ -45,12 +42,6 @@ pub async fn handle_multiplexed_ws(
     if let Some(ref m) = server_metrics {
         m.connection_opened();
     }
-
-    // Get max history bytes from config or use default
-    let max_history_bytes = server_config
-        .as_ref()
-        .map(|c| c.websocket.max_history_replay_bytes)
-        .unwrap_or(DEFAULT_MAX_HISTORY_BYTES);
 
     // Per-connection backpressure stats
     let stats = Arc::new(BackpressureStats::new());
@@ -242,7 +233,6 @@ pub async fn handle_multiplexed_ws(
                                 let inst_mgr_focus = inst_mgr.clone();
                                 let session_rx = session_rx_clone.clone();
 
-                                let max_history = max_history_bytes;
                                 tokio::spawn(async move {
                                     handle_focus(
                                         instance_id,
@@ -252,7 +242,6 @@ pub async fn handle_multiplexed_ws(
                                         inst_mgr_focus,
                                         tx_focus,
                                         session_rx,
-                                        max_history,
                                     )
                                     .await;
                                 });
@@ -395,7 +384,7 @@ pub async fn handle_multiplexed_ws(
                                     let _ = send_output_history(
                                         &handle,
                                         &instance_id,
-                                        max_history_bytes,
+                                        usize::MAX,
                                         &tx_input,
                                     )
                                     .await;

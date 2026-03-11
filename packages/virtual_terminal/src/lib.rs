@@ -29,6 +29,9 @@ pub struct VirtualTerminal {
     /// VT100 terminal emulator — processes PTY output, maintains screen state
     parser: vt100::Parser,
 
+    /// Number of scrollback lines to retain
+    scrollback_lines: usize,
+
     /// Per-client viewport tracking
     client_viewports: HashMap<String, ClientViewport>,
 
@@ -47,9 +50,10 @@ pub struct VirtualTerminal {
 
 impl VirtualTerminal {
     /// Create a new virtual terminal with the given initial dimensions.
-    pub fn new(rows: u16, cols: u16, max_delta_bytes: usize) -> Self {
+    pub fn new(rows: u16, cols: u16, max_delta_bytes: usize, scrollback_lines: usize) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser: vt100::Parser::new(rows, cols, scrollback_lines),
+            scrollback_lines,
             client_viewports: HashMap::new(),
             effective_dims: (rows, cols),
             keyframe: None,
@@ -61,6 +65,11 @@ impl VirtualTerminal {
     /// Access the underlying vt100 screen for cell-level reads.
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
+    }
+
+    /// Current cursor position (row, col) — 0-indexed.
+    pub fn cursor_position(&self) -> (u16, u16) {
+        self.parser.screen().cursor_position()
     }
 
     /// Process PTY output — feed to vt100 parser, append to deltas,
@@ -90,18 +99,61 @@ impl VirtualTerminal {
         self.deltas.clear();
     }
 
-    /// Get replay data for a new client: keyframe + deltas.
-    /// If no keyframe exists, compacts first.
+    /// Get the aggregated terminal state for a new client.
+    ///
+    /// Returns scrollback content (from the vt100 parser's buffer) followed
+    /// by a keyframe (visible screen snapshot). Always compacts first so
+    /// clients receive the fully-aggregated state — no raw deltas of cursor
+    /// throbs or intermediate rewrites.
     pub fn replay(&mut self) -> Vec<u8> {
-        if self.keyframe.is_none() {
-            self.compact();
-        }
+        self.compact();
         let mut result = Vec::new();
+        // Prepend scrollback — lines scroll through the client's terminal and
+        // land in their scrollback buffer before the keyframe clears the screen.
+        self.append_scrollback_replay(&mut result);
         if let Some(ref kf) = self.keyframe {
             result.extend_from_slice(kf);
         }
-        result.extend_from_slice(&self.deltas);
         result
+    }
+
+    /// Append formatted scrollback rows to `out`, from oldest to newest.
+    /// Each row is output as ANSI-formatted text + `\r\n`, so it scrolls
+    /// naturally through the receiving terminal.
+    fn append_scrollback_replay(&mut self, out: &mut Vec<u8>) {
+        // Find total scrollback depth by scrolling all the way back
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let total_scrollback = self.parser.screen().scrollback();
+
+        if total_scrollback == 0 {
+            self.parser.screen_mut().set_scrollback(0);
+            return;
+        }
+
+        let (rows, cols) = self.parser.screen().size();
+        let rows_usize = rows as usize;
+
+        // Iterate from oldest scrollback to newest, one page at a time.
+        // At scrollback=N, viewport row 0 is N lines back from the live screen.
+        // The top min(N, screen_height) rows are scrollback content.
+        let mut remaining = total_scrollback;
+        while remaining > 0 {
+            self.parser.screen_mut().set_scrollback(remaining);
+            let screen = self.parser.screen();
+            let scrollback_rows_in_page = remaining.min(rows_usize);
+
+            for (i, row_content) in screen.rows_formatted(0, cols).enumerate() {
+                if i >= scrollback_rows_in_page {
+                    break;
+                }
+                out.extend_from_slice(&row_content);
+                out.extend_from_slice(b"\x1b[0m\r\n");
+            }
+
+            remaining = remaining.saturating_sub(rows_usize);
+        }
+
+        self.parser.screen_mut().set_scrollback(0);
     }
 
     /// Update a client's viewport. Returns new effective dims if changed.
@@ -140,7 +192,7 @@ impl VirtualTerminal {
 
     /// Apply a resize to the vt100 parser (called when effective dims change).
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.parser.set_size(rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
     }
 
     /// Current effective dimensions.
@@ -160,7 +212,7 @@ impl VirtualTerminal {
             // rendered at stale dimensions and vt100's set_size merges
             // soft-wrapped lines, corrupting the display.  The PTY resize
             // will SIGWINCH the application, which redraws cleanly.
-            self.parser = vt100::Parser::new(rows, cols, 0);
+            self.parser = vt100::Parser::new(rows, cols, self.scrollback_lines);
             self.keyframe = None;
             self.deltas.clear();
             return Some((rows, cols));
@@ -188,13 +240,13 @@ mod tests {
 
     #[test]
     fn test_new_initial_dims() {
-        let vt = VirtualTerminal::new(24, 80, 4096);
+        let vt = VirtualTerminal::new(24, 80, 4096, 0);
         assert_eq!(vt.effective_dims(), (24, 80));
     }
 
     #[test]
     fn test_screen_access() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Hello");
         let screen = vt.screen();
         let (rows, cols) = screen.size();
@@ -206,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_single_client_viewport() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         let result = vt.update_viewport("client-1", 40, 120, ClientType::Web);
         // Effective dims changed from (24, 80) to (40, 120)
         assert_eq!(result, Some((40, 120)));
@@ -215,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_two_clients_min_dims() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("web", 40, 120, ClientType::Web);
         let result = vt.update_viewport("cli", 24, 80, ClientType::Terminal);
         // min(40,24)=24, min(120,80)=80
@@ -225,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_inactive_client_excluded() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("web", 40, 120, ClientType::Web);
         vt.update_viewport("cli", 24, 80, ClientType::Terminal);
         assert_eq!(vt.effective_dims(), (24, 80));
@@ -238,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_reactivate_client() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("web", 40, 120, ClientType::Web);
         vt.update_viewport("cli", 24, 80, ClientType::Terminal);
         vt.set_active("cli", false);
@@ -251,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_client_removal_recalculates() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("web", 40, 120, ClientType::Web);
         vt.update_viewport("cli", 24, 80, ClientType::Terminal);
         assert_eq!(vt.effective_dims(), (24, 80));
@@ -262,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_remove_last_client_keeps_dims() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("cli", 30, 100, ClientType::Terminal);
         assert_eq!(vt.effective_dims(), (30, 100));
 
@@ -274,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_process_output_and_compact_replay() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Hello, world!");
         vt.process_output(b"\r\nLine 2");
 
@@ -291,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_auto_compaction() {
-        let mut vt = VirtualTerminal::new(24, 80, 100); // Small threshold
+        let mut vt = VirtualTerminal::new(24, 80, 100, 0); // Small threshold
         // Write more than 100 bytes
         let data = vec![b'A'; 150];
         vt.process_output(&data);
@@ -304,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_resize_invalidates_keyframe() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Some output");
         vt.compact();
         assert!(vt.keyframe.is_some());
@@ -317,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_no_dims_change_returns_none() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.update_viewport("cli", 30, 100, ClientType::Terminal);
         assert_eq!(vt.effective_dims(), (30, 100));
 
@@ -328,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_replay_compacts_if_no_keyframe() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Hello");
         assert!(vt.keyframe.is_none());
 
@@ -361,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_update_viewport_implies_active() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // update_viewport always sets is_active=true
         vt.update_viewport("cli", 30, 100, ClientType::Terminal);
         let vp = vt.client_viewports.get("cli").unwrap();
@@ -370,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_keyframe_plus_deltas_replay() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // Phase 1: write output, then compact to create a keyframe
         vt.process_output(b"Before keyframe");
         vt.compact();
@@ -390,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_auto_compact_then_more_output() {
-        let mut vt = VirtualTerminal::new(24, 80, 64); // Small threshold
+        let mut vt = VirtualTerminal::new(24, 80, 64, 0); // Small threshold
         // Write enough to trigger auto-compaction
         vt.process_output(
             b"AAAA repeating data that exceeds the sixty-four byte delta threshold!!",
@@ -411,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_empty_terminal_replay() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // No output at all — replay on a fresh terminal
         let replay = vt.replay();
         // Should not be empty — the keyframe is the empty screen reset sequence
@@ -423,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_replay_idempotency() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Hello, world!\r\nLine two");
 
         let replay1 = vt.replay();
@@ -432,8 +484,20 @@ mod tests {
     }
 
     #[test]
+    fn test_cursor_position() {
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
+        assert_eq!(vt.cursor_position(), (0, 0));
+
+        vt.process_output(b"Hello");
+        assert_eq!(vt.cursor_position(), (0, 5));
+
+        vt.process_output(b"\r\nLine 2");
+        assert_eq!(vt.cursor_position(), (1, 6));
+    }
+
+    #[test]
     fn test_set_active_unknown_connection_id() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // Should return None and not panic
         let result = vt.set_active("nonexistent", false);
         assert!(result.is_none());
@@ -441,7 +505,7 @@ mod tests {
 
     #[test]
     fn test_remove_unknown_connection_id() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // Should return None and not panic
         let result = vt.remove_client("nonexistent");
         assert!(result.is_none());
@@ -449,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_resize_direct() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"hello");
         vt.compact();
         assert!(vt.keyframe.is_some());
@@ -465,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_resize_then_replay() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Content at 24x80");
         vt.compact();
         assert!(vt.keyframe.is_some());
@@ -489,5 +553,148 @@ mod tests {
         let replay = vt.replay();
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("Content at 40x120"));
+    }
+
+    // ── Scrollback tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_scrollback_in_replay() {
+        // 4-row screen with 100 lines of scrollback
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+
+        // Write 8 lines — 4 will scroll off into the scrollback buffer
+        for i in 0..8 {
+            vt.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+
+        // Scrollback lines (0-3) should be in the replay
+        assert!(replay_str.contains("Line 0"), "scrollback line 0 missing");
+        assert!(replay_str.contains("Line 3"), "scrollback line 3 missing");
+        // Visible screen lines (4-7) should also be present
+        assert!(replay_str.contains("Line 4"), "visible line 4 missing");
+        assert!(replay_str.contains("Line 7"), "visible line 7 missing");
+    }
+
+    #[test]
+    fn test_scrollback_empty_when_no_overflow() {
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 100);
+        vt.process_output(b"Only one line");
+
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+        assert!(replay_str.contains("Only one line"));
+    }
+
+    #[test]
+    fn test_scrollback_zero_means_no_scrollback() {
+        // scrollback_lines=0 — same as before
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 0);
+        for i in 0..8 {
+            vt.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+        // With zero scrollback, lines 0-4 are lost
+        assert!(
+            !replay_str.contains("Line 0"),
+            "line 0 should be lost with zero scrollback"
+        );
+        assert!(
+            !replay_str.contains("Line 4"),
+            "line 4 should be lost with zero scrollback"
+        );
+        // Visible lines should be present (lines 5-7 remain on the 4-row screen
+        // because each line ends with \r\n, scrolling the cursor down)
+        assert!(replay_str.contains("Line 5"), "line 5 should be visible");
+        assert!(replay_str.contains("Line 7"), "line 7 should be visible");
+    }
+
+    #[test]
+    fn test_scrollback_preserves_formatting() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+
+        // Write colored output that scrolls into scrollback
+        for i in 0..8 {
+            // \x1b[31m = red foreground
+            vt.process_output(format!("\x1b[31mRed {}\x1b[0m\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+
+        // Scrollback should contain the color escape for old lines
+        assert!(
+            replay_str.contains("Red 0"),
+            "scrollback should contain text"
+        );
+        // The replay should contain SGR sequences (red = 31)
+        assert!(
+            replay_str.contains("\x1b["),
+            "scrollback should contain ANSI formatting"
+        );
+    }
+
+    #[test]
+    fn test_scrollback_survives_compaction() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+
+        for i in 0..8 {
+            vt.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+        vt.compact();
+
+        // After compaction, replay should still include scrollback
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+        assert!(
+            replay_str.contains("Line 0"),
+            "scrollback line should survive compaction"
+        );
+        assert!(
+            replay_str.contains("Line 7"),
+            "visible line should survive compaction"
+        );
+    }
+
+    #[test]
+    fn test_scrollback_capped_at_limit() {
+        // Only 5 lines of scrollback
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 5);
+
+        // Write 20 lines — 16 scroll off, but only 5 are retained
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay();
+        let replay_str = String::from_utf8_lossy(&replay);
+
+        // Lines 0-10 should be gone (exceeded scrollback capacity)
+        assert!(
+            !replay_str.contains("Line 00"),
+            "oldest lines should be evicted"
+        );
+        // Recent scrollback lines should be present
+        assert!(
+            replay_str.contains("Line 15"),
+            "recent scrollback should be present"
+        );
+        // Visible screen lines should be present
+        assert!(
+            replay_str.contains("Line 19"),
+            "visible lines should be present"
+        );
+    }
+
+    #[test]
+    fn test_resize_preserves_scrollback_config() {
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 500);
+        vt.update_viewport("cli", 30, 100, ClientType::Terminal);
+        // After resize, scrollback_lines should still be 500
+        assert_eq!(vt.scrollback_lines, 500);
     }
 }

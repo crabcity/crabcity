@@ -78,10 +78,10 @@ rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 
 # Virtual terminal emulator (for screen buffer / keyframe snapshots)
-vt100 = "0.15"
+vt100 = "0.16"
 
 # TUI picker
-ratatui = "0.29"
+ratatui = "0.30"
 ignore = "0.4.25"
 
 [target.'cfg(unix)'.dependencies]

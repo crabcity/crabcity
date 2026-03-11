@@ -77,6 +77,8 @@ pub struct ServerFileConfig {
     pub max_history_kb: usize,
     #[serde(default = "default_hang_timeout_secs")]
     pub hang_timeout_secs: u64,
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: usize,
 }
 
 impl Default for ServerFileConfig {
@@ -87,6 +89,7 @@ impl Default for ServerFileConfig {
             max_buffer_mb: default_max_buffer_mb(),
             max_history_kb: default_max_history_kb(),
             hang_timeout_secs: default_hang_timeout_secs(),
+            scrollback_lines: default_scrollback_lines(),
         }
     }
 }
@@ -106,6 +109,14 @@ fn default_max_history_kb() -> usize {
 fn default_hang_timeout_secs() -> u64 {
     300
 }
+fn default_scrollback_lines() -> usize {
+    10_000
+}
+
+/// Minimum scrollback lines (fewer than ~3 screens is useless).
+pub const MIN_SCROLLBACK_LINES: usize = 100;
+/// Maximum scrollback lines (~400MB worst-case at 80 cols).
+pub const MAX_SCROLLBACK_LINES: usize = 100_000;
 
 /// Build a figment that layers: defaults → profile defaults → config.toml → CRAB_* env vars.
 ///
@@ -191,6 +202,7 @@ pub struct RuntimeOverrides {
     pub port: Option<u16>,
     pub auth_enabled: Option<bool>,
     pub https: Option<bool>,
+    pub scrollback_lines: Option<usize>,
 }
 
 // =============================================================================
@@ -237,6 +249,8 @@ pub struct ServerConfig {
 pub struct InstanceConfig {
     /// Maximum output buffer per instance in bytes
     pub max_buffer_bytes: usize,
+    /// Number of scrollback lines the server-side vt100 parser retains
+    pub scrollback_lines: usize,
     /// Consider instance hung after this duration without output (None = disabled)
     #[allow(dead_code)]
     pub hang_timeout: Option<Duration>,
@@ -272,6 +286,9 @@ impl ServerConfig {
         Self {
             instance: InstanceConfig {
                 max_buffer_bytes: fc.max_buffer_mb * 1024 * 1024,
+                scrollback_lines: fc
+                    .scrollback_lines
+                    .clamp(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES),
                 hang_timeout: if fc.hang_timeout_secs == 0 {
                     None
                 } else {
@@ -447,6 +464,7 @@ mod tests {
         assert_eq!(d.max_buffer_mb, 25);
         assert_eq!(d.max_history_kb, 64);
         assert_eq!(d.hang_timeout_secs, 300);
+        assert_eq!(d.scrollback_lines, 10_000);
     }
 
     // ── AuthConfig::from_file ───────────────────────────────────────────
@@ -612,12 +630,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("config.toml"),
-            "[server]\nhost = \"192.168.1.1\"\nport = 8080\nmax_buffer_mb = 50\n",
+            "[server]\nhost = \"192.168.1.1\"\nport = 8080\nmax_buffer_mb = 50\nscrollback_lines = 500\n",
         )
         .unwrap();
         let fc: FileConfig = load_config(tmp.path(), None).extract().unwrap();
         assert_eq!(fc.server.host.as_deref(), Some("192.168.1.1"));
         assert_eq!(fc.server.port, Some(8080));
         assert_eq!(fc.server.max_buffer_mb, 50);
+        assert_eq!(fc.server.scrollback_lines, 500);
+    }
+
+    #[test]
+    fn test_load_config_scrollback_lines_defaults_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("config.toml"), "[server]\nport = 3000\n").unwrap();
+        let fc: FileConfig = load_config(tmp.path(), None).extract().unwrap();
+        assert_eq!(fc.server.scrollback_lines, 10_000);
     }
 }

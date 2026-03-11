@@ -31,10 +31,16 @@ pub struct InstanceManager {
     used_names: RwLock<HashSet<String>>,
     base_directory: String,
     max_buffer_bytes: usize,
+    scrollback_lines: usize,
 }
 
 impl InstanceManager {
-    pub fn new(claude_path: String, _base_port: u16, max_buffer_bytes: usize) -> Self {
+    pub fn new(
+        claude_path: String,
+        _base_port: u16,
+        max_buffer_bytes: usize,
+        scrollback_lines: usize,
+    ) -> Self {
         let base_directory = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
             .to_string_lossy()
@@ -46,6 +52,7 @@ impl InstanceManager {
             used_names: RwLock::new(HashSet::new()),
             base_directory,
             max_buffer_bytes,
+            scrollback_lines,
         }
     }
 
@@ -154,6 +161,7 @@ impl InstanceManager {
             args,
             working_dir: working_dir.clone(),
             max_buffer_bytes: self.max_buffer_bytes,
+            scrollback_lines: self.scrollback_lines,
         })
         .await?;
 
@@ -284,7 +292,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn test_manager() -> InstanceManager {
-        InstanceManager::new("claude".to_string(), 0, 1024 * 1024)
+        InstanceManager::new("claude".to_string(), 0, 1024 * 1024, 0)
     }
 
     #[test]

@@ -94,8 +94,8 @@ async fn session_loop(config: &CrabCityConfig, daemon: DaemonInfo) -> Result<()>
     let has_tty = std::io::stdin().is_terminal();
 
     // Initialise ratatui terminal once; picker + settings share it.
-    // attach() uses its own raw-mode I/O, so we restore before attaching
-    // and re-init afterwards.
+    // attach() manages its own ratatui terminal internally, so we restore
+    // the picker's terminal before attaching and re-init afterwards.
     let mut terminal = if has_tty { Some(ratatui::init()) } else { None };
 
     let result = session_loop_inner(&mut terminal, config, daemon).await;
@@ -146,7 +146,7 @@ async fn session_loop_inner(
             match run_live_picker(terminal, &daemon, instances, last_attached.as_deref()).await? {
                 PickerResult::Attach(id) => {
                     info!(instance_id = %id, "attaching to instance");
-                    // Restore terminal before attaching (attach uses raw terminal I/O directly)
+                    // Restore terminal before attaching (attach manages its own ratatui terminal)
                     if terminal.is_some() {
                         ratatui::restore();
                     }

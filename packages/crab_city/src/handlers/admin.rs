@@ -176,6 +176,7 @@ pub struct ConfigResponse {
     pub port: u16,
     pub auth_enabled: bool,
     pub https: bool,
+    pub scrollback_lines: usize,
     /// Which values are overridden at runtime (ephemeral)
     pub overrides: OverrideState,
 }
@@ -186,6 +187,7 @@ pub struct OverrideState {
     pub port: bool,
     pub auth_enabled: bool,
     pub https: bool,
+    pub scrollback_lines: bool,
 }
 
 /// GET /api/admin/config — return the effective config + which fields are overridden.
@@ -204,6 +206,9 @@ pub async fn get_config_handler(State(state): State<AppState>) -> impl IntoRespo
     let effective_port = overrides.port.or(fc.server.port).unwrap_or(0);
     let effective_auth = overrides.auth_enabled.unwrap_or(fc.auth.enabled);
     let effective_https = overrides.https.unwrap_or(fc.auth.https);
+    let effective_scrollback = overrides
+        .scrollback_lines
+        .unwrap_or(fc.server.scrollback_lines);
 
     let profile_name = fc.profile.as_ref().map(|p| match p {
         crate::config::Profile::Local => "local",
@@ -217,11 +222,13 @@ pub async fn get_config_handler(State(state): State<AppState>) -> impl IntoRespo
         port: effective_port,
         auth_enabled: effective_auth,
         https: effective_https,
+        scrollback_lines: effective_scrollback,
         overrides: OverrideState {
             host: overrides.host.is_some(),
             port: overrides.port.is_some(),
             auth_enabled: overrides.auth_enabled.is_some(),
             https: overrides.https.is_some(),
+            scrollback_lines: overrides.scrollback_lines.is_some(),
         },
     })
 }
@@ -233,6 +240,7 @@ pub struct ConfigPatchRequest {
     pub port: Option<u16>,
     pub auth_enabled: Option<bool>,
     pub https: Option<bool>,
+    pub scrollback_lines: Option<usize>,
     /// If true, persist changes to config.toml (in addition to applying at runtime)
     #[serde(default)]
     pub save: bool,
@@ -270,6 +278,9 @@ pub async fn patch_config_handler(
         if let Some(https) = req.https {
             overrides.https = Some(https);
         }
+        if let Some(scrollback) = req.scrollback_lines {
+            overrides.scrollback_lines = Some(scrollback);
+        }
 
         // If saving, clear the runtime overrides for saved fields (they're now in config.toml)
         if req.save {
@@ -284,6 +295,9 @@ pub async fn patch_config_handler(
             }
             if req.https.is_some() {
                 overrides.https = None;
+            }
+            if req.scrollback_lines.is_some() {
+                overrides.scrollback_lines = None;
             }
         }
     }
@@ -352,6 +366,18 @@ fn save_overrides_to_config(
         auth.insert("https".to_string(), toml::Value::Boolean(https));
     }
 
+    if let Some(scrollback_lines) = req.scrollback_lines {
+        let server = doc
+            .entry("server")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .context("[server] is not a table")?;
+        server.insert(
+            "scrollback_lines".to_string(),
+            toml::Value::Integer(scrollback_lines as i64),
+        );
+    }
+
     let serialized = toml::to_string_pretty(&doc).context("Failed to serialize config.toml")?;
     std::fs::write(&path, serialized)
         .with_context(|| format!("Failed to write {}", path.display()))?;
@@ -378,6 +404,7 @@ mod tests {
             port: None,
             auth_enabled: None,
             https: None,
+            scrollback_lines: None,
             save: true,
         };
 
@@ -399,6 +426,7 @@ mod tests {
             port: Some(8080),
             auth_enabled: None,
             https: None,
+            scrollback_lines: None,
             save: true,
         };
 
@@ -419,6 +447,7 @@ mod tests {
             port: None,
             auth_enabled: Some(true),
             https: Some(true),
+            scrollback_lines: None,
             save: true,
         };
 
@@ -449,6 +478,7 @@ mod tests {
             port: Some(9090),
             auth_enabled: None,
             https: None,
+            scrollback_lines: None,
             save: true,
         };
 
@@ -473,6 +503,7 @@ mod tests {
             port: Some(3000),
             auth_enabled: Some(true),
             https: Some(false),
+            scrollback_lines: None,
             save: true,
         };
 
@@ -496,6 +527,7 @@ mod tests {
             port: None,
             auth_enabled: None,
             https: None,
+            scrollback_lines: None,
             save: true,
         };
 
@@ -503,6 +535,27 @@ mod tests {
         // Should create a valid (empty) config file
         let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
         let _doc: toml::Table = contents.parse().unwrap();
+    }
+
+    #[test]
+    fn test_save_scrollback_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = make_config(tmp.path());
+
+        let req = ConfigPatchRequest {
+            host: None,
+            port: None,
+            auth_enabled: None,
+            https: None,
+            scrollback_lines: Some(500),
+            save: true,
+        };
+
+        save_overrides_to_config(&config, &req).unwrap();
+
+        let contents = std::fs::read_to_string(config.config_toml_path()).unwrap();
+        let doc: toml::Table = contents.parse().unwrap();
+        assert_eq!(doc["server"]["scrollback_lines"].as_integer().unwrap(), 500);
     }
 
     // =========================================================================
@@ -544,11 +597,13 @@ mod tests {
         assert!(json.get("port").is_some());
         assert!(json.get("auth_enabled").is_some());
         assert!(json.get("https").is_some());
+        assert!(json.get("scrollback_lines").is_some());
         assert!(json.get("overrides").is_some());
         // No overrides active by default
         let overrides = &json["overrides"];
         assert!(!overrides["host"].as_bool().unwrap());
         assert!(!overrides["port"].as_bool().unwrap());
+        assert!(!overrides["scrollback_lines"].as_bool().unwrap());
     }
 
     #[tokio::test]
@@ -647,11 +702,13 @@ mod tests {
             port: 3000,
             auth_enabled: false,
             https: false,
+            scrollback_lines: 10_000,
             overrides: OverrideState {
                 host: false,
                 port: true,
                 auth_enabled: false,
                 https: false,
+                scrollback_lines: false,
             },
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -660,6 +717,7 @@ mod tests {
         assert_eq!(json["port"], 3000);
         assert!(!json["auth_enabled"].as_bool().unwrap());
         assert!(json["overrides"]["port"].as_bool().unwrap());
+        assert_eq!(json["scrollback_lines"], 10_000);
     }
 
     #[test]
@@ -709,6 +767,7 @@ mod tests {
         assert!(req.port.is_none());
         assert!(req.auth_enabled.is_none());
         assert!(req.https.is_none());
+        assert!(req.scrollback_lines.is_none());
         assert!(!req.save);
     }
 
@@ -719,9 +778,11 @@ mod tests {
             port: false,
             auth_enabled: true,
             https: false,
+            scrollback_lines: false,
         };
         let json = serde_json::to_value(&state).unwrap();
         assert!(json["host"].as_bool().unwrap());
         assert!(!json["port"].as_bool().unwrap());
+        assert!(!json["scrollback_lines"].as_bool().unwrap());
     }
 }

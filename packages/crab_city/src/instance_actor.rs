@@ -6,10 +6,19 @@ use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tracing::debug;
 use uuid::Uuid;
 
-use pty_manager::{PtyConfig, PtyHandle, PtyOutput};
+use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
 use crate::virtual_terminal::{ClientType, VirtualTerminal};
+
+/// PTY output enriched with cursor position from the VirtualTerminal.
+/// Produced by the VT processing task after feeding output to the parser.
+#[derive(Debug, Clone)]
+pub struct EnrichedOutput {
+    pub data: Vec<u8>,
+    pub cursor: (u16, u16),
+    pub timestamp: i64,
+}
 
 /// Commands that can be sent to an instance actor
 #[derive(Debug)]
@@ -28,7 +37,7 @@ pub enum InstanceCommand {
         respond_to: oneshot::Sender<Result<()>>,
     },
     SubscribeOutput {
-        respond_to: oneshot::Sender<broadcast::Receiver<PtyOutput>>,
+        respond_to: oneshot::Sender<broadcast::Receiver<EnrichedOutput>>,
     },
     /// Get recent output with a byte limit
     /// Returns chunks from the end of the buffer up to max_bytes total
@@ -164,7 +173,7 @@ impl InstanceHandle {
             .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))?
     }
 
-    pub async fn subscribe_output(&self) -> Result<broadcast::Receiver<PtyOutput>> {
+    pub async fn subscribe_output(&self) -> Result<broadcast::Receiver<EnrichedOutput>> {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(InstanceCommand::SubscribeOutput { respond_to: tx })
@@ -410,6 +419,8 @@ pub struct SpawnOptions {
     pub working_dir: String,
     /// Maximum output ring buffer size in bytes
     pub max_buffer_bytes: usize,
+    /// Number of scrollback lines the server-side vt100 parser retains
+    pub scrollback_lines: usize,
 }
 
 /// Handle VT and compositor commands.
@@ -519,6 +530,7 @@ struct InstanceActor {
     receiver: mpsc::Receiver<InstanceCommand>,
     virtual_terminal: Arc<RwLock<VirtualTerminal>>,
     compositor: Arc<RwLock<Compositor>>,
+    enriched_tx: broadcast::Sender<EnrichedOutput>,
 }
 
 impl InstanceActor {
@@ -571,8 +583,10 @@ impl InstanceActor {
             24,
             80,
             opts.max_buffer_bytes,
+            opts.scrollback_lines,
         )));
         let compositor = Arc::new(RwLock::new(Compositor::new()));
+        let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
 
         let actor = InstanceActor {
             info: info.clone(),
@@ -580,15 +594,23 @@ impl InstanceActor {
             receiver,
             virtual_terminal: virtual_terminal.clone(),
             compositor: compositor.clone(),
+            enriched_tx: enriched_tx.clone(),
         };
 
-        // Start the output collection task - feed PTY output to VirtualTerminal
+        // Start the output collection task - feed PTY output to VirtualTerminal,
+        // then broadcast enriched output with cursor position
         let mut output_rx = pty.subscribe();
         let vt_clone = virtual_terminal.clone();
         tokio::spawn(async move {
             while let Ok(event) = output_rx.recv().await {
                 let mut vt = vt_clone.write().await;
                 vt.process_output(&event.data);
+                let cursor = vt.cursor_position();
+                let _ = enriched_tx.send(EnrichedOutput {
+                    data: event.data,
+                    cursor,
+                    timestamp: event.timestamp,
+                });
             }
         });
 
@@ -638,7 +660,7 @@ impl InstanceActor {
                 }
 
                 InstanceCommand::SubscribeOutput { respond_to } => {
-                    let rx = self.pty.subscribe();
+                    let rx = self.enriched_tx.subscribe();
                     let _ = respond_to.send(rx);
                 }
 
@@ -709,12 +731,17 @@ pub async fn create_instance(opts: SpawnOptions) -> Result<InstanceHandle> {
 #[cfg(test)]
 impl InstanceHandle {
     /// Spawn a test actor backed by a VirtualTerminal only (no real PTY).
-    /// Returns the handle and a reference to the VT for injecting output.
+    /// Returns the handle, a reference to the VT for injecting output, and
+    /// a sender for injecting enriched output events.
     pub(crate) fn spawn_test(
         rows: u16,
         cols: u16,
         max_delta_bytes: usize,
-    ) -> (Self, Arc<RwLock<VirtualTerminal>>) {
+    ) -> (
+        Self,
+        Arc<RwLock<VirtualTerminal>>,
+        broadcast::Sender<EnrichedOutput>,
+    ) {
         let info = Arc::new(RwLock::new(InstanceInfo {
             id: "test-instance".to_string(),
             name: "test".to_string(),
@@ -731,8 +758,11 @@ impl InstanceHandle {
             rows,
             cols,
             max_delta_bytes,
+            0,
         )));
         let comp = Arc::new(RwLock::new(Compositor::new()));
+        let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
+        let enriched_tx_actor = enriched_tx.clone();
         let vt_actor = vt.clone();
         let comp_actor = comp.clone();
         tokio::spawn(async move {
@@ -745,6 +775,10 @@ impl InstanceHandle {
                     InstanceCommand::Resize { respond_to, .. } => {
                         let _ = respond_to.send(Ok(()));
                     }
+                    InstanceCommand::SubscribeOutput { respond_to } => {
+                        let rx = enriched_tx_actor.subscribe();
+                        let _ = respond_to.send(rx);
+                    }
                     InstanceCommand::Stop { respond_to } => {
                         let _ = respond_to.send(Ok(()));
                         break;
@@ -754,7 +788,24 @@ impl InstanceHandle {
             }
         });
 
-        (InstanceHandle { sender, info }, vt)
+        (InstanceHandle { sender, info }, vt, enriched_tx)
+    }
+
+    /// Inject output through the enriched pipeline: processes data in the VT,
+    /// reads cursor position, and broadcasts an `EnrichedOutput` event.
+    pub(crate) async fn inject_output(
+        vt: &RwLock<VirtualTerminal>,
+        enriched_tx: &broadcast::Sender<EnrichedOutput>,
+        data: &[u8],
+    ) {
+        let mut vt = vt.write().await;
+        vt.process_output(data);
+        let cursor = vt.cursor_position();
+        let _ = enriched_tx.send(EnrichedOutput {
+            data: data.to_vec(),
+            cursor,
+            timestamp: 0,
+        });
     }
 }
 
@@ -764,7 +815,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_update_viewport() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let result = handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -780,7 +831,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_set_client_active() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -796,7 +847,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_remove_client() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -811,7 +862,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_get_recent_output_replay() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Inject output directly into the VT
         vt.write()
@@ -826,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_get_recent_output_truncation() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         vt.write().await.process_output("A".repeat(200).as_bytes());
 
@@ -841,7 +892,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_viewport_and_resize() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Dims change triggers resize (no-op in test actor)
         let result = handle
@@ -852,7 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_active_and_resize() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("conn-1", 40, 120, ClientType::Web)
@@ -868,7 +919,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_client_and_resize_no_change() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Remove nonexistent → no dims change, no resize, still Ok
         let result = handle.remove_client_and_resize("nonexistent").await;
@@ -877,7 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_never_splits_utf8() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Write box-drawing characters (3 bytes each in UTF-8)
         let content = "─".repeat(40); // 120 bytes
@@ -902,7 +953,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_preserves_content() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Mix of ASCII and multi-byte: "hello──world" (5 + 6 + 5 = 16 bytes text)
         let content = "hello──world";
@@ -930,7 +981,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_4byte_chars() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // 4-byte emoji characters
         let content = "🦀".repeat(10); // 40 bytes
@@ -947,5 +998,64 @@ mod tests {
                 max_bytes,
             );
         }
+    }
+
+    // ── Enriched output pipeline tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_ascii() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Hello").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.data, b"Hello");
+        assert_eq!(event.cursor, (0, 5));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_multiline() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Hello\r\nWorld").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.cursor, (1, 5));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_after_cup() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        // CUP moves cursor to row 10, col 20 (1-indexed) → (9, 19) 0-indexed
+        InstanceHandle::inject_output(&vt, &etx, b"\x1b[10;20H").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.cursor, (9, 19));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_tracks_across_chunks() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"abc").await;
+        let e1 = rx.recv().await.unwrap();
+        assert_eq!(e1.cursor, (0, 3));
+
+        InstanceHandle::inject_output(&vt, &etx, b"def").await;
+        let e2 = rx.recv().await.unwrap();
+        assert_eq!(e2.cursor, (0, 6));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_output_receives_enriched() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = handle.subscribe_output().await.unwrap();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Test output").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.data, b"Test output");
+        assert_eq!(event.cursor, (0, 11));
     }
 }

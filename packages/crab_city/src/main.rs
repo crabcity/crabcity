@@ -423,6 +423,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         default_command,
         args.instance_base_port,
         initial_server_config.instance.max_buffer_bytes,
+        initial_server_config.instance.scrollback_lines,
     ));
 
     // Initialize notes storage

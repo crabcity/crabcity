@@ -97,6 +97,8 @@ State is exposed as `ClaudeState` in `inference/state.rs` and broadcast to clien
 ### Terminal Multiplexing
 
 Multiple clients share a single PTY per instance:
-- `virtual_terminal` maintains the screen buffer and negotiates dimensions as min(all active viewports)
+- `virtual_terminal` maintains the screen buffer, negotiates dimensions as min(all active viewports), and owns a server-side scrollback buffer (configurable via `scrollback_lines` in `[server]` config, default 10,000 lines)
 - `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
+
+The server's `vt100` parser aggregates terminal state — clients receive compacted snapshots (scrollback + visible screen keyframe), never raw PTY byte replay. This means intermediate cursor throbs, partial rewrites, and animation frames are collapsed into final line content. On focus switch (web) or attach (TUI), clients get the full aggregated state via `replay()`.
