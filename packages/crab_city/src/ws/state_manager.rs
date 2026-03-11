@@ -47,6 +47,11 @@ pub struct FirstInputData {
     /// Normalized content prefixes of inputs sent while session_id was None.
     /// Used for content-matching during session discovery.
     pub content_prefixes: Vec<String>,
+    /// Accumulator for keystroke-by-keystroke input.  Characters accumulate
+    /// here until a `\r`/`\n` arrives, at which point the completed line is
+    /// flushed into `content_prefixes`.  Full-message input (containing a
+    /// newline) bypasses the accumulator and stores directly.
+    pending_line: String,
 }
 
 /// Maximum number of content prefixes to store per instance.
@@ -342,39 +347,76 @@ impl GlobalStateManager {
     }
 
     /// Record input for an instance before session discovery.
-    /// First call: creates the entry with timestamp + first content prefix, returns true.
-    /// Subsequent calls: appends content prefix (up to cap), returns false.
-    /// Content is normalized via `normalize_attribution_content`; empty content
-    /// after normalization is skipped (no prefix appended).
+    /// First call: creates the entry with timestamp, returns true.
+    /// Subsequent calls: accumulates content, returns false.
+    ///
+    /// Content handling depends on whether input arrives as individual
+    /// keystrokes (terminal) or as a complete message (ConversationView):
+    ///
+    /// - **Full message** (contains `\r` or `\n`): normalized and stored
+    ///   directly as a content prefix.
+    /// - **Individual keystroke** (no newline): accumulated in a line buffer.
+    ///   When a `\r`/`\n` arrives, the accumulated line is flushed as a
+    ///   single content prefix.
+    ///
+    /// This ensures that both input paths produce the same content prefixes
+    /// for session discovery matching.
     pub async fn mark_first_input(&self, instance_id: &str, content: &str) -> bool {
-        let prefix = normalize_attribution_content(content);
         let mut map = self.first_input_at.write().await;
-        if let Some(data) = map.get_mut(instance_id) {
-            // Subsequent call — append content prefix if non-empty and under cap
-            if !prefix.is_empty() && data.content_prefixes.len() < FIRST_INPUT_PREFIX_CAP {
-                data.content_prefixes.push(prefix);
-            }
-            false
-        } else {
+        let is_first = !map.contains_key(instance_id);
+
+        let data = map.entry(instance_id.to_string()).or_insert_with(|| {
             let now = Utc::now();
-            let content_prefixes = if prefix.is_empty() {
-                vec![]
-            } else {
-                vec![prefix]
-            };
-            map.insert(
-                instance_id.to_string(),
-                FirstInputData {
-                    timestamp: now,
-                    content_prefixes,
-                },
-            );
             info!(
                 "[SESSION] Marked first input for instance {} at {}",
                 instance_id, now
             );
-            true
+            FirstInputData {
+                timestamp: now,
+                content_prefixes: vec![],
+                pending_line: String::new(),
+            }
+        });
+
+        if data.content_prefixes.len() >= FIRST_INPUT_PREFIX_CAP {
+            return is_first;
         }
+
+        // Check if content contains a newline (full message or end-of-line keystroke)
+        let has_newline = content.contains('\r') || content.contains('\n');
+
+        if has_newline {
+            // Flush: prepend any accumulated pending_line to content, then
+            // split on newlines and store each non-empty line as a prefix.
+            let combined = if data.pending_line.is_empty() {
+                content.to_string()
+            } else {
+                let mut s = std::mem::take(&mut data.pending_line);
+                s.push_str(content);
+                s
+            };
+
+            for part in combined.split(['\r', '\n']) {
+                if data.content_prefixes.len() >= FIRST_INPUT_PREFIX_CAP {
+                    break;
+                }
+                let prefix = normalize_attribution_content(part);
+                if !prefix.is_empty() {
+                    data.content_prefixes.push(prefix);
+                }
+            }
+        } else {
+            // Individual keystroke — accumulate in the line buffer.
+            // Skip control characters and escape sequences that won't
+            // appear in the JSONL user entry text.
+            let first_byte = content.as_bytes().first().copied().unwrap_or(0);
+            let is_control = first_byte < 0x20 || first_byte == 0x7f;
+            if !is_control {
+                data.pending_line.push_str(content);
+            }
+        }
+
+        is_first
     }
 
     /// Get the timestamp of first input for an instance, if any.
@@ -692,6 +734,43 @@ impl GlobalStateManager {
         }
     }
 
+    /// Process terminal input for an instance: send state signal, record for
+    /// session discovery, and write to PTY.
+    ///
+    /// This is the single entry point for input handling — both the
+    /// multiplexed WebSocket handler and the TUI proxy call this instead of
+    /// duplicating the state-signal + mark_first_input + PTY-write ceremony.
+    ///
+    /// Returns `Err` if the PTY write fails or the instance handle is gone.
+    pub async fn write_input(&self, instance_id: &str, data: &str) -> Result<(), String> {
+        // Send state signal for idle→thinking detection
+        self.send_signal(
+            instance_id,
+            StateSignal::TerminalInput {
+                data: data.to_string(),
+            },
+        )
+        .await;
+
+        let handle = self
+            .get_handle(instance_id)
+            .await
+            .ok_or_else(|| "Instance handle not found".to_string())?;
+
+        // Record for session discovery (with line accumulation).
+        // Only relevant while the session hasn't been claimed yet.
+        if handle.get_session_id().await.is_none() {
+            self.mark_first_input(instance_id, data).await;
+        }
+
+        // Write to PTY
+        handle
+            .write_input(data)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// Subscribe to state broadcasts
     /// Returns receiver for (instance_id, state, terminal_stale) tuples
     pub fn subscribe(&self) -> broadcast::Receiver<(String, ClaudeState, bool)> {
@@ -857,24 +936,31 @@ mod tests {
         let broadcast_tx = create_state_broadcast();
         let state_mgr = GlobalStateManager::new(broadcast_tx);
 
-        // First call returns true
-        assert!(state_mgr.mark_first_input("inst-1", "hello").await);
+        // First call returns true (full message with newline)
+        assert!(state_mgr.mark_first_input("inst-1", "hello\r").await);
 
         // Second call returns false (already recorded)
-        assert!(!state_mgr.mark_first_input("inst-1", "world").await);
+        assert!(!state_mgr.mark_first_input("inst-1", "world\r").await);
 
         // Different instance returns true
-        assert!(state_mgr.mark_first_input("inst-2", "hi").await);
+        assert!(state_mgr.mark_first_input("inst-2", "hi\r").await);
     }
 
     #[tokio::test]
-    async fn test_mark_first_input_accumulates_content() {
+    async fn test_mark_first_input_full_messages() {
         let broadcast_tx = create_state_broadcast();
         let state_mgr = GlobalStateManager::new(broadcast_tx);
 
-        state_mgr.mark_first_input("inst-1", "first message").await;
-        state_mgr.mark_first_input("inst-1", "second message").await;
-        state_mgr.mark_first_input("inst-1", "third message").await;
+        // Full messages (contain newlines) store directly as prefixes
+        state_mgr
+            .mark_first_input("inst-1", "first message\r")
+            .await;
+        state_mgr
+            .mark_first_input("inst-1", "second message\r")
+            .await;
+        state_mgr
+            .mark_first_input("inst-1", "third message\r")
+            .await;
 
         let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
         assert_eq!(prefixes.len(), 3);
@@ -884,14 +970,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_mark_first_input_keystroke_accumulation() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Individual keystrokes accumulate in pending_line
+        state_mgr.mark_first_input("inst-1", "H").await;
+        state_mgr.mark_first_input("inst-1", "e").await;
+        state_mgr.mark_first_input("inst-1", "l").await;
+        state_mgr.mark_first_input("inst-1", "l").await;
+        state_mgr.mark_first_input("inst-1", "o").await;
+
+        // No prefix stored yet (no newline to flush)
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert!(prefixes.is_empty());
+
+        // Newline flushes the accumulated line
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "Hello");
+    }
+
+    #[tokio::test]
+    async fn test_mark_first_input_skips_control_chars() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Escape sequences and control chars should not accumulate
+        state_mgr.mark_first_input("inst-1", "\x1b[A").await; // up arrow
+        state_mgr.mark_first_input("inst-1", "\x7f").await; // backspace
+        state_mgr.mark_first_input("inst-1", "H").await;
+        state_mgr.mark_first_input("inst-1", "i").await;
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "Hi");
+    }
+
+    #[tokio::test]
     async fn test_mark_first_input_caps_content_prefixes() {
         let broadcast_tx = create_state_broadcast();
         let state_mgr = GlobalStateManager::new(broadcast_tx);
 
-        // Push more than the cap
+        // Push more than the cap (each with newline to force flush)
         for i in 0..25 {
             state_mgr
-                .mark_first_input("inst-1", &format!("message {}", i))
+                .mark_first_input("inst-1", &format!("message {}\r", i))
                 .await;
         }
 
@@ -904,8 +1031,8 @@ mod tests {
         let broadcast_tx = create_state_broadcast();
         let state_mgr = GlobalStateManager::new(broadcast_tx);
 
-        // First call with empty content: creates entry but no prefix
-        assert!(state_mgr.mark_first_input("inst-1", "   ").await);
+        // First call with whitespace-only: creates entry but no prefix
+        assert!(state_mgr.mark_first_input("inst-1", "   \r").await);
 
         let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
         assert!(prefixes.is_empty());
@@ -933,8 +1060,8 @@ mod tests {
         // Before any input
         assert!(state_mgr.get_first_input_at("inst-1").await.is_none());
 
-        // After marking first input
-        state_mgr.mark_first_input("inst-1", "hello").await;
+        // After marking first input (keystroke without newline still creates timestamp)
+        state_mgr.mark_first_input("inst-1", "h").await;
         let timestamp = state_mgr.get_first_input_at("inst-1").await;
         assert!(timestamp.is_some());
 
@@ -950,7 +1077,7 @@ mod tests {
         let state_mgr = GlobalStateManager::new(broadcast_tx);
 
         // Mark first input
-        state_mgr.mark_first_input("inst-1", "hello").await;
+        state_mgr.mark_first_input("inst-1", "hello\r").await;
         assert!(state_mgr.get_first_input_at("inst-1").await.is_some());
 
         // Unregister cleans up first_input_at

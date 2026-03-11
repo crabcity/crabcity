@@ -235,9 +235,19 @@ pub async fn run_server_conversation_watcher(
                     .await;
 
                 let content_ok = if content_prefixes.is_empty() {
-                    // No content recorded (unauthenticated user, control chars
-                    // only, etc.) — fall back to timestamp-only auto-claim.
-                    true
+                    // No content to verify — wait.  The JSONL file is only
+                    // created after the first real message, so by the time a
+                    // candidate exists, the user must have sent content.  If
+                    // content_prefixes is still empty, either:
+                    //   - The user is still typing (pending_line accumulating)
+                    //   - Only control chars were sent (no JSONL yet anyway)
+                    // In both cases, auto-claiming risks grabbing a stale
+                    // session from a previous Claude run in the same directory.
+                    debug!(
+                        "[SERVER-CONVO {}] No content prefixes yet, deferring auto-claim",
+                        instance_id
+                    );
+                    false
                 } else {
                     // Load the conversation and check if any stored prefix
                     // matches any user turn's text.

@@ -110,6 +110,18 @@ pub async fn handle_proxy(
         }
     }
 
+    // Send current Claude state so newly-connecting clients don't start at Initializing
+    if is_claude {
+        if let Some(state) = handle.get_info().await.claude_state {
+            let _ = tx
+                .send(WsMessage::StateChange {
+                    state,
+                    stale: false,
+                })
+                .await;
+        }
+    }
+
     // Subscribe to PTY output
     let mut output_rx = match handle.subscribe_output().await {
         Ok(rx) => rx,
@@ -237,13 +249,19 @@ pub async fn handle_proxy(
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Input { data } => {
-                                // Feed input to state manager for Idle→Thinking detection
+                                // Signal + session discovery through GSM, but
+                                // always write to PTY via the direct handle to
+                                // avoid startup races where the instance isn't
+                                // registered with the GlobalStateManager yet.
                                 if let Some(ref gsm) = gsm_for_input {
                                     gsm.send_signal(
                                         &instance_id_input,
                                         StateSignal::TerminalInput { data: data.clone() },
                                     )
                                     .await;
+                                    if handle_clone.get_session_id().await.is_none() {
+                                        gsm.mark_first_input(&instance_id_input, &data).await;
+                                    }
                                 }
                                 if let Err(e) = handle_clone.write_input(&data).await {
                                     error!("Failed to write to PTY: {}", e);

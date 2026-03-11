@@ -130,23 +130,12 @@ impl StateManager {
         match &signal {
             StateSignal::TerminalInput { .. } => {
                 // Terminal input fires on every keystroke (arrow keys, typing,
-                // navigating menus), not just message submission. Do NOT use it
-                // for state transitions — the authoritative signals are:
-                // - JSONL `user` ConversationEntry for direct user messages
-                // - JSONL TurnUpdated (→ `user` signal) for tool_result_only answers
+                // navigating menus), not just message submission.  It must
+                // NEVER cause state transitions — the authoritative signal
+                // for Idle/WaitingForInput → Thinking is the JSONL `user`
+                // ConversationEntry.  Boot-phase transitions are driven
+                // by terminal output patterns (banner detection), not input.
                 self.sent_idle = false;
-                if self.definitive_idle {
-                    // Definitive idle (from turn_duration) — user is typing their
-                    // next message. Wait for the JSONL `user` entry instead.
-                } else if matches!(
-                    self.state,
-                    ClaudeState::Initializing
-                        | ClaudeState::Starting
-                        | ClaudeState::Idle
-                        | ClaudeState::WaitingForInput { .. }
-                ) {
-                    self.state = ClaudeState::Thinking;
-                }
             }
 
             StateSignal::TerminalOutput { data } => {
@@ -261,13 +250,26 @@ impl StateManager {
                             tool_names
                         );
                     } else {
-                        debug!(
-                            "Got assistant entry (tools={:?}) -> WaitingForInput (tentative)",
-                            tool_names
-                        );
                         self.current_tool = None;
-                        self.definitive_idle = false;
-                        self.state = ClaudeState::WaitingForInput { prompt: None };
+                        // Don't downgrade definitive idle to tentative.
+                        // The text-only assistant deferral can deliver this
+                        // signal one poll cycle AFTER turn_duration already
+                        // set definitive WaitingForInput.  Clearing
+                        // definitive_idle here lets terminal heuristic false
+                        // positives (e.g. "Read(" in printed response text)
+                        // override WaitingForInput → stuck at ToolExecuting.
+                        if !self.definitive_idle {
+                            debug!(
+                                "Got assistant entry (tools={:?}) -> WaitingForInput (tentative)",
+                                tool_names
+                            );
+                            self.state = ClaudeState::WaitingForInput { prompt: None };
+                        } else {
+                            debug!(
+                                "Got assistant entry (tools={:?}) -> already definitive idle, ignoring",
+                                tool_names
+                            );
+                        }
                     }
                 }
             }
@@ -432,13 +434,15 @@ mod tests {
     }
 
     #[test]
-    fn test_initializing_to_thinking_on_terminal_input() {
+    fn test_initializing_ignores_terminal_input() {
+        // Keystrokes must never drive state — only JSONL conversation
+        // entries are authoritative for Thinking transitions.
         let mut manager = default_manager();
         let result = manager.process(StateSignal::TerminalInput {
             data: "hello".to_string(),
         });
-        assert_eq!(result, Some(ClaudeState::Thinking));
-        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert_eq!(result, None);
+        assert_eq!(*manager.state(), ClaudeState::Initializing);
     }
 
     #[test]
@@ -492,13 +496,15 @@ mod tests {
     }
 
     #[test]
-    fn test_starting_to_thinking_on_terminal_input() {
+    fn test_starting_ignores_terminal_input() {
+        // Keystrokes during boot must not cause state transitions.
+        // Boot-phase transitions are driven by terminal output (banner).
         let mut manager = starting_manager();
         let result = manager.process(StateSignal::TerminalInput {
             data: "hello".to_string(),
         });
-        assert_eq!(result, Some(ClaudeState::Thinking));
-        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert_eq!(result, None);
+        assert_eq!(*manager.state(), ClaudeState::Starting);
     }
 
     #[test]
@@ -528,13 +534,16 @@ mod tests {
     }
 
     #[test]
-    fn test_terminal_input_from_idle_transitions_to_thinking() {
+    fn test_terminal_input_from_idle_does_not_transition() {
+        // TerminalInput fires on every keystroke (not just message submission).
+        // Idle → Thinking must come from the authoritative JSONL user entry,
+        // not from keystrokes — otherwise typing shows false "active" state.
         let mut manager = idle_manager();
         let result = manager.process(StateSignal::TerminalInput {
             data: "hello".to_string(),
         });
-        assert_eq!(result, Some(ClaudeState::Thinking));
-        assert_eq!(*manager.state(), ClaudeState::Thinking);
+        assert_eq!(result, None);
+        assert_eq!(*manager.state(), ClaudeState::Idle);
     }
 
     #[test]
@@ -872,6 +881,43 @@ mod tests {
         assert_eq!(
             result, None,
             "Keystroke must not change definitive WaitingForInput"
+        );
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+    }
+
+    #[test]
+    fn test_terminal_input_does_not_exit_tentative_waiting() {
+        // WaitingForInput from AskUserQuestion (tentative, not definitive)
+        // must also ignore keystrokes — user is navigating the prompt.
+        let mut manager = default_manager();
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "user".to_string(),
+            subtype: None,
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec!["AskUserQuestion".to_string()],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+        assert!(!manager.definitive_idle);
+
+        // Arrow keys navigating AskUserQuestion options
+        let result = manager.process(StateSignal::TerminalInput {
+            data: "\x1b[B".to_string(), // down arrow
+        });
+        assert_eq!(
+            result, None,
+            "Keystroke must not change tentative WaitingForInput"
         );
         assert_eq!(
             *manager.state(),
@@ -1377,6 +1423,59 @@ mod tests {
         assert_eq!(
             result, None,
             "Tool pattern must NOT override definitive WaitingForInput"
+        );
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+    }
+
+    #[test]
+    fn test_deferred_text_only_assistant_does_not_downgrade_definitive_idle() {
+        // Regression: the conversation watcher holds text-only assistant signals
+        // for one poll cycle.  When turn_duration arrives first (setting
+        // definitive idle), the deferred text-only signal arrives AFTER.
+        // It must not downgrade definitive_idle to tentative — otherwise
+        // terminal heuristic false positives ("Read(" in response text)
+        // override WaitingForInput → stuck at ToolExecuting.
+        let mut manager = default_manager();
+
+        // Simulate: turn_duration arrives first
+        manager.process(StateSignal::ConversationEntry {
+            entry_type: "system".to_string(),
+            subtype: Some("turn_duration".to_string()),
+            stop_reason: None,
+            tool_names: vec![],
+        });
+        assert_eq!(
+            *manager.state(),
+            ClaudeState::WaitingForInput { prompt: None }
+        );
+        assert!(manager.definitive_idle);
+
+        // Then deferred text-only assistant arrives (next poll cycle)
+        let result = manager.process(StateSignal::ConversationEntry {
+            entry_type: "assistant".to_string(),
+            subtype: None,
+            stop_reason: Some("end_turn".to_string()),
+            tool_names: vec![],
+        });
+        assert_eq!(
+            result, None,
+            "Deferred text-only assistant must not emit state change when already definitive idle"
+        );
+        assert!(
+            manager.definitive_idle,
+            "definitive_idle must not be downgraded by deferred text-only assistant"
+        );
+
+        // Now verify that a false-positive tool pattern is still blocked
+        let result = manager.process(StateSignal::TerminalOutput {
+            data: "I used Read(file.rs) to check".to_string(),
+        });
+        assert_eq!(
+            result, None,
+            "Tool pattern must NOT override WaitingForInput after deferred text-only"
         );
         assert_eq!(
             *manager.state(),
