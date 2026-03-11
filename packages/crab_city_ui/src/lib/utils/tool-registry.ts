@@ -165,6 +165,15 @@ export const TOOL_REGISTRY: Record<string, ToolWidgetConfig> = {
 		icon: '\u2753',
 		renderMode: 'card',
 	},
+	EnterPlanMode: {
+		icon: '\u{1F4D0}',
+		renderMode: 'badge',
+		expandedFields: () => [],
+	},
+	ExitPlanMode: {
+		icon: '\u{1F4D0}',
+		renderMode: 'card',
+	},
 };
 
 const DEFAULT_CONFIG: ToolWidgetConfig = {

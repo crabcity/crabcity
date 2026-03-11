@@ -9,6 +9,7 @@
 	let { tool }: Props = $props();
 
 	let showRaw = $state(false);
+	let activeTab = $state(0);
 
 	// Parse AskUserQuestion structured input
 	interface QuestionOption {
@@ -62,6 +63,17 @@
 	// True when resolved but answer doesn't match any known option
 	const isOtherSelected = $derived(isResolved && selectedLabels.size === 0);
 
+	// Per-question answer state for tab indicators
+	const questionAnswered: boolean[] = $derived.by(() => {
+		if (!isResolved) return questions().map(() => false);
+		return questions().map((q) => {
+			if (q.options.length === 0) return answerValues.length > 0;
+			return q.options.some((o) => selectedLabels.has(o.label));
+		});
+	});
+
+	const isMultiQuestion = $derived(questions().length > 1);
+
 	// For "Other" answers, show just the answer text (not the full protocol string)
 	const resultText: string | null = $derived.by(() => {
 		if (!tool.output) return null;
@@ -102,58 +114,76 @@
 	{:else}
 		<!-- Rendered view: structured Q/A card -->
 		<div class="card-header">
+			{#if isMultiQuestion}
+				<div class="tab-row">
+					{#each questions() as q, qi}
+						<button
+							class="question-tab"
+							class:tab-active={activeTab === qi}
+							class:tab-answered={isResolved && questionAnswered[qi]}
+							class:tab-unanswered={isResolved && !questionAnswered[qi]}
+							onclick={() => activeTab = qi}
+						>
+							{q.header ?? `Q${qi + 1}`}
+							{#if q.multiSelect}
+								<span class="tab-multi">+</span>
+							{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
 			<button class="toggle-raw" onclick={() => showRaw = true} title="Show raw">◇</button>
 		</div>
+
+		<!-- Question content: single question shows directly, multi uses active tab -->
 		{#each questions() as q, qi}
-			<div class="question-block">
-				{#if q.header}
-					<div class="question-header">
-						<span class="header-chip">{q.header}</span>
-						{#if q.multiSelect}
-							<span class="multi-badge">MULTI-SELECT</span>
-						{/if}
-					</div>
-				{/if}
+			{#if !isMultiQuestion || activeTab === qi}
+				<div class="question-block">
+					{#if !isMultiQuestion && q.header}
+						<div class="question-header">
+							<span class="header-chip">{q.header}</span>
+							{#if q.multiSelect}
+								<span class="multi-badge">MULTI-SELECT</span>
+							{/if}
+						</div>
+					{/if}
 
-				<div class="question-text">{q.question}</div>
+					<div class="question-text">{q.question}</div>
 
-				{#if q.options.length > 0}
-					<ol class="options-list">
-						{#each q.options as opt, oi}
+					{#if q.options.length > 0}
+						<ol class="options-list">
+							{#each q.options as opt, oi}
+								<li
+									class="option"
+									class:first-option={!isResolved && oi === 0}
+									class:selected-option={isResolved && selectedLabels.has(opt.label)}
+									class:unselected-option={isResolved && !selectedLabels.has(opt.label)}
+								>
+									<span class="option-number">{oi + 1}.</span>
+									<div class="option-body">
+										<span class="option-label">{opt.label}</span>
+										{#if opt.description}
+											<span class="option-desc">{opt.description}</span>
+										{/if}
+									</div>
+								</li>
+							{/each}
+							<!-- "Other" option is always implicitly available -->
 							<li
-								class="option"
-								class:first-option={!isResolved && oi === 0}
-								class:selected-option={isResolved && selectedLabels.has(opt.label)}
-								class:unselected-option={isResolved && !selectedLabels.has(opt.label)}
+								class="option other-option"
+								class:selected-option={isOtherSelected}
+								class:unselected-option={isResolved && !isOtherSelected}
 							>
-								<span class="option-number">{oi + 1}.</span>
+								<span class="option-number">{q.options.length + 1}.</span>
 								<div class="option-body">
-									<span class="option-label">{opt.label}</span>
-									{#if opt.description}
-										<span class="option-desc">{opt.description}</span>
-									{/if}
+									<span class="option-label other-label">Other</span>
+									<span class="option-desc">Custom text input</span>
 								</div>
 							</li>
-						{/each}
-						<!-- "Other" option is always implicitly available -->
-						<li
-							class="option other-option"
-							class:selected-option={isOtherSelected}
-							class:unselected-option={isResolved && !isOtherSelected}
-						>
-							<span class="option-number">{q.options.length + 1}.</span>
-							<div class="option-body">
-								<span class="option-label other-label">Other</span>
-								<span class="option-desc">Custom text input</span>
-							</div>
-						</li>
-					</ol>
-				{/if}
-
-				{#if qi < questions().length - 1}
-					<div class="question-divider"></div>
-				{/if}
-			</div>
+						</ol>
+					{/if}
+				</div>
+			{/if}
 		{/each}
 
 		{#if isResolved && isOtherSelected && resultText}
@@ -193,8 +223,64 @@
 
 	.card-header {
 		display: flex;
-		justify-content: flex-end;
-		padding: 4px 6px 0 6px;
+		align-items: center;
+		justify-content: space-between;
+		padding: 6px 8px;
+	}
+
+	/* ── Question tabs (multi-question) ────────── */
+
+	.tab-row {
+		display: flex;
+		gap: 3px;
+	}
+
+	.question-tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		padding: 2px 8px;
+		background: var(--surface-700);
+		border: 1px solid var(--surface-border);
+		border-radius: 3px;
+		font-family: inherit;
+		font-size: 9px;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.question-tab:hover {
+		background: var(--surface-600);
+		border-color: var(--amber-600);
+		color: var(--amber-400);
+	}
+
+	.question-tab.tab-active {
+		background: var(--tint-active);
+		border-color: var(--amber-500);
+		color: var(--amber-400);
+	}
+
+	.question-tab.tab-answered {
+		border-color: var(--status-green, #22c55e);
+		color: var(--status-green-text, var(--status-green, #22c55e));
+	}
+
+	.question-tab.tab-answered.tab-active {
+		background: var(--tint-active);
+	}
+
+	.question-tab.tab-unanswered {
+		opacity: 0.5;
+	}
+
+	.tab-multi {
+		font-size: 8px;
+		opacity: 0.6;
 	}
 
 	.toggle-raw {
@@ -410,12 +496,6 @@
 
 	.other-label {
 		font-style: italic;
-	}
-
-	.question-divider {
-		height: 1px;
-		background: var(--surface-border);
-		margin: 10px 0;
 	}
 
 	/* ── Result section (answered) ──────────────── */

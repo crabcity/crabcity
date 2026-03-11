@@ -134,8 +134,8 @@ describe('registry structure', () => {
 		expect(getToolConfig(name).renderMode).toBe('card');
 	});
 
-	it('card-mode tools are Task and AskUserQuestion', () => {
-		expect(CARD_TOOLS.sort()).toEqual(['AskUserQuestion', 'Task']);
+	it('card-mode tools are Task, AskUserQuestion, and ExitPlanMode', () => {
+		expect(CARD_TOOLS.sort()).toEqual(['AskUserQuestion', 'ExitPlanMode', 'Task']);
 	});
 
 	it.each(BADGE_TOOLS)('%s has expandedFields', (name) => {
