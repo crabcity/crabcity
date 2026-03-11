@@ -1868,6 +1868,45 @@ mod tests {
     }
 
     // =========================================================================
+    // Keystroke → flush → prefix flow tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_keystroke_then_enter_produces_prefix() {
+        let gsm = GlobalStateManager::new(create_state_broadcast());
+        for ch in "hello".chars() {
+            gsm.mark_first_input("i1", &ch.to_string()).await;
+        }
+        assert!(gsm.get_discovery_content_prefixes("i1").await.is_empty());
+        gsm.mark_first_input("i1", "\r").await;
+        assert_eq!(
+            gsm.get_discovery_content_prefixes("i1").await,
+            vec!["hello"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_control_chars_filtered_from_pending_line() {
+        let gsm = GlobalStateManager::new(create_state_broadcast());
+        gsm.mark_first_input("i1", "\x1b").await; // escape
+        gsm.mark_first_input("i1", "\x1b[A").await; // arrow up
+        gsm.mark_first_input("i1", "h").await;
+        gsm.mark_first_input("i1", "i").await;
+        gsm.mark_first_input("i1", "\r").await;
+        assert_eq!(gsm.get_discovery_content_prefixes("i1").await, vec!["hi"]);
+    }
+
+    #[tokio::test]
+    async fn test_full_message_with_newline_stores_directly() {
+        let gsm = GlobalStateManager::new(create_state_broadcast());
+        gsm.mark_first_input("i1", "hello world\r").await;
+        assert_eq!(
+            gsm.get_discovery_content_prefixes("i1").await,
+            vec!["hello world"]
+        );
+    }
+
+    // =========================================================================
     // Unregister instance cleanup tests
     // =========================================================================
 

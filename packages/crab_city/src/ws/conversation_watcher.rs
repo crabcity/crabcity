@@ -16,6 +16,23 @@ use crate::inference::StateSignal;
 use crate::models::attribution_content_matches;
 use crate::repository::ConversationRepository;
 
+/// Determine if auto-claim should proceed based on content matching.
+///
+/// When `content_prefixes` is empty, returns `true` — the `first_input_at` gate
+/// already ensures we only get here after user input, and `claimed_sessions`
+/// prevents double-claiming. Content matching adds protection when prefixes ARE
+/// available (multi-instance, same directory) but must not block when empty.
+fn should_auto_claim(content_prefixes: &[String], candidate_user_texts: &[&str]) -> bool {
+    if content_prefixes.is_empty() {
+        return true; // fallback: first_input_at + claimed_sessions are sufficient
+    }
+    candidate_user_texts.iter().any(|text| {
+        content_prefixes
+            .iter()
+            .any(|prefix| attribution_content_matches(prefix, text))
+    })
+}
+
 use super::session_discovery::find_candidate_sessions;
 use super::state_manager::{ConversationBroadcast, ConversationEvent, GlobalStateManager};
 
@@ -235,29 +252,25 @@ pub async fn run_server_conversation_watcher(
                     .await;
 
                 let content_ok = if content_prefixes.is_empty() {
-                    // No content to verify — wait.  The JSONL file is only
-                    // created after the first real message, so by the time a
-                    // candidate exists, the user must have sent content.  If
-                    // content_prefixes is still empty, either:
-                    //   - The user is still typing (pending_line accumulating)
-                    //   - Only control chars were sent (no JSONL yet anyway)
-                    // In both cases, auto-claiming risks grabbing a stale
-                    // session from a previous Claude run in the same directory.
-                    debug!(
-                        "[SERVER-CONVO {}] No content prefixes yet, deferring auto-claim",
-                        instance_id
-                    );
-                    false
+                    // No content to verify — fall back to auto-claim.
+                    // The first_input_at gate already ensures we only get here
+                    // after user input, and claimed_sessions prevents double-claiming.
+                    // Content matching adds protection when prefixes ARE available
+                    // (multi-instance, same directory) but must not block when empty.
+                    true
                 } else {
                     // Load the conversation and check if any stored prefix
                     // matches any user turn's text.
                     match manager.load_conversation(&working_dir, &session.id) {
-                        Ok(view) => view.turns.iter().any(|turn| {
-                            matches!(turn.role, toolpath_convo::Role::User)
-                                && content_prefixes
-                                    .iter()
-                                    .any(|prefix| attribution_content_matches(prefix, &turn.text))
-                        }),
+                        Ok(view) => {
+                            let user_texts: Vec<&str> = view
+                                .turns
+                                .iter()
+                                .filter(|turn| matches!(turn.role, toolpath_convo::Role::User))
+                                .map(|turn| turn.text.as_str())
+                                .collect();
+                            should_auto_claim(&content_prefixes, &user_texts)
+                        }
                         Err(e) => {
                             debug!(
                                 "[SERVER-CONVO {}] Failed to load candidate session {} for content check: {}",
@@ -1130,5 +1143,42 @@ mod tests {
             data: json!({"subtype": "turn_duration"}),
         };
         assert!(!is_substantive_event(&event));
+    }
+
+    // ── should_auto_claim content-match gate ────────────────────────
+
+    #[test]
+    fn empty_prefixes_auto_claims() {
+        assert!(should_auto_claim(&[], &["anything"]));
+    }
+
+    #[test]
+    fn matching_prefix_claims() {
+        let prefixes = vec!["hello".to_string()];
+        assert!(should_auto_claim(&prefixes, &["hello world"]));
+    }
+
+    #[test]
+    fn no_matching_prefix_defers() {
+        let prefixes = vec!["hello".to_string()];
+        assert!(!should_auto_claim(&prefixes, &["goodbye"]));
+    }
+
+    #[test]
+    fn no_user_turns_defers() {
+        let prefixes = vec!["hello".to_string()];
+        assert!(!should_auto_claim(&prefixes, &[]));
+    }
+
+    #[test]
+    fn single_char_prefix_matches() {
+        let prefixes = vec!["h".to_string()];
+        assert!(should_auto_claim(&prefixes, &["hello"]));
+    }
+
+    #[test]
+    fn multiple_prefixes_any_match() {
+        let prefixes = vec!["x".to_string(), "hello".to_string()];
+        assert!(should_auto_claim(&prefixes, &["hello world"]));
     }
 }

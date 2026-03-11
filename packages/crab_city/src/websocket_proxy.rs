@@ -111,15 +111,13 @@ pub async fn handle_proxy(
     }
 
     // Send current Claude state so newly-connecting clients don't start at Initializing
-    if is_claude {
-        if let Some(state) = handle.get_info().await.claude_state {
-            let _ = tx
-                .send(WsMessage::StateChange {
-                    state,
-                    stale: false,
-                })
-                .await;
-        }
+    if is_claude && let Some(state) = handle.get_info().await.claude_state {
+        let _ = tx
+            .send(WsMessage::StateChange {
+                state,
+                stale: false,
+            })
+            .await;
     }
 
     // Subscribe to PTY output
