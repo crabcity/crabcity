@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::instance_actor::InstanceHandle;
 use crate::instance_manager::InstanceManager;
 
 use super::conversation_watcher::run_session_discovery;
@@ -72,6 +73,27 @@ impl Utf8StreamDecoder {
 
         result
     }
+}
+
+/// Send the current screen buffer as `OutputHistory` to the given channel.
+///
+/// Returns `Ok(())` if history was sent (or empty — nothing to send).
+/// Returns `Err` only if the channel is closed.
+pub(crate) async fn send_output_history(
+    handle: &InstanceHandle,
+    instance_id: &str,
+    max_bytes: usize,
+    tx: &mpsc::Sender<ServerMessage>,
+) -> Result<(), mpsc::error::SendError<ServerMessage>> {
+    let history = handle.get_recent_output(max_bytes).await;
+    if !history.is_empty() {
+        tx.send(ServerMessage::OutputHistory {
+            instance_id: instance_id.to_string(),
+            data: history.join(""),
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 /// Send conversation entries since a given UUID (or full conversation if None).
@@ -191,15 +213,9 @@ pub async fn handle_focus(
     };
 
     // Send terminal history (bounded by config)
-    let history = handle.get_recent_output(max_history_bytes).await;
-    if !history.is_empty()
-        && tx
-            .send(ServerMessage::OutputHistory {
-                instance_id: instance_id.clone(),
-                data: history.join(""),
-            })
-            .await
-            .is_err()
+    if send_output_history(&handle, &instance_id, max_history_bytes, &tx)
+        .await
+        .is_err()
     {
         warn!(instance = %instance_id, "Failed to send OutputHistory - channel closed");
         return;
@@ -788,5 +804,60 @@ mod tests {
             .unwrap();
 
         assert!(rx.try_recv().is_err());
+    }
+
+    // ── send_output_history ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn output_history_sent_when_buffer_nonempty() {
+        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        vt.write()
+            .await
+            .process_output(b"Hello from test\r\nLine 2");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        send_output_history(&handle, "inst-1", 4096, &tx)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::OutputHistory { instance_id, data } => {
+                assert_eq!(instance_id, "inst-1");
+                assert!(data.contains("Hello from test"));
+                assert!(data.contains("Line 2"));
+            }
+            other => panic!("expected OutputHistory, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn output_history_sends_screen_for_fresh_vt() {
+        // Even a fresh VT produces a screen-dump keyframe, so OutputHistory
+        // is always sent. This is correct — the client gets a blank screen
+        // rather than stale content.
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        let (tx, mut rx) = mpsc::channel(16);
+        send_output_history(&handle, "inst-1", 4096, &tx)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::OutputHistory { instance_id, .. } => {
+                assert_eq!(instance_id, "inst-1");
+            }
+            other => panic!("expected OutputHistory, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn output_history_err_on_closed_channel() {
+        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+
+        let (tx, rx) = mpsc::channel(16);
+        drop(rx); // close the receiver
+
+        let result = send_output_history(&handle, "inst-1", 4096, &tx).await;
+        assert!(result.is_err());
     }
 }

@@ -89,7 +89,7 @@ Server sets PTY size to `min(all active viewports)`. Protocol:
 
 | Message | When |
 |---------|------|
-| `TerminalVisible { rows, cols }` | Terminal becomes ready |
+| `TerminalVisible { rows, cols }` | Terminal becomes ready (server responds with `OutputHistory`) |
 | `TerminalHidden` | Terminal unmounts |
 | `Resize { rows, cols }` | Container resized (ResizeObserver, only when visible) |
 

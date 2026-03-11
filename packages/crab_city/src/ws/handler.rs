@@ -16,7 +16,7 @@ use crate::repository::ConversationRepository;
 
 use crate::virtual_terminal::ClientType;
 
-use super::focus::{handle_focus, send_conversation_since};
+use super::focus::{handle_focus, send_conversation_since, send_output_history};
 use super::protocol::{
     BackpressureStats, ClientMessage, DEFAULT_MAX_HISTORY_BYTES, PresenceUser, ServerMessage,
     WsUser,
@@ -377,8 +377,8 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
-                                if let Some(handle) = state_mgr.get_handle(&instance_id).await
-                                    && let Err(e) = handle
+                                if let Some(handle) = state_mgr.get_handle(&instance_id).await {
+                                    if let Err(e) = handle
                                         .update_viewport_and_resize(
                                             &connection_id_clone,
                                             rows,
@@ -386,8 +386,19 @@ pub async fn handle_multiplexed_ws(
                                             ClientType::Web,
                                         )
                                         .await
-                                {
-                                    warn!("Failed to resize PTY for {}: {}", instance_id, e);
+                                    {
+                                        warn!("Failed to resize PTY for {}: {}", instance_id, e);
+                                    }
+
+                                    // Send current screen buffer so a freshly-mounted terminal
+                                    // gets the full display without needing a re-Focus.
+                                    let _ = send_output_history(
+                                        &handle,
+                                        &instance_id,
+                                        max_history_bytes,
+                                        &tx_input,
+                                    )
+                                    .await;
                                 }
                             }
                             ClientMessage::TerminalHidden { instance_id } => {
