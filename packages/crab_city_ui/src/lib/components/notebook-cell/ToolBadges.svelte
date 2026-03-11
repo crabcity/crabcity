@@ -4,6 +4,7 @@
 	import { getToolConfig } from '$lib/utils/tool-registry';
 	import QuestionCard from './QuestionCard.svelte';
 	import TaskCard from './TaskCard.svelte';
+	import PlanCard from './PlanCard.svelte';
 
 	interface Props {
 		toolCells: ToolCell[];
@@ -17,9 +18,10 @@
 
 	// Widget components for card-mode tools.
 	// Add entries here when registering a new card tool in TOOL_REGISTRY.
-	const CARD_WIDGETS: Record<string, typeof QuestionCard | typeof TaskCard> = {
+	const CARD_WIDGETS: Record<string, typeof QuestionCard | typeof TaskCard | typeof PlanCard> = {
 		AskUserQuestion: QuestionCard,
 		Task: TaskCard,
+		ExitPlanMode: PlanCard,
 	};
 
 	// Single derivation: pair each tool with its registry config once.

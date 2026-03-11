@@ -59,6 +59,8 @@ const TOOL_PATTERNS_V1: &[(&str, &str)] = &[
     ("WebSearch(", "WebSearch"),
     // Agent/task operations
     ("AskUserQuestion(", "AskUserQuestion"),
+    ("EnterPlanMode(", "EnterPlanMode"),
+    ("ExitPlanMode(", "ExitPlanMode"),
     ("Task(", "Task"),
     // File operations (general patterns last)
     ("Read(", "Read"),
@@ -1021,6 +1023,8 @@ mod tests {
         ("⠏ WebSearch(rust async)", Some("WebSearch")),
         ("⠋ Task(explore files)", Some("Task")),
         ("⠙ AskUserQuestion(Which option?)", Some("AskUserQuestion")),
+        ("⠋ EnterPlanMode()", Some("EnterPlanMode")),
+        ("⠙ ExitPlanMode()", Some("ExitPlanMode")),
         ("⠹ NotebookEdit(notebook.ipynb)", Some("NotebookEdit")),
         // Plain text output (no tool)
         ("Hello! How can I help you today?", None),
@@ -1071,6 +1075,8 @@ mod tests {
             "WebSearch",
             "Task",
             "AskUserQuestion",
+            "EnterPlanMode",
+            "ExitPlanMode",
             "TodoRead",
             "TodoWrite",
             "NotebookEdit",
