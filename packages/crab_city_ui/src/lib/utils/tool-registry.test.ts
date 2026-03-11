@@ -433,6 +433,49 @@ describe('Task card mode', () => {
 });
 
 // =============================================================================
+// EnterPlanMode: badge-mode (no badgeLabel, empty expandedFields)
+// =============================================================================
+
+describe('EnterPlanMode badge mode', () => {
+	const config = getToolConfig('EnterPlanMode');
+
+	it('is badge renderMode', () => {
+		expect(config.renderMode).toBe('badge');
+	});
+
+	it('has no badgeLabel', () => {
+		expect(config.badgeLabel).toBeUndefined();
+	});
+
+	it('has expandedFields that returns empty array', () => {
+		expect(config.expandedFields).toBeDefined();
+		expect(config.expandedFields!(tool('EnterPlanMode', {}))).toEqual([]);
+	});
+
+	it('returns empty array regardless of input', () => {
+		expect(config.expandedFields!(tool('EnterPlanMode', { foo: 'bar' }))).toEqual([]);
+	});
+});
+
+// =============================================================================
+// ExitPlanMode: card-mode (no badgeLabel or expandedFields)
+// =============================================================================
+
+describe('ExitPlanMode card mode', () => {
+	it('is card renderMode', () => {
+		expect(getToolConfig('ExitPlanMode').renderMode).toBe('card');
+	});
+
+	it('has no badgeLabel', () => {
+		expect(getToolConfig('ExitPlanMode').badgeLabel).toBeUndefined();
+	});
+
+	it('has no expandedFields', () => {
+		expect(getToolConfig('ExitPlanMode').expandedFields).toBeUndefined();
+	});
+});
+
+// =============================================================================
 // Icon Consistency
 // =============================================================================
 
@@ -448,6 +491,8 @@ describe('icons', () => {
 		WebSearch: '\u{1F50D}',
 		Task: '\u{1F4CB}',
 		AskUserQuestion: '\u2753',
+		EnterPlanMode: '\u{1F4D0}',
+		ExitPlanMode: '\u{1F4D0}',
 	};
 
 	it.each(Object.entries(EXPECTED_ICONS))('%s has icon %s', (name, icon) => {

@@ -25,8 +25,7 @@
 		prompt: string;
 	}
 
-	const allowedPrompts = $derived((): AllowedPrompt[] => {
-		const raw = tool.input.allowedPrompts;
+	function parseAllowedPrompts(raw: unknown): AllowedPrompt[] {
 		if (!Array.isArray(raw)) return [];
 		return raw.filter(
 			(p): p is AllowedPrompt =>
@@ -35,7 +34,9 @@
 				typeof (p as Record<string, unknown>).tool === 'string' &&
 				typeof (p as Record<string, unknown>).prompt === 'string'
 		);
-	});
+	}
+
+	const allowedPrompts: AllowedPrompt[] = $derived(parseAllowedPrompts(tool.input.allowedPrompts));
 
 	// ── Plan content ────────────────────────────────────────────────────
 	// ExitPlanMode carries the plan text in input.plan — no file scanning needed.
@@ -65,37 +66,36 @@
 	const hasMultipleVersions = $derived(totalVersions > 1);
 	const isLatestVersion = $derived(currentVersionIndex === totalVersions - 1);
 
-	// The version to display — defaults to this card's own version
+	// Version-tab state — only meaningful for the latest (full) card.
+	// Collapsed cards short-circuit to avoid renderMarkdown and redundant derivations.
 	const activeVersion = $derived(selectedVersion ?? currentVersionIndex);
 
-	const activeToolCell = $derived(
-		activeVersion >= 0 && activeVersion < allVersions.length
+	const activeToolCell: ToolCell = $derived.by(() => {
+		if (!isLatestVersion) return tool;
+		return activeVersion >= 0 && activeVersion < allVersions.length
 			? allVersions[activeVersion]
-			: tool
-	);
+			: tool;
+	});
 
-	const activePlanContent = $derived(
-		activeVersion === currentVersionIndex
+	const activePlanContent: string | null = $derived.by(() => {
+		if (!isLatestVersion) return null;
+		return activeVersion === currentVersionIndex
 			? planContent
-			: getPlanContent(activeToolCell)
-	);
-	const activeRenderedPlan = $derived(
-		activePlanContent ? renderMarkdown(activePlanContent) : null
-	);
-	const activeAllowedPrompts = $derived((): AllowedPrompt[] => {
-		const raw = activeToolCell.input.allowedPrompts;
-		if (!Array.isArray(raw)) return [];
-		return raw.filter(
-			(p): p is AllowedPrompt =>
-				typeof p === 'object' &&
-				p !== null &&
-				typeof (p as Record<string, unknown>).tool === 'string' &&
-				typeof (p as Record<string, unknown>).prompt === 'string'
-		);
+			: getPlanContent(activeToolCell);
+	});
+
+	const activeRenderedPlan: string | null = $derived.by(() => {
+		if (!isLatestVersion) return null;
+		return activePlanContent ? renderMarkdown(activePlanContent) : null;
+	});
+
+	const activeAllowedPrompts: AllowedPrompt[] = $derived.by(() => {
+		if (!isLatestVersion) return [];
+		return parseAllowedPrompts(activeToolCell.input.allowedPrompts);
 	});
 
 	// Resolve status text from tool output
-	const statusText = $derived((): string | null => {
+	const statusText: string | null = $derived.by(() => {
 		if (!tool.output) return null;
 		const lower = tool.output.toLowerCase();
 		if (lower.includes('approved') || lower.includes('accepted')) return 'APPROVED';
@@ -118,8 +118,8 @@
 		<div class="collapsed-row">
 			<span class="header-label">PLAN</span>
 			<span class="version-indicator">v{currentVersionIndex + 1}</span>
-			<span class="collapsed-status" class:status-rejected={statusText() === 'REJECTED'} class:status-changes={statusText() === 'CHANGES REQUESTED'}>
-				{statusText() ?? (isError ? 'ERROR' : isResolved ? 'RESOLVED' : 'PENDING')}
+			<span class="collapsed-status" class:status-rejected={statusText === 'REJECTED'} class:status-changes={statusText === 'CHANGES REQUESTED'}>
+				{statusText ?? (isError ? 'ERROR' : isResolved ? 'RESOLVED' : 'PENDING')}
 			</span>
 		</div>
 	</div>
@@ -142,7 +142,7 @@
 			</div>
 			<div class="raw-field">
 				<span class="raw-label">STATUS</span>
-				<pre class="raw-value">{isResolved ? (statusText() ?? 'resolved') : isPending ? 'pending' : 'error'}</pre>
+				<pre class="raw-value">{isResolved ? (statusText ?? 'resolved') : isPending ? 'pending' : 'error'}</pre>
 			</div>
 		</div>
 	{:else}
@@ -206,11 +206,11 @@
 		{/if}
 
 		<!-- Permissions section -->
-		{#if activeAllowedPrompts().length > 0}
+		{#if activeAllowedPrompts.length > 0}
 			<div class="permissions-section">
 				<span class="section-label">REQUESTED PERMISSIONS</span>
 				<div class="permissions-list">
-					{#each activeAllowedPrompts() as perm}
+					{#each activeAllowedPrompts as perm}
 						<div class="permission-row">
 							<span class="permission-tool">{perm.tool}</span>
 							<span class="permission-prompt">{perm.prompt}</span>
@@ -223,8 +223,8 @@
 		<!-- Result section (when resolved) -->
 		{#if isResolved && tool.output}
 			<div class="result-section" class:error-result={isError}>
-				<span class="result-label">{statusText() ?? (isError ? 'ERROR' : 'RESULT')}</span>
-				{#if statusText() === null}
+				<span class="result-label">{statusText ?? (isError ? 'ERROR' : 'RESULT')}</span>
+				{#if statusText === null}
 					<pre class="result-value">{tool.output}</pre>
 				{/if}
 			</div>

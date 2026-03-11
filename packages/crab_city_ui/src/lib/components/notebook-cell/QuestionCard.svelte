@@ -24,7 +24,7 @@
 		multiSelect?: boolean;
 	}
 
-	const questions = $derived((): StructuredQuestion[] => {
+	const questions: StructuredQuestion[] = $derived.by(() => {
 		const input = tool.input;
 		// AskUserQuestion sends { questions: [...] }
 		if (Array.isArray(input.questions)) {
@@ -53,33 +53,35 @@
 		return matches.map((m) => m[1]);
 	});
 
-	// Set of option labels that appear in the answer values
-	const selectedLabels: Set<string> = $derived.by(() => {
-		if (!tool.output) return new Set();
-		const allLabels = questions().flatMap((q) => q.options.map((o) => o.label));
-		return new Set(allLabels.filter((label) => answerValues.includes(label)));
-	});
+	// Per-question answer analysis.
+	// answerValues[i] is the positional answer for questions[i].
+	// For each question, check whether the answer matches a known option label.
+	interface QuestionAnswer {
+		answer: string;
+		matchedLabel: string | null;
+		isOther: boolean;
+	}
 
-	// True when resolved but answer doesn't match any known option
-	const isOtherSelected = $derived(isResolved && selectedLabels.size === 0);
-
-	// Per-question answer state for tab indicators
-	const questionAnswered: boolean[] = $derived.by(() => {
-		if (!isResolved) return questions().map(() => false);
-		return questions().map((q) => {
-			if (q.options.length === 0) return answerValues.length > 0;
-			return q.options.some((o) => selectedLabels.has(o.label));
+	const perQuestionAnswers: QuestionAnswer[] = $derived.by(() => {
+		if (!isResolved) return [];
+		return questions.map((q, i) => {
+			const answer = i < answerValues.length ? answerValues[i] : '';
+			const matchedLabel = q.options.find((o) => o.label === answer)?.label ?? null;
+			return {
+				answer,
+				matchedLabel,
+				isOther: answer.length > 0 && matchedLabel === null,
+			};
 		});
 	});
 
-	const isMultiQuestion = $derived(questions().length > 1);
-
-	// For "Other" answers, show just the answer text (not the full protocol string)
-	const resultText: string | null = $derived.by(() => {
-		if (!tool.output) return null;
-		if (answerValues.length > 0) return answerValues.join(', ');
-		return tool.output;
+	// Per-question answered state for tab indicators.
+	const questionAnswered: boolean[] = $derived.by(() => {
+		if (!isResolved) return questions.map(() => false);
+		return questions.map((_, i) => i < answerValues.length && answerValues[i].length > 0);
 	});
+
+	const isMultiQuestion = $derived(questions.length > 1);
 </script>
 
 <div class="question-card" class:pending={isPending} class:resolved={isResolved}>
@@ -103,12 +105,12 @@
 				<pre class="raw-value">{answerValues.length > 0 ? JSON.stringify(answerValues) : '(none)'}</pre>
 			</div>
 			<div class="raw-field">
-				<span class="raw-label">MATCHED LABELS</span>
-				<pre class="raw-value">{selectedLabels.size > 0 ? JSON.stringify([...selectedLabels]) : '(none)'}</pre>
+				<span class="raw-label">PER-QUESTION</span>
+				<pre class="raw-value">{perQuestionAnswers.length > 0 ? JSON.stringify(perQuestionAnswers, null, 2) : '(none)'}</pre>
 			</div>
 			<div class="raw-field">
 				<span class="raw-label">STATUS</span>
-				<pre class="raw-value">{isResolved ? (isOtherSelected ? 'resolved (other)' : 'resolved') : 'pending'}</pre>
+				<pre class="raw-value">{isResolved ? 'resolved' : 'pending'}</pre>
 			</div>
 		</div>
 	{:else}
@@ -116,7 +118,7 @@
 		<div class="card-header">
 			{#if isMultiQuestion}
 				<div class="tab-row">
-					{#each questions() as q, qi}
+					{#each questions as q, qi}
 						<button
 							class="question-tab"
 							class:tab-active={activeTab === qi}
@@ -136,7 +138,7 @@
 		</div>
 
 		<!-- Question content: single question shows directly, multi uses active tab -->
-		{#each questions() as q, qi}
+		{#each questions as q, qi}
 			{#if !isMultiQuestion || activeTab === qi}
 				<div class="question-block">
 					{#if !isMultiQuestion && q.header}
@@ -151,13 +153,14 @@
 					<div class="question-text">{q.question}</div>
 
 					{#if q.options.length > 0}
+						{@const qa = perQuestionAnswers[qi]}
 						<ol class="options-list">
 							{#each q.options as opt, oi}
 								<li
 									class="option"
 									class:first-option={!isResolved && oi === 0}
-									class:selected-option={isResolved && selectedLabels.has(opt.label)}
-									class:unselected-option={isResolved && !selectedLabels.has(opt.label)}
+									class:selected-option={isResolved && qa?.matchedLabel === opt.label}
+									class:unselected-option={isResolved && qa?.matchedLabel !== opt.label}
 								>
 									<span class="option-number">{oi + 1}.</span>
 									<div class="option-body">
@@ -171,13 +174,17 @@
 							<!-- "Other" option is always implicitly available -->
 							<li
 								class="option other-option"
-								class:selected-option={isOtherSelected}
-								class:unselected-option={isResolved && !isOtherSelected}
+								class:selected-option={qa?.isOther}
+								class:unselected-option={isResolved && !qa?.isOther}
 							>
 								<span class="option-number">{q.options.length + 1}.</span>
 								<div class="option-body">
 									<span class="option-label other-label">Other</span>
-									<span class="option-desc">Custom text input</span>
+									{#if qa?.isOther}
+										<span class="option-desc other-answer">{qa.answer}</span>
+									{:else}
+										<span class="option-desc">Custom text input</span>
+									{/if}
 								</div>
 							</li>
 						</ol>
@@ -186,12 +193,7 @@
 			{/if}
 		{/each}
 
-		{#if isResolved && isOtherSelected && resultText}
-			<div class="result-section">
-				<span class="result-label">ANSWERED</span>
-				<pre class="result-value">{resultText}</pre>
-			</div>
-		{:else if isPending}
+		{#if isPending}
 			<button class="pending-banner" onclick={() => setTerminalMode(true)}>
 				<span class="pending-icon">⌨</span>
 				<span class="pending-text">Switch to the Terminal view to answer this question</span>
@@ -498,32 +500,10 @@
 		font-style: italic;
 	}
 
-	/* ── Result section (answered) ──────────────── */
-
-	.result-section {
-		padding: 8px 14px;
-		border-top: 1px solid var(--surface-border);
-		background: var(--surface-700);
-	}
-
-	.result-label {
-		display: block;
-		font-size: 9px;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.15em;
-		color: var(--status-green-text, var(--status-green));
-		margin-bottom: 3px;
-	}
-
-	.result-value {
-		margin: 0;
-		white-space: pre-wrap;
-		word-break: break-word;
-		font-family: inherit;
-		font-size: 11px;
-		line-height: 1.5;
+	.other-answer {
 		color: var(--text-primary);
+		font-weight: 500;
+		font-style: italic;
 	}
 
 	/* ── Pending banner ─────────────────────────── */
