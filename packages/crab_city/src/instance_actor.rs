@@ -40,9 +40,12 @@ pub enum InstanceCommand {
         respond_to: oneshot::Sender<broadcast::Receiver<EnrichedOutput>>,
     },
     /// Get recent output with a byte limit
-    /// Returns chunks from the end of the buffer up to max_bytes total
+    /// Returns chunks from the end of the buffer up to max_bytes total.
+    /// `client_rows` is the receiving terminal's height — used to size the
+    /// scrollback-to-keyframe flush so no lines are lost or garbled.
     GetRecentOutput {
         max_bytes: usize,
+        client_rows: u16,
         respond_to: oneshot::Sender<Vec<String>>,
     },
     SetSessionId {
@@ -183,14 +186,16 @@ impl InstanceHandle {
             .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))
     }
 
-    /// Get recent output up to max_bytes total
-    /// Returns chunks from the end of the buffer
-    pub async fn get_recent_output(&self, max_bytes: usize) -> Vec<String> {
+    /// Get recent output up to max_bytes total.
+    /// `client_rows` is the receiving terminal's row count — used to size
+    /// the scrollback flush so the client gets the full history.
+    pub async fn get_recent_output(&self, max_bytes: usize, client_rows: u16) -> Vec<String> {
         let (tx, rx) = oneshot::channel();
         let _ = self
             .sender
             .send(InstanceCommand::GetRecentOutput {
                 max_bytes,
+                client_rows,
                 respond_to: tx,
             })
             .await;
@@ -464,6 +469,7 @@ async fn handle_vt_command(
         }
         InstanceCommand::GetRecentOutput {
             max_bytes,
+            client_rows,
             respond_to,
         } => {
             let mut vt = vt.write().await;
@@ -472,7 +478,7 @@ async fn handle_vt_command(
                 // Compose screen with overlay layers
                 comp.compose(vt.screen())
             } else {
-                vt.replay()
+                vt.replay(client_rows)
             };
             drop(comp);
             let data = if replay.len() > max_bytes {
@@ -869,7 +875,7 @@ mod tests {
             .await
             .process_output(b"Hello from test\r\nLine 2");
 
-        let output = handle.get_recent_output(4096).await;
+        let output = handle.get_recent_output(4096, 24).await;
         assert_eq!(output.len(), 1);
         assert!(output[0].contains("Hello from test"));
         assert!(output[0].contains("Line 2"));
@@ -881,11 +887,11 @@ mod tests {
 
         vt.write().await.process_output("A".repeat(200).as_bytes());
 
-        let full = handle.get_recent_output(100_000).await;
+        let full = handle.get_recent_output(100_000, 24).await;
         let full_len = full[0].len();
         assert!(full_len > 50);
 
-        let truncated = handle.get_recent_output(50).await;
+        let truncated = handle.get_recent_output(50, 24).await;
         assert!(truncated[0].len() <= 50);
         assert!(truncated[0].len() < full_len);
     }
@@ -938,7 +944,7 @@ mod tests {
         // total is larger than 120 bytes.  Try various max_bytes values
         // that are likely to land mid-character.
         for max_bytes in 1..=150 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }
@@ -960,14 +966,14 @@ mod tests {
         vt.write().await.process_output(content.as_bytes());
 
         // Full replay should contain the content
-        let full = handle.get_recent_output(100_000).await;
+        let full = handle.get_recent_output(100_000, 24).await;
         assert!(full[0].contains("hello"));
         assert!(full[0].contains("──"));
         assert!(full[0].contains("world"));
 
         // Truncated replay should also be valid UTF-8 (no replacement chars)
         for max_bytes in 1..=60 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }
@@ -988,7 +994,7 @@ mod tests {
         vt.write().await.process_output(content.as_bytes());
 
         for max_bytes in 1..=80 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }

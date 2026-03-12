@@ -385,6 +385,7 @@ pub async fn handle_multiplexed_ws(
                                         &handle,
                                         &instance_id,
                                         usize::MAX,
+                                        rows,
                                         &tx_input,
                                     )
                                     .await;

@@ -122,6 +122,32 @@ pub async fn handle_proxy(
             .await;
     }
 
+    // Read the first client message — the TUI sends Resize immediately on
+    // connect, and we need the client's actual terminal height so the replay's
+    // scrollback flush is sized correctly.  Without this, the server would use
+    // its own effective dims, which may differ, causing lost or garbled lines.
+    let client_rows = match ws_receiver.next().await {
+        Some(Ok(Message::Text(text))) => {
+            if let Ok(WsMessage::Resize { rows, cols }) = serde_json::from_str::<WsMessage>(&text) {
+                // Apply the viewport before generating the replay so the
+                // effective dims are up-to-date for any other connected clients.
+                let _ = handle
+                    .update_viewport_and_resize(&connection_id, rows, cols, ClientType::Terminal)
+                    .await;
+                rows
+            } else {
+                // Not a Resize — fall back to a safe default.
+                // (This shouldn't happen for well-behaved TUI clients.)
+                24
+            }
+        }
+        _ => {
+            // Connection closed or error before first message.
+            debug!("Client disconnected before first message");
+            return;
+        }
+    };
+
     // Subscribe to PTY output
     let mut output_rx = match handle.subscribe_output().await {
         Ok(rx) => rx,
@@ -135,7 +161,7 @@ pub async fn handle_proxy(
     // sees the terminal immediately, before any live output arrives.  This is
     // fetched *after* subscribe_output so there is no gap — any output produced
     // between get_recent_output and the first recv() will be in the broadcast.
-    let replay = handle.get_recent_output(usize::MAX).await;
+    let replay = handle.get_recent_output(usize::MAX, client_rows).await;
     if !replay.is_empty() {
         let data = replay.join("");
         if !data.is_empty() {

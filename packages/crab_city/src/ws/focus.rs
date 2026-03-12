@@ -83,9 +83,10 @@ pub(crate) async fn send_output_history(
     handle: &InstanceHandle,
     instance_id: &str,
     max_bytes: usize,
+    client_rows: u16,
     tx: &mpsc::Sender<ServerMessage>,
 ) -> Result<(), mpsc::error::SendError<ServerMessage>> {
-    let history = handle.get_recent_output(max_bytes).await;
+    let history = handle.get_recent_output(max_bytes, client_rows).await;
     if !history.is_empty() {
         tx.send(ServerMessage::OutputHistory {
             instance_id: instance_id.to_string(),
@@ -213,7 +214,9 @@ pub async fn handle_focus(
 
     // Send full terminal state (scrollback + visible screen) — the server
     // owns the buffer, so clients always get the complete aggregated replay.
-    if send_output_history(&handle, &instance_id, usize::MAX, &tx)
+    // Use 24 as default rows here; the TerminalVisible message that follows
+    // Focus will re-send the replay with the correct client dimensions.
+    if send_output_history(&handle, &instance_id, usize::MAX, 24, &tx)
         .await
         .is_err()
     {
@@ -817,7 +820,7 @@ mod tests {
             .process_output(b"Hello from test\r\nLine 2");
 
         let (tx, mut rx) = mpsc::channel(16);
-        send_output_history(&handle, "inst-1", 4096, &tx)
+        send_output_history(&handle, "inst-1", 4096, 24, &tx)
             .await
             .unwrap();
 
@@ -839,7 +842,7 @@ mod tests {
         let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, mut rx) = mpsc::channel(16);
-        send_output_history(&handle, "inst-1", 4096, &tx)
+        send_output_history(&handle, "inst-1", 4096, 24, &tx)
             .await
             .unwrap();
 
@@ -858,7 +861,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         drop(rx); // close the receiver
 
-        let result = send_output_history(&handle, "inst-1", 4096, &tx).await;
+        let result = send_output_history(&handle, "inst-1", 4096, 24, &tx).await;
         assert!(result.is_err());
     }
 }

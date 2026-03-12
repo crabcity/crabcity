@@ -29,9 +29,6 @@ pub struct VirtualTerminal {
     /// VT100 terminal emulator — processes PTY output, maintains screen state
     parser: vt100::Parser,
 
-    /// Number of scrollback lines to retain
-    scrollback_lines: usize,
-
     /// Per-client viewport tracking
     client_viewports: HashMap<String, ClientViewport>,
 
@@ -53,7 +50,6 @@ impl VirtualTerminal {
     pub fn new(rows: u16, cols: u16, max_delta_bytes: usize, scrollback_lines: usize) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, scrollback_lines),
-            scrollback_lines,
             client_viewports: HashMap::new(),
             effective_dims: (rows, cols),
             keyframe: None,
@@ -105,29 +101,50 @@ impl VirtualTerminal {
     /// by a keyframe (visible screen snapshot). Always compacts first so
     /// clients receive the fully-aggregated state — no raw deltas of cursor
     /// throbs or intermediate rewrites.
-    pub fn replay(&mut self) -> Vec<u8> {
+    pub fn replay(&mut self, client_rows: u16) -> Vec<u8> {
         self.compact();
         let mut result = Vec::new();
-        // Prepend scrollback — lines scroll through the client's terminal and
-        // land in their scrollback buffer before the keyframe clears the screen.
-        self.append_scrollback_replay(&mut result);
-        if let Some(ref kf) = self.keyframe {
-            result.extend_from_slice(kf);
+
+        let has_scrollback = self.append_scrollback_replay(&mut result);
+
+        if has_scrollback {
+            // The scrollback lines scrolled through the receiving terminal.
+            // The last `client_rows` of them are still on the visible screen.
+            // Scroll them into the client's scrollback buffer before the
+            // keyframe's \x1b[2J erases the display.
+            //
+            // We use the CLIENT's row count here — the server's effective dims
+            // may differ (e.g. the client's Resize hasn't been processed yet,
+            // or min-of-viewports shrank the PTY).  Using the wrong count
+            // either loses scrollback lines or injects blank rows.
+            result.extend_from_slice(format!("\x1b[{};1H", client_rows).as_bytes());
+            for _ in 0..client_rows {
+                result.push(b'\n');
+            }
         }
+
+        // Clear screen and render the live visible content.
+        let screen = self.parser.screen();
+        result.extend_from_slice(b"\x1b[H\x1b[2J\x1b[0m");
+        result.extend_from_slice(&screen.contents_formatted());
+        let (row, col) = screen.cursor_position();
+        result.extend_from_slice(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+
         result
     }
 
     /// Append formatted scrollback rows to `out`, from oldest to newest.
     /// Each row is output as ANSI-formatted text + `\r\n`, so it scrolls
     /// naturally through the receiving terminal.
-    fn append_scrollback_replay(&mut self, out: &mut Vec<u8>) {
+    /// Returns `true` if any scrollback lines were emitted.
+    fn append_scrollback_replay(&mut self, out: &mut Vec<u8>) -> bool {
         // Find total scrollback depth by scrolling all the way back
         self.parser.screen_mut().set_scrollback(usize::MAX);
         let total_scrollback = self.parser.screen().scrollback();
 
         if total_scrollback == 0 {
             self.parser.screen_mut().set_scrollback(0);
-            return;
+            return false;
         }
 
         let (rows, cols) = self.parser.screen().size();
@@ -154,6 +171,7 @@ impl VirtualTerminal {
         }
 
         self.parser.screen_mut().set_scrollback(0);
+        true
     }
 
     /// Update a client's viewport. Returns new effective dims if changed.
@@ -208,11 +226,10 @@ impl VirtualTerminal {
             && (rows, cols) != self.effective_dims
         {
             self.effective_dims = (rows, cols);
-            // Fresh parser at new dimensions — old screen content was
-            // rendered at stale dimensions and vt100's set_size merges
-            // soft-wrapped lines, corrupting the display.  The PTY resize
-            // will SIGWINCH the application, which redraws cleanly.
-            self.parser = vt100::Parser::new(rows, cols, self.scrollback_lines);
+            // Resize in place — preserves scrollback history.  The visible
+            // screen may briefly show merged soft-wrapped lines, but the
+            // PTY's SIGWINCH redraw fixes it within milliseconds.
+            self.parser.screen_mut().set_size(rows, cols);
             self.keyframe = None;
             self.deltas.clear();
             return Some((rows, cols));
@@ -330,7 +347,7 @@ mod tests {
         vt.process_output(b"Hello, world!");
         vt.process_output(b"\r\nLine 2");
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         // Replay should contain the keyframe + any deltas
         assert!(!replay.is_empty());
 
@@ -384,7 +401,7 @@ mod tests {
         vt.process_output(b"Hello");
         assert!(vt.keyframe.is_none());
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         // Should have compacted and produced a keyframe
         assert!(vt.keyframe.is_some());
         assert!(!replay.is_empty());
@@ -434,7 +451,7 @@ mod tests {
         assert!(!vt.deltas.is_empty());
 
         // Replay should contain content from both phases
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("Before keyframe"));
         assert!(replay_str.contains("After keyframe"));
@@ -455,7 +472,7 @@ mod tests {
         assert!(!vt.deltas.is_empty());
 
         // Replay should contain everything
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("AAAA"));
         assert!(replay_str.contains("Post-compact line"));
@@ -465,7 +482,7 @@ mod tests {
     fn test_empty_terminal_replay() {
         let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         // No output at all — replay on a fresh terminal
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         // Should not be empty — the keyframe is the empty screen reset sequence
         assert!(!replay.is_empty());
         // Should contain the reset/clear sequence
@@ -478,8 +495,8 @@ mod tests {
         let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
         vt.process_output(b"Hello, world!\r\nLine two");
 
-        let replay1 = vt.replay();
-        let replay2 = vt.replay();
+        let replay1 = vt.replay(24);
+        let replay2 = vt.replay(24);
         assert_eq!(replay1, replay2);
     }
 
@@ -522,7 +539,7 @@ mod tests {
         vt.resize(40, 120);
 
         // Replay should still work — content rendered at new size
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("hello"));
     }
@@ -534,23 +551,23 @@ mod tests {
         vt.compact();
         assert!(vt.keyframe.is_some());
 
-        // Resize via update_viewport — resets parser and clears deltas
+        // Resize via update_viewport — uses set_size, preserving content
         let dims_changed = vt.update_viewport("cli", 40, 120, ClientType::Web);
         assert_eq!(dims_changed, Some((40, 120)));
         assert!(vt.keyframe.is_none());
         assert!(vt.deltas.is_empty());
 
-        // Replay on clean parser: just the reset sequence, no stale content
-        let replay = vt.replay();
+        // Replay preserves old content (set_size keeps screen state)
+        let replay = vt.replay(24);
         assert!(!replay.is_empty());
         assert!(vt.keyframe.is_some());
         assert_eq!(vt.effective_dims(), (40, 120));
         let replay_str = String::from_utf8_lossy(&replay);
-        assert!(!replay_str.contains("Content at 24x80"));
+        assert!(replay_str.contains("Content at 24x80"));
 
         // New output at the correct width IS captured
         vt.process_output(b"Content at 40x120");
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("Content at 40x120"));
     }
@@ -567,7 +584,7 @@ mod tests {
             vt.process_output(format!("Line {}\r\n", i).as_bytes());
         }
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
 
         // Scrollback lines (0-3) should be in the replay
@@ -583,7 +600,7 @@ mod tests {
         let mut vt = VirtualTerminal::new(24, 80, 4096, 100);
         vt.process_output(b"Only one line");
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(replay_str.contains("Only one line"));
     }
@@ -596,7 +613,7 @@ mod tests {
             vt.process_output(format!("Line {}\r\n", i).as_bytes());
         }
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         // With zero scrollback, lines 0-4 are lost
         assert!(
@@ -623,7 +640,7 @@ mod tests {
             vt.process_output(format!("\x1b[31mRed {}\x1b[0m\r\n", i).as_bytes());
         }
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
 
         // Scrollback should contain the color escape for old lines
@@ -648,7 +665,7 @@ mod tests {
         vt.compact();
 
         // After compaction, replay should still include scrollback
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(
             replay_str.contains("Line 0"),
@@ -670,7 +687,7 @@ mod tests {
             vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
         }
 
-        let replay = vt.replay();
+        let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
 
         // Lines 0-10 should be gone (exceeded scrollback capacity)
@@ -691,10 +708,159 @@ mod tests {
     }
 
     #[test]
-    fn test_resize_preserves_scrollback_config() {
-        let mut vt = VirtualTerminal::new(24, 80, 4096, 500);
+    fn test_resize_preserves_scrollback_buffer() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 500);
+        // Fill some scrollback
+        for i in 0..10 {
+            vt.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+        // Resize via viewport change
         vt.update_viewport("cli", 30, 100, ClientType::Terminal);
-        // After resize, scrollback_lines should still be 500
-        assert_eq!(vt.scrollback_lines, 500);
+        // Scrollback should survive the dimension change
+        let replay = vt.replay(24);
+        let replay_str = String::from_utf8_lossy(&replay);
+        assert!(
+            replay_str.contains("Line 0"),
+            "scrollback should survive resize"
+        );
+    }
+
+    /// Viewport-driven dimension changes must preserve scrollback history.
+    /// Regression test: previously, `recalculate_effective_dims` replaced the
+    /// entire vt100 parser, destroying all scrollback.
+    #[test]
+    fn test_viewport_change_preserves_scrollback() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+
+        // Build up scrollback
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        // Verify scrollback exists before dimension change
+        let replay_before = vt.replay(24);
+        let before_str = String::from_utf8_lossy(&replay_before);
+        assert!(
+            before_str.contains("Line 00"),
+            "scrollback should exist before resize"
+        );
+
+        // Simulate a web client connecting with different dimensions —
+        // this triggers recalculate_effective_dims
+        vt.update_viewport("web-client", 30, 100, ClientType::Web);
+        assert_eq!(vt.effective_dims(), (30, 100));
+
+        // Scrollback must survive the dimension change
+        let replay_after = vt.replay(24);
+        let after_str = String::from_utf8_lossy(&replay_after);
+        assert!(
+            after_str.contains("Line 00"),
+            "scrollback must survive viewport dimension change"
+        );
+        assert!(
+            after_str.contains("Line 10"),
+            "scrollback must survive viewport dimension change"
+        );
+    }
+
+    /// Simulate the full client-side round-trip: server generates replay bytes,
+    /// client processes them through a fresh vt100 parser, then check whether
+    /// scrollback is accessible via set_scrollback/scrollback.
+    #[test]
+    fn test_replay_roundtrip_preserves_client_scrollback() {
+        // Server side: 4-row screen, 100 lines of scrollback, lots of output
+        let mut server_vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..20 {
+            server_vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        // Server generates replay — client_rows=4 matches the client parser below
+        let replay = server_vt.replay(4);
+        assert!(!replay.is_empty());
+
+        // Simulate JSON round-trip: server encodes as String, client decodes
+        let replay_string = String::from_utf8_lossy(&replay).to_string();
+        let replay_bytes = replay_string.as_bytes();
+
+        // Client side: fresh parser with scrollback, same screen size
+        let mut client_parser = vt100::Parser::new(4, 40, 100);
+        client_parser.process(replay_bytes);
+
+        // Client should have scrollback available
+        client_parser.screen_mut().set_scrollback(usize::MAX);
+        let client_scrollback = client_parser.screen().scrollback();
+        assert!(
+            client_scrollback > 0,
+            "client should have scrollback after processing replay, got 0"
+        );
+
+        // Check oldest scrollback line is accessible
+        let cell = client_parser.screen().cell(0, 0).unwrap();
+        let ch = cell.contents();
+        assert!(!ch.is_empty(), "oldest scrollback row should have content");
+
+        // Reset to live screen
+        client_parser.screen_mut().set_scrollback(0);
+    }
+
+    /// Regression: when the server has fewer scrollback lines than the client's
+    /// screen height, the old replay format lost ALL scrollback (the lines
+    /// stayed on the visible screen and were erased by \x1b[2J).
+    #[test]
+    fn test_replay_roundtrip_small_scrollback() {
+        // Server: 24-row screen, only 5 lines of scrollback overflow
+        let mut server_vt = VirtualTerminal::new(24, 80, 4096, 100);
+        // Write 28 lines → 4 scroll off into scrollback (28 - 24 = 4)
+        for i in 0..28 {
+            server_vt.process_output(format!("SLine {:02}\r\n", i).as_bytes());
+        }
+
+        let replay = server_vt.replay(24);
+
+        // Client: same screen size, processes the replay
+        let mut client = vt100::Parser::new(24, 80, 100);
+        client.process(&replay);
+
+        // Even though only 4 lines were in scrollback (fewer than 24 rows),
+        // the client should still have them.
+        client.screen_mut().set_scrollback(usize::MAX);
+        let sb = client.screen().scrollback();
+        assert!(
+            sb >= 4,
+            "client should have at least 4 scrollback lines, got {}",
+            sb,
+        );
+    }
+
+    /// Verify that \x1b[2J (Erase in Display) does NOT clear the scrollback
+    /// buffer in vt100. If this fails, the keyframe in our replay format
+    /// would destroy scrollback on the client side.
+    #[test]
+    fn test_ed2_does_not_clear_scrollback() {
+        let mut parser = vt100::Parser::new(4, 40, 100);
+
+        // Fill screen and overflow into scrollback
+        for i in 0..10 {
+            parser.process(format!("Line {}\r\n", i).as_bytes());
+        }
+
+        // Verify scrollback exists
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let before = parser.screen().scrollback();
+        assert!(before > 0, "should have scrollback before ED2");
+        parser.screen_mut().set_scrollback(0);
+
+        // Clear screen with ED2 (the escape used in our keyframe)
+        parser.process(b"\x1b[H\x1b[2J\x1b[0m");
+
+        // Scrollback should still be there
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let after = parser.screen().scrollback();
+        assert!(
+            after > 0,
+            "scrollback should survive ED2 (\\x1b[2J), before={} after={}",
+            before,
+            after
+        );
     }
 }
