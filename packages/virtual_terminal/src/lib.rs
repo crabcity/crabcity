@@ -134,8 +134,11 @@ impl VirtualTerminal {
     }
 
     /// Append formatted scrollback rows to `out`, from oldest to newest.
-    /// Each row is output as ANSI-formatted text + `\r\n`, so it scrolls
-    /// naturally through the receiving terminal.
+    /// Each row is output as SGR-styled text + `\r\n`, so it scrolls
+    /// naturally through the receiving terminal. **No CUP sequences** —
+    /// `rows_formatted()` emits absolute cursor-position sequences for rows
+    /// with leading default cells, which stomp earlier pages when scrollback
+    /// is emitted page-by-page.
     /// Returns `true` if any scrollback lines were emitted.
     fn append_scrollback_replay(&mut self, out: &mut Vec<u8>) -> bool {
         // Find total scrollback depth by scrolling all the way back
@@ -156,14 +159,10 @@ impl VirtualTerminal {
         let mut remaining = total_scrollback;
         while remaining > 0 {
             self.parser.screen_mut().set_scrollback(remaining);
-            let screen = self.parser.screen();
             let scrollback_rows_in_page = remaining.min(rows_usize);
 
-            for (i, row_content) in screen.rows_formatted(0, cols).enumerate() {
-                if i >= scrollback_rows_in_page {
-                    break;
-                }
-                out.extend_from_slice(&row_content);
+            for i in 0..scrollback_rows_in_page {
+                format_row_no_cup(self.parser.screen(), i as u16, cols, out);
                 out.extend_from_slice(b"\x1b[0m\r\n");
             }
 
@@ -236,6 +235,128 @@ impl VirtualTerminal {
         }
         // If no active viewports, keep current dims (don't shrink to nothing)
         None
+    }
+}
+
+/// Emit a single row as SGR-styled text — no CUP or cursor movement.
+/// Iterates cells left-to-right, emitting SGR diffs for attribute changes
+/// and cell contents (space for empty/default cells). Wide-continuation
+/// cells are skipped.
+fn format_row_no_cup(screen: &vt100::Screen, row: u16, cols: u16, out: &mut Vec<u8>) {
+    let mut cur_fg = vt100::Color::Default;
+    let mut cur_bg = vt100::Color::Default;
+    let mut cur_bold = false;
+    let mut cur_italic = false;
+    let mut cur_underline = false;
+    let mut cur_inverse = false;
+
+    for col in 0..cols {
+        let Some(cell) = screen.cell(row, col) else {
+            out.push(b' ');
+            continue;
+        };
+        if cell.is_wide_continuation() {
+            continue;
+        }
+
+        let fg = cell.fgcolor();
+        let bg = cell.bgcolor();
+        let bold = cell.bold();
+        let italic = cell.italic();
+        let underline = cell.underline();
+        let inverse = cell.inverse();
+
+        let attrs_differ = fg != cur_fg
+            || bg != cur_bg
+            || bold != cur_bold
+            || italic != cur_italic
+            || underline != cur_underline
+            || inverse != cur_inverse;
+
+        if attrs_differ {
+            // Check if any attribute was *removed* — needs a full reset
+            let needs_reset = (cur_bold && !bold)
+                || (cur_italic && !italic)
+                || (cur_underline && !underline)
+                || (cur_inverse && !inverse)
+                || (cur_fg != vt100::Color::Default && fg == vt100::Color::Default)
+                || (cur_bg != vt100::Color::Default && bg == vt100::Color::Default);
+
+            if needs_reset {
+                out.extend_from_slice(b"\x1b[0m");
+                if bold {
+                    out.extend_from_slice(b"\x1b[1m");
+                }
+                if italic {
+                    out.extend_from_slice(b"\x1b[3m");
+                }
+                if underline {
+                    out.extend_from_slice(b"\x1b[4m");
+                }
+                if inverse {
+                    out.extend_from_slice(b"\x1b[7m");
+                }
+                emit_sgr_fg(out, fg);
+                emit_sgr_bg(out, bg);
+            } else {
+                if !cur_bold && bold {
+                    out.extend_from_slice(b"\x1b[1m");
+                }
+                if !cur_italic && italic {
+                    out.extend_from_slice(b"\x1b[3m");
+                }
+                if !cur_underline && underline {
+                    out.extend_from_slice(b"\x1b[4m");
+                }
+                if !cur_inverse && inverse {
+                    out.extend_from_slice(b"\x1b[7m");
+                }
+                if cur_fg != fg {
+                    emit_sgr_fg(out, fg);
+                }
+                if cur_bg != bg {
+                    emit_sgr_bg(out, bg);
+                }
+            }
+
+            cur_fg = fg;
+            cur_bg = bg;
+            cur_bold = bold;
+            cur_italic = italic;
+            cur_underline = underline;
+            cur_inverse = inverse;
+        }
+
+        let contents = cell.contents();
+        if contents.is_empty() {
+            out.push(b' ');
+        } else {
+            out.extend_from_slice(contents.as_bytes());
+        }
+    }
+}
+
+fn emit_sgr_fg(out: &mut Vec<u8>, color: vt100::Color) {
+    match color {
+        vt100::Color::Default => out.extend_from_slice(b"\x1b[39m"),
+        vt100::Color::Idx(n) => {
+            out.extend_from_slice(format!("\x1b[38;5;{}m", n).as_bytes());
+        }
+        vt100::Color::Rgb(r, g, b) => {
+            out.extend_from_slice(format!("\x1b[38;2;{};{};{}m", r, g, b).as_bytes());
+        }
+    }
+}
+
+fn emit_sgr_bg(out: &mut Vec<u8>, color: vt100::Color) {
+    match color {
+        vt100::Color::Default => out.extend_from_slice(b"\x1b[49m"),
+        vt100::Color::Idx(n) => {
+            out.extend_from_slice(format!("\x1b[48;5;{}m", n).as_bytes());
+        }
+        vt100::Color::Rgb(r, g, b) => {
+            out.extend_from_slice(format!("\x1b[48;2;{};{};{}m", r, g, b).as_bytes());
+        }
     }
 }
 
@@ -862,5 +983,429 @@ mod tests {
             before,
             after
         );
+    }
+
+    // ── Replay round-trip helpers ────────────────────────────────────
+
+    /// Feed replay bytes into a fresh client parser, return it.
+    fn replay_roundtrip(
+        server_vt: &mut VirtualTerminal,
+        client_rows: u16,
+        client_cols: u16,
+    ) -> vt100::Parser {
+        let replay = server_vt.replay(client_rows);
+        let mut client = vt100::Parser::new(client_rows, client_cols, 1000);
+        client.process(&replay);
+        client
+    }
+
+    /// Extract visible lines from a screen (strips trailing whitespace).
+    fn visible_lines(screen: &vt100::Screen) -> Vec<String> {
+        let (rows, cols) = screen.size();
+        (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| {
+                        screen.cell(r, c).map_or(" ".to_string(), |cell| {
+                            let s = cell.contents();
+                            if s.is_empty() {
+                                " ".to_string()
+                            } else {
+                                s.to_string()
+                            }
+                        })
+                    })
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Extract all scrollback lines from a parser (oldest first).
+    fn scrollback_lines(parser: &mut vt100::Parser, cols: u16) -> Vec<String> {
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = parser.screen().scrollback();
+        let mut lines = Vec::new();
+        for offset in (1..=depth).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            let row_text: String = (0..cols)
+                .map(|c| {
+                    parser.screen().cell(0, c).map_or(" ".to_string(), |cell| {
+                        let s = cell.contents();
+                        if s.is_empty() {
+                            " ".to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            lines.push(row_text);
+        }
+        parser.screen_mut().set_scrollback(0);
+        lines
+    }
+
+    // ── Replay rendering TDD tests ──────────────────────────────────
+
+    /// Cell-level round-trip verification.
+    #[test]
+    fn test_replay_cell_content_exact() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 40);
+        let vis = visible_lines(client.screen());
+        // Last \r\n scrolls cursor to row 3 → visible = [Line 17, Line 18, Line 19, ""]
+        assert_eq!(vis[0], "Line 17", "visible row 0");
+        assert_eq!(vis[1], "Line 18", "visible row 1");
+        assert_eq!(vis[2], "Line 19", "visible row 2");
+        assert_eq!(vis[3], "", "visible row 3 (empty after last \\r\\n)");
+
+        let sb = scrollback_lines(&mut client, 40);
+        // Filter out empty lines from the scroll-push mechanism
+        let content_sb: Vec<_> = sb.iter().filter(|l| !l.is_empty()).collect();
+        // Scrollback should contain Line 00..Line 16 in order
+        assert!(
+            content_sb.len() >= 16,
+            "expected at least 16 content scrollback lines, got {}",
+            content_sb.len()
+        );
+        assert!(
+            content_sb.first().unwrap().contains("Line 00"),
+            "first scrollback line should be Line 00, got {:?}",
+            content_sb.first()
+        );
+        assert!(
+            content_sb.last().unwrap().contains("Line 16"),
+            "last content scrollback line should be Line 16, got {:?}",
+            content_sb.last()
+        );
+    }
+
+    /// Regression test: no CUP sequences in the scrollback portion of replay.
+    #[test]
+    fn test_replay_no_cup_in_scrollback() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay(4);
+
+        // Find the keyframe boundary: \x1b[H\x1b[2J marks the start of the
+        // visible screen section. Everything before it is scrollback + the
+        // scroll-push section. The scroll-push section starts with a single
+        // CUP \x1b[N;1H followed by newlines — exclude it by finding the
+        // last \r\n before the keyframe marker.
+        let replay_str = String::from_utf8_lossy(&replay);
+        let keyframe_marker = "\x1b[H\x1b[2J";
+        let keyframe_pos = replay_str
+            .find(keyframe_marker)
+            .expect("replay should contain keyframe marker");
+        // The scrollback rows all end with \r\n. Find the last one before the keyframe.
+        let scrollback_end = replay_str[..keyframe_pos].rfind("\r\n").unwrap_or(0);
+        let scrollback_portion = &replay_str[..scrollback_end];
+
+        // Scan for CUP sequences: \x1b[ <digits> ; <digits> H
+        // Manual scan avoids a regex dependency.
+        let sb_bytes = scrollback_portion.as_bytes();
+        let mut cups_found = Vec::new();
+        let mut i = 0;
+        while i < sb_bytes.len().saturating_sub(4) {
+            if sb_bytes[i] == b'\x1b' && sb_bytes[i + 1] == b'[' {
+                let start = i;
+                let mut j = i + 2;
+                // digits
+                while j < sb_bytes.len() && sb_bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j < sb_bytes.len() && sb_bytes[j] == b';' {
+                    j += 1;
+                    while j < sb_bytes.len() && sb_bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j < sb_bytes.len() && sb_bytes[j] == b'H' {
+                        cups_found.push(String::from_utf8_lossy(&sb_bytes[start..=j]).to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+        assert!(
+            cups_found.is_empty(),
+            "scrollback portion should contain no CUP sequences, found: {:?}",
+            cups_found
+        );
+    }
+
+    /// The specific trigger for the CUP bug: lines with leading spaces.
+    #[test]
+    fn test_replay_scrollback_with_indented_lines() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..12 {
+            vt.process_output(format!("    indented line {}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 40);
+        let sb = scrollback_lines(&mut client, 40);
+        // Filter out empty lines from the scroll-push mechanism
+        let content_sb: Vec<_> = sb.into_iter().filter(|l| !l.is_empty()).collect();
+
+        assert!(
+            content_sb.len() >= 8,
+            "should have at least 8 content scrollback lines, got {}",
+            content_sb.len()
+        );
+
+        // All content scrollback lines should have the indentation and correct content
+        for (idx, line) in content_sb.iter().enumerate() {
+            assert!(
+                line.starts_with("    indented line"),
+                "scrollback line {} should start with '    indented line', got {:?}",
+                idx,
+                line
+            );
+        }
+
+        // No line should contain content from another line (no overwrite artifacts)
+        for line in &content_sb {
+            let matches: Vec<_> = content_sb
+                .iter()
+                .filter(|other| line.contains(other.as_str()))
+                .collect();
+            assert!(
+                matches.len() <= 1,
+                "line {:?} should not contain content from other lines",
+                line
+            );
+        }
+    }
+
+    /// Rows with trailing empty cells (short lines in a wide terminal).
+    #[test]
+    fn test_replay_scrollback_with_partial_lines() {
+        let mut vt = VirtualTerminal::new(4, 80, 4096, 100);
+        for i in 0..12 {
+            vt.process_output(format!("Hi {}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 80);
+        let sb = scrollback_lines(&mut client, 80);
+        // Filter out empty lines from the scroll-push mechanism
+        let content_lines: Vec<_> = sb.iter().filter(|l| !l.is_empty()).collect();
+
+        for (idx, line) in content_lines.iter().enumerate() {
+            assert!(
+                line.starts_with("Hi "),
+                "scrollback line {} should start with 'Hi ', got {:?}",
+                idx,
+                line
+            );
+        }
+        assert!(
+            content_lines.len() >= 8,
+            "should have at least 8 content scrollback lines, got {}",
+            content_lines.len()
+        );
+    }
+
+    /// Client bigger than server — content should still be correct.
+    #[test]
+    fn test_replay_mismatched_dims() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 24, 80);
+        let vis = visible_lines(client.screen());
+
+        // The visible screen on the client should contain the server's visible content
+        let vis_text = vis.join("\n");
+        assert!(
+            vis_text.contains("Line 17"),
+            "client should show server's visible content"
+        );
+        assert!(
+            vis_text.contains("Line 19"),
+            "client should show server's visible content"
+        );
+
+        let sb = scrollback_lines(&mut client, 80);
+        // Earlier lines should be in scrollback
+        let sb_text = sb.join("\n");
+        assert!(
+            sb_text.contains("Line 00"),
+            "earlier lines should be in client scrollback"
+        );
+    }
+
+    /// SGR round-trip: colors survive replay.
+    #[test]
+    fn test_replay_scrollback_colors_preserved() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..8 {
+            vt.process_output(format!("\x1b[31mRed {}\x1b[0m\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 40);
+
+        // Check scrollback cells for red foreground
+        client.screen_mut().set_scrollback(usize::MAX);
+        let depth = client.screen().scrollback();
+        assert!(depth > 0, "client should have scrollback");
+
+        // Check the first scrollback row (oldest)
+        client.screen_mut().set_scrollback(depth);
+        let cell = client.screen().cell(0, 0).unwrap();
+        assert_eq!(
+            cell.fgcolor(),
+            vt100::Color::Idx(1),
+            "scrollback cell should have red foreground, got {:?}",
+            cell.fgcolor()
+        );
+        client.screen_mut().set_scrollback(0);
+    }
+
+    /// Ordering check across multiple pages — no repeats or gaps.
+    #[test]
+    fn test_replay_scrollback_order_preserved() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 500);
+        for i in 0..100 {
+            vt.process_output(format!("Line {:04}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 40);
+        let sb = scrollback_lines(&mut client, 40);
+
+        // Extract line numbers from scrollback and verify ascending order
+        let mut prev_num: Option<u32> = None;
+        for line in &sb {
+            if let Some(pos) = line.find("Line ") {
+                let num_str = &line[pos + 5..pos + 9];
+                if let Ok(num) = num_str.trim().parse::<u32>() {
+                    if let Some(p) = prev_num {
+                        assert!(
+                            num > p,
+                            "scrollback lines should be in ascending order: {} followed by {}",
+                            p,
+                            num
+                        );
+                    }
+                    prev_num = Some(num);
+                }
+            }
+        }
+        assert!(
+            prev_num.is_some(),
+            "should have found numbered lines in scrollback"
+        );
+    }
+
+    /// Scrollback survives dimension change.
+    #[test]
+    fn test_replay_after_resize() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        // Resize to 8×60
+        vt.update_viewport("cli", 8, 60, ClientType::Terminal);
+
+        let mut client = replay_roundtrip(&mut vt, 8, 60);
+        let sb = scrollback_lines(&mut client, 60);
+
+        let sb_text = sb.join("\n");
+        assert!(
+            sb_text.contains("Line 00"),
+            "scrollback should survive resize"
+        );
+        assert!(
+            sb_text.contains("Line 10"),
+            "mid-range scrollback should survive resize"
+        );
+
+        // Verify ordering
+        let mut prev_num: Option<u32> = None;
+        for line in &sb {
+            if let Some(pos) = line.find("Line ") {
+                let num_str = &line[pos + 5..pos + 7];
+                if let Ok(num) = num_str.trim().parse::<u32>() {
+                    if let Some(p) = prev_num {
+                        assert!(num > p, "order broken after resize: {} then {}", p, num);
+                    }
+                    prev_num = Some(num);
+                }
+            }
+        }
+    }
+
+    /// CJK / wide characters in scrollback.
+    #[test]
+    fn test_replay_wide_chars_in_scrollback() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        for i in 0..8 {
+            vt.process_output(format!("行{} test\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 4, 40);
+        let sb = scrollback_lines(&mut client, 40);
+        // Filter out empty lines from the scroll-push mechanism
+        let content_sb: Vec<_> = sb.into_iter().filter(|l| !l.is_empty()).collect();
+
+        assert!(
+            content_sb.len() >= 4,
+            "should have at least 4 CJK scrollback lines, got {}",
+            content_sb.len()
+        );
+
+        for (idx, line) in content_sb.iter().enumerate() {
+            assert!(
+                line.contains("行"),
+                "scrollback line {} should contain CJK char, got {:?}",
+                idx,
+                line
+            );
+            assert!(
+                line.contains("test"),
+                "scrollback line {} should contain 'test', got {:?}",
+                idx,
+                line
+            );
+        }
+    }
+
+    /// Edge case: no scrollback overflow → replay should not contain scroll-clear section.
+    #[test]
+    fn test_replay_empty_scrollback_no_scroll_clear() {
+        let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
+        // Only 2 lines — no scrollback overflow
+        vt.process_output(b"Line A\r\nLine B\r\n");
+
+        let replay = vt.replay(4);
+        let replay_str = String::from_utf8_lossy(&replay);
+
+        // Should NOT contain the scroll-clear newline sequence that pushes
+        // scrollback down — there's nothing to push.
+        // The replay should start directly with the keyframe.
+        assert!(
+            replay_str.starts_with("\x1b[H\x1b[2J"),
+            "replay with no scrollback should start with keyframe, got: {:?}",
+            &replay_str[..replay_str.len().min(40)]
+        );
+
+        // Visible lines should be correct
+        let mut client = vt100::Parser::new(4, 40, 100);
+        client.process(&replay);
+        let vis = visible_lines(client.screen());
+        assert_eq!(vis[0], "Line A");
+        assert_eq!(vis[1], "Line B");
     }
 }
