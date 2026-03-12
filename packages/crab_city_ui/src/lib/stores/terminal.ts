@@ -52,6 +52,15 @@ export function writeTerminalOutput(instanceId: string, data: string): void {
 			buffer = { chunks: [], shouldClear: false };
 		}
 
+		// If a full replay (OutputHistory) is pending, skip appending.
+		// The replay already contains the complete terminal state — any
+		// Output arriving between the replay and its consumption is either
+		// already baked into the replay (duplicate) or a SIGWINCH redraw
+		// that will harmlessly overwrite the visible screen.
+		if (buffer.shouldClear) {
+			return buffers;
+		}
+
 		buffer.chunks.push(data);
 
 		// Prevent unbounded growth

@@ -2,7 +2,7 @@ use anyhow::Result;
 use compositor::{Anchor, Attrs, Compositor, LayerId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -431,7 +431,7 @@ pub struct SpawnOptions {
 /// Handle VT and compositor commands.
 /// Returns `None` if handled, `Some(cmd)` for PTY/metadata commands.
 async fn handle_vt_command(
-    vt: &RwLock<VirtualTerminal>,
+    vt: &Mutex<VirtualTerminal>,
     compositor: &RwLock<Compositor>,
     cmd: InstanceCommand,
 ) -> Option<InstanceCommand> {
@@ -443,7 +443,7 @@ async fn handle_vt_command(
             client_type,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.update_viewport(&connection_id, rows, cols, client_type);
             let _ = respond_to.send(result);
             None
@@ -453,7 +453,7 @@ async fn handle_vt_command(
             active,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.set_active(&connection_id, active);
             let _ = respond_to.send(result);
             None
@@ -462,7 +462,7 @@ async fn handle_vt_command(
             connection_id,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.remove_client(&connection_id);
             let _ = respond_to.send(result);
             None
@@ -472,7 +472,7 @@ async fn handle_vt_command(
             client_rows,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let comp = compositor.read().await;
             let replay = if comp.has_visible_layers() {
                 // Compose screen with overlay layers
@@ -534,7 +534,7 @@ struct InstanceActor {
     info: Arc<RwLock<InstanceInfo>>,
     pty: PtyHandle,
     receiver: mpsc::Receiver<InstanceCommand>,
-    virtual_terminal: Arc<RwLock<VirtualTerminal>>,
+    virtual_terminal: Arc<Mutex<VirtualTerminal>>,
     compositor: Arc<RwLock<Compositor>>,
     enriched_tx: broadcast::Sender<EnrichedOutput>,
 }
@@ -585,7 +585,7 @@ impl InstanceActor {
         }));
 
         let (sender, receiver) = mpsc::channel(32);
-        let virtual_terminal = Arc::new(RwLock::new(VirtualTerminal::new(
+        let virtual_terminal = Arc::new(Mutex::new(VirtualTerminal::new(
             24,
             80,
             opts.max_buffer_bytes,
@@ -609,7 +609,7 @@ impl InstanceActor {
         let vt_clone = virtual_terminal.clone();
         tokio::spawn(async move {
             while let Ok(event) = output_rx.recv().await {
-                let mut vt = vt_clone.write().await;
+                let mut vt = vt_clone.lock().await;
                 vt.process_output(&event.data);
                 let cursor = vt.cursor_position();
                 let _ = enriched_tx.send(EnrichedOutput {
@@ -745,7 +745,20 @@ impl InstanceHandle {
         max_delta_bytes: usize,
     ) -> (
         Self,
-        Arc<RwLock<VirtualTerminal>>,
+        Arc<Mutex<VirtualTerminal>>,
+        broadcast::Sender<EnrichedOutput>,
+    ) {
+        Self::spawn_test_with_scrollback(rows, cols, max_delta_bytes, 0)
+    }
+
+    pub(crate) fn spawn_test_with_scrollback(
+        rows: u16,
+        cols: u16,
+        max_delta_bytes: usize,
+        scrollback_lines: usize,
+    ) -> (
+        Self,
+        Arc<Mutex<VirtualTerminal>>,
         broadcast::Sender<EnrichedOutput>,
     ) {
         let info = Arc::new(RwLock::new(InstanceInfo {
@@ -760,11 +773,11 @@ impl InstanceHandle {
             claude_state: None,
         }));
         let (sender, mut receiver) = mpsc::channel(32);
-        let vt = Arc::new(RwLock::new(VirtualTerminal::new(
+        let vt = Arc::new(Mutex::new(VirtualTerminal::new(
             rows,
             cols,
             max_delta_bytes,
-            0,
+            scrollback_lines,
         )));
         let comp = Arc::new(RwLock::new(Compositor::new()));
         let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
@@ -800,11 +813,11 @@ impl InstanceHandle {
     /// Inject output through the enriched pipeline: processes data in the VT,
     /// reads cursor position, and broadcasts an `EnrichedOutput` event.
     pub(crate) async fn inject_output(
-        vt: &RwLock<VirtualTerminal>,
+        vt: &Mutex<VirtualTerminal>,
         enriched_tx: &broadcast::Sender<EnrichedOutput>,
         data: &[u8],
     ) {
-        let mut vt = vt.write().await;
+        let mut vt = vt.lock().await;
         vt.process_output(data);
         let cursor = vt.cursor_position();
         let _ = enriched_tx.send(EnrichedOutput {
@@ -871,9 +884,7 @@ mod tests {
         let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Inject output directly into the VT
-        vt.write()
-            .await
-            .process_output(b"Hello from test\r\nLine 2");
+        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
 
         let output = handle.get_recent_output(4096, 24).await;
         assert_eq!(output.len(), 1);
@@ -885,7 +896,7 @@ mod tests {
     async fn test_handle_get_recent_output_truncation() {
         let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
-        vt.write().await.process_output("A".repeat(200).as_bytes());
+        vt.lock().await.process_output("A".repeat(200).as_bytes());
 
         let full = handle.get_recent_output(100_000, 24).await;
         let full_len = full[0].len();
@@ -938,7 +949,7 @@ mod tests {
 
         // Write box-drawing characters (3 bytes each in UTF-8)
         let content = "─".repeat(40); // 120 bytes
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         // The replay includes a keyframe prefix (ANSI escapes), so the
         // total is larger than 120 bytes.  Try various max_bytes values
@@ -963,7 +974,7 @@ mod tests {
 
         // Mix of ASCII and multi-byte: "hello──world" (5 + 6 + 5 = 16 bytes text)
         let content = "hello──world";
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         // Full replay should contain the content
         let full = handle.get_recent_output(100_000, 24).await;
@@ -991,7 +1002,7 @@ mod tests {
 
         // 4-byte emoji characters
         let content = "🦀".repeat(10); // 40 bytes
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         for max_bytes in 1..=80 {
             let output = handle.get_recent_output(max_bytes, 24).await;
@@ -1063,5 +1074,140 @@ mod tests {
         let event = rx.recv().await.unwrap();
         assert_eq!(event.data, b"Test output");
         assert_eq!(event.cursor, (0, 11));
+    }
+
+    /// Simulate the multiplexed WebSocket duplication bug:
+    ///
+    /// 1. Focus subscribes to PTY output (like focus.rs:231)
+    /// 2. PTY output arrives — focus task forwards it to the client
+    /// 3. TerminalVisible handler generates a replay that ALSO includes this output
+    /// 4. Client processes both — duplication
+    ///
+    /// This test proves the overlap exists at the instance_actor API level.
+    #[tokio::test]
+    async fn test_multiplexed_focus_replay_overlap() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+
+        // Fill VT with initial content so scrollback has data.
+        for i in 0..12 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Init {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Step 1: Focus subscribes to output.
+        let mut output_rx = handle.subscribe_output().await.unwrap();
+
+        // Step 2: "Late" output arrives after subscribe.
+        // These are in BOTH the broadcast receiver AND the VT.
+        for i in 0..6 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Late {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Step 3: TerminalVisible handler generates replay from VT.
+        let replay_chunks = handle.get_recent_output(usize::MAX, 4).await;
+        let replay_data = replay_chunks.join("");
+
+        // Collect the broadcast messages the focus task would forward.
+        let mut broadcast_bytes = Vec::new();
+        while let Ok(event) = output_rx.try_recv() {
+            broadcast_bytes.extend_from_slice(&event.data);
+        }
+        assert!(
+            !broadcast_bytes.is_empty(),
+            "focus task should have received broadcast output"
+        );
+
+        // ── Clean client: replay only (what we want after the fix) ──
+        let mut clean = vt100::Parser::new(4, 40, 1000);
+        clean.process(replay_data.as_bytes());
+
+        // ── Buggy client: replay THEN broadcast (current broken behavior) ──
+        let mut buggy = vt100::Parser::new(4, 40, 1000);
+        buggy.process(replay_data.as_bytes());
+        buggy.process(&broadcast_bytes);
+
+        // Count "Late 00" occurrences across scrollback + visible screen.
+        let clean_count = count_occurrences(&mut clean, 40, "Late 00");
+        let buggy_count = count_occurrences(&mut buggy, 40, "Late 00");
+
+        assert_eq!(clean_count, 1, "clean client: 'Late 00' should appear once");
+        // BUG: the buggy client sees "Late 00" twice — once from the replay
+        // and once from the broadcast overlap pushing content into scrollback.
+        assert!(
+            buggy_count > 1,
+            "buggy client: 'Late 00' should be duplicated, got {buggy_count}"
+        );
+    }
+
+    /// After draining the broadcast receiver post-replay, the overlap is gone.
+    #[tokio::test]
+    async fn test_multiplexed_drain_prevents_duplication() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+
+        for i in 0..12 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Init {i:02}\r\n").as_bytes()).await;
+        }
+
+        let mut output_rx = handle.subscribe_output().await.unwrap();
+
+        for i in 0..6 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Late {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Generate replay.
+        let replay_chunks = handle.get_recent_output(usize::MAX, 4).await;
+        let replay_data = replay_chunks.join("");
+
+        // DRAIN: discard broadcast messages already baked into the replay.
+        while output_rx.try_recv().is_ok() {}
+
+        // After the drain, no stale broadcasts remain.
+        // Simulate client: write replay only (post-drain no extra output).
+        let mut client = vt100::Parser::new(4, 40, 1000);
+        client.process(replay_data.as_bytes());
+
+        let count = count_occurrences(&mut client, 40, "Late 00");
+        assert_eq!(count, 1, "'Late 00' should appear exactly once after drain");
+    }
+
+    /// Count how many times `needle` appears across scrollback + visible screen.
+    fn count_occurrences(parser: &mut vt100::Parser, cols: u16, needle: &str) -> usize {
+        let mut all_text = String::new();
+
+        // Visible screen
+        let (rows, _) = parser.screen().size();
+        for r in 0..rows {
+            for c in 0..cols {
+                if let Some(cell) = parser.screen().cell(r, c) {
+                    let s = cell.contents();
+                    if s.is_empty() {
+                        all_text.push(' ');
+                    } else {
+                        all_text.push_str(s);
+                    }
+                }
+            }
+            all_text.push('\n');
+        }
+
+        // Scrollback
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = parser.screen().scrollback();
+        for offset in (1..=depth).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            for c in 0..cols {
+                if let Some(cell) = parser.screen().cell(0, c) {
+                    let s = cell.contents();
+                    if s.is_empty() {
+                        all_text.push(' ');
+                    } else {
+                        all_text.push_str(s);
+                    }
+                }
+            }
+            all_text.push('\n');
+        }
+        parser.screen_mut().set_scrollback(0);
+
+        all_text.matches(needle).count()
     }
 }

@@ -83,7 +83,12 @@
 			const buffer = consumeTerminalOutput(instanceId);
 
 			if (buffer.shouldClear) {
+				// Full replay incoming — nuke all state so the replay starts
+				// from a clean (0,0) cursor.  terminal.clear() alone preserves
+				// the cursor row, which garbles the first scrollback line if
+				// the cursor wasn't at column 0.
 				terminal.clear();
+				terminal.write('\x1b[H\x1b[2J');
 			}
 
 			// Check viewport position BEFORE writing so writes don't change the answer

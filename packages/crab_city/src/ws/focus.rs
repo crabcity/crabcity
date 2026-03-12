@@ -170,6 +170,7 @@ pub async fn handle_focus(
     instance_manager: Arc<InstanceManager>,
     tx: mpsc::Sender<ServerMessage>,
     session_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
+    mut refresh_rx: mpsc::Receiver<u16>,
 ) {
     debug!("Focusing on instance: {}", instance_id);
 
@@ -212,17 +213,12 @@ pub async fn handle_focus(
         }
     };
 
-    // Send full terminal state (scrollback + visible screen) — the server
-    // owns the buffer, so clients always get the complete aggregated replay.
-    // Use 24 as default rows here; the TerminalVisible message that follows
-    // Focus will re-send the replay with the correct client dimensions.
-    if send_output_history(&handle, &instance_id, usize::MAX, 24, &tx)
-        .await
-        .is_err()
-    {
-        warn!(instance = %instance_id, "Failed to send OutputHistory - channel closed");
-        return;
-    }
+    // Don't send OutputHistory here — the TerminalVisible message that follows
+    // Focus will trigger a properly-drained replay with the correct client
+    // dimensions via the refresh channel.  Sending a preliminary replay with
+    // default rows would cause double-scrollback: ED2 clears the visible screen
+    // but NOT the client's scrollback buffer, so the second replay writes the
+    // same scrollback lines on top of the first, creating persistent duplicates.
 
     // Note: claude_state is already sent in FocusAck to prevent race conditions.
     // No need to send a separate StateChange here.
@@ -338,6 +334,22 @@ pub async fn handle_focus(
                         break;
                     }
                 }
+            }
+            // TerminalVisible: the handler resized the PTY and is asking us
+            // to re-send the full terminal state with the correct client_rows.
+            // We drain the broadcast receiver first so that output already
+            // baked into the replay isn't also forwarded as live Output
+            // (which would cause the client to see duplicate content).
+            Some(client_rows) = refresh_rx.recv() => {
+                if send_output_history(&handle, &instance_id, usize::MAX, client_rows, &tx)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                // Drain broadcasts already included in the replay.
+                while output_rx.try_recv().is_ok() {}
+                decoder.clear();
             }
             // Forward conversation events from server-owned watcher
             event = async {
@@ -815,9 +827,7 @@ mod tests {
     #[tokio::test]
     async fn output_history_sent_when_buffer_nonempty() {
         let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        vt.write()
-            .await
-            .process_output(b"Hello from test\r\nLine 2");
+        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, 24, &tx)

@@ -169,6 +169,13 @@ pub async fn handle_proxy(
         }
     }
 
+    // Drain any broadcast messages that were queued between subscribe_output
+    // and get_recent_output.  These bytes were already processed by the VT
+    // parser before the replay snapshot, so forwarding them would cause the
+    // client to apply them twice — pushing visible content into scrollback
+    // as duplicate "copied chunks."
+    while output_rx.try_recv().is_ok() {}
+
     // Task to forward PTY output to WebSocket
     let tx_output = tx.clone();
     let output_task = async move {
