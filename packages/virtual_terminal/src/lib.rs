@@ -9,6 +9,51 @@ pub use recorder::{VtEvent, VtRecorder, VtRecording, VtRecordingHeader};
 
 use std::collections::HashMap;
 
+/// Attributes of a single visible cell, extracted from vt100.
+///
+/// Provides a single source of truth for cell iteration: all three rendering
+/// paths (plain text, SGR bytes, ratatui buffer) consume this struct instead
+/// of independently querying vt100 cell attributes.
+#[derive(Debug, Clone)]
+pub struct CellInfo<'a> {
+    /// Column index in the row (0-indexed).
+    pub col: u16,
+    /// Text content of the cell (empty cells are represented as `" "`).
+    pub contents: &'a str,
+    pub fg: vt100::Color,
+    pub bg: vt100::Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+/// Iterate visible cells in a row, skipping wide-continuation cells.
+///
+/// This is the canonical way to read cells from a `vt100::Screen`.  All
+/// rendering paths (plain text extraction, SGR byte emission, ratatui widget)
+/// should use this iterator to stay in sync when vt100 adds new attributes
+/// or changes cell semantics.
+pub fn walk_row(screen: &vt100::Screen, row: u16, cols: u16) -> impl Iterator<Item = CellInfo<'_>> {
+    (0..cols).filter_map(move |col| {
+        let cell = screen.cell(row, col)?;
+        if cell.is_wide_continuation() {
+            return None;
+        }
+        let contents = cell.contents();
+        Some(CellInfo {
+            col,
+            contents: if contents.is_empty() { " " } else { contents },
+            fg: cell.fgcolor(),
+            bg: cell.bgcolor(),
+            bold: cell.bold(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        })
+    })
+}
+
 /// Type of client connection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientType {
@@ -128,10 +173,7 @@ impl VirtualTerminal {
         let (eff_rows, eff_cols) = screen.size();
         let alt_screen = screen.alternate_screen();
 
-        // Snapshot scrollback depth before replay touches the offset
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let scrollback_depth = self.parser.screen().scrollback();
-        self.parser.screen_mut().set_scrollback(0);
+        let sb_depth = scrollback_depth(&mut self.parser);
 
         let mut result = Vec::new();
 
@@ -149,7 +191,7 @@ impl VirtualTerminal {
             eff_rows,
             eff_cols,
             alt_screen,
-            scrollback_depth,
+            sb_depth,
             scrollback_lines,
             scrollback_bytes,
             total_bytes = result.len(),
@@ -224,41 +266,20 @@ impl VirtualTerminal {
         let (_, cols) = self.parser.screen().size();
 
         // Scrollback (oldest first)
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let depth = self.parser.screen().scrollback();
+        let depth = scrollback_depth(&mut self.parser);
         let mut out = Vec::with_capacity(depth);
         for offset in (1..=depth).rev() {
             self.parser.screen_mut().set_scrollback(offset);
-            out.push(self.row_text(0, cols));
+            out.push(read_row_text(self.parser.screen(), 0, cols));
         }
         self.parser.screen_mut().set_scrollback(0);
 
         // Visible screen
         let (rows, cols) = self.parser.screen().size();
         for r in 0..rows {
-            out.push(self.row_text(r, cols));
+            out.push(read_row_text(self.parser.screen(), r, cols));
         }
         out
-    }
-
-    fn row_text(&self, row: u16, cols: u16) -> String {
-        let mut s = String::new();
-        for c in 0..cols {
-            if let Some(cell) = self.parser.screen().cell(row, c) {
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                let contents = cell.contents();
-                if contents.is_empty() {
-                    s.push(' ');
-                } else {
-                    s.push_str(contents);
-                }
-            } else {
-                s.push(' ');
-            }
-        }
-        s.trim_end().to_string()
     }
 
     /// Diagnostic dump of VT state for debugging replay/corruption issues.
@@ -268,38 +289,17 @@ impl VirtualTerminal {
         let alt = screen.alternate_screen();
         let cursor = screen.cursor_position();
 
-        // Measure scrollback
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let scrollback_depth = self.parser.screen().scrollback();
-        self.parser.screen_mut().set_scrollback(0);
+        let sb_depth = scrollback_depth(&mut self.parser);
 
-        // Collect visible row text
-        let mut visible_rows = Vec::new();
-        for r in 0..rows {
-            let mut row_text = String::new();
-            for c in 0..cols {
-                if let Some(cell) = self.parser.screen().cell(r, c) {
-                    if cell.is_wide_continuation() {
-                        continue;
-                    }
-                    let contents = cell.contents();
-                    if contents.is_empty() {
-                        row_text.push(' ');
-                    } else {
-                        row_text.push_str(contents);
-                    }
-                } else {
-                    row_text.push(' ');
-                }
-            }
-            visible_rows.push(row_text.trim_end().to_string());
-        }
+        let visible_rows = (0..rows)
+            .map(|r| read_row_text(self.parser.screen(), r, cols))
+            .collect();
 
         VtDebugState {
             effective_dims: self.effective_dims,
             screen_size: (rows, cols),
             alternate_screen: alt,
-            scrollback_depth,
+            scrollback_depth: sb_depth,
             cursor_position: cursor,
             active_viewports: self
                 .client_viewports
@@ -330,6 +330,35 @@ impl VirtualTerminal {
 }
 
 // =============================================================================
+// Scrollback lens — safe temporary viewport shifts
+//
+// vt100's `set_scrollback()` is a mutable viewport lens: it shifts row 0
+// into the scrollback buffer.  Every caller must restore it to 0 before
+// returning.  These helpers enforce that invariant structurally.
+// =============================================================================
+
+/// Measure the total scrollback depth (lines above the visible screen).
+///
+/// Temporarily sets scrollback to `usize::MAX` (vt100 clamps to actual depth),
+/// reads the clamped value, and restores scrollback to 0.
+fn scrollback_depth(parser: &mut vt100::Parser) -> usize {
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let depth = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(0);
+    depth
+}
+
+/// Read a single row as plain text, trimming trailing whitespace.
+///
+/// Shared by `VirtualTerminal::lines()`, `debug_state()`, and test helpers.
+pub fn read_row_text(screen: &vt100::Screen, row: u16, cols: u16) -> String {
+    let s: String = walk_row(screen, row, cols)
+        .map(|cell| cell.contents)
+        .collect();
+    s.trim_end().to_string()
+}
+
+// =============================================================================
 // Functional Shell — pure(ish) rendering functions
 //
 // These produce terminal bytes from screen state. The only mutation is
@@ -348,11 +377,9 @@ impl VirtualTerminal {
 /// Render scrollback content as plain rows (no CUP). Returns the number of
 /// scrollback lines emitted (0 means no scrollback).
 fn render_scrollback(parser: &mut vt100::Parser, out: &mut Vec<u8>) -> usize {
-    parser.screen_mut().set_scrollback(usize::MAX);
-    let total_scrollback = parser.screen().scrollback();
+    let total_scrollback = scrollback_depth(parser);
 
     if total_scrollback == 0 {
-        parser.screen_mut().set_scrollback(0);
         return 0;
     }
 
@@ -417,89 +444,69 @@ fn format_row_no_cup(screen: &vt100::Screen, row: u16, cols: u16, out: &mut Vec<
     let mut cur_underline = false;
     let mut cur_inverse = false;
 
-    for col in 0..cols {
-        let Some(cell) = screen.cell(row, col) else {
-            out.push(b' ');
-            continue;
-        };
-        if cell.is_wide_continuation() {
-            continue;
-        }
-
-        let fg = cell.fgcolor();
-        let bg = cell.bgcolor();
-        let bold = cell.bold();
-        let italic = cell.italic();
-        let underline = cell.underline();
-        let inverse = cell.inverse();
-
-        let attrs_differ = fg != cur_fg
-            || bg != cur_bg
-            || bold != cur_bold
-            || italic != cur_italic
-            || underline != cur_underline
-            || inverse != cur_inverse;
+    for cell in walk_row(screen, row, cols) {
+        let attrs_differ = cell.fg != cur_fg
+            || cell.bg != cur_bg
+            || cell.bold != cur_bold
+            || cell.italic != cur_italic
+            || cell.underline != cur_underline
+            || cell.inverse != cur_inverse;
 
         if attrs_differ {
             // Check if any attribute was *removed* — needs a full reset
-            let needs_reset = (cur_bold && !bold)
-                || (cur_italic && !italic)
-                || (cur_underline && !underline)
-                || (cur_inverse && !inverse)
-                || (cur_fg != vt100::Color::Default && fg == vt100::Color::Default)
-                || (cur_bg != vt100::Color::Default && bg == vt100::Color::Default);
+            let needs_reset = (cur_bold && !cell.bold)
+                || (cur_italic && !cell.italic)
+                || (cur_underline && !cell.underline)
+                || (cur_inverse && !cell.inverse)
+                || (cur_fg != vt100::Color::Default && cell.fg == vt100::Color::Default)
+                || (cur_bg != vt100::Color::Default && cell.bg == vt100::Color::Default);
 
             if needs_reset {
                 out.extend_from_slice(b"\x1b[0m");
-                if bold {
+                if cell.bold {
                     out.extend_from_slice(b"\x1b[1m");
                 }
-                if italic {
+                if cell.italic {
                     out.extend_from_slice(b"\x1b[3m");
                 }
-                if underline {
+                if cell.underline {
                     out.extend_from_slice(b"\x1b[4m");
                 }
-                if inverse {
+                if cell.inverse {
                     out.extend_from_slice(b"\x1b[7m");
                 }
-                emit_sgr_fg(out, fg);
-                emit_sgr_bg(out, bg);
+                emit_sgr_fg(out, cell.fg);
+                emit_sgr_bg(out, cell.bg);
             } else {
-                if !cur_bold && bold {
+                if !cur_bold && cell.bold {
                     out.extend_from_slice(b"\x1b[1m");
                 }
-                if !cur_italic && italic {
+                if !cur_italic && cell.italic {
                     out.extend_from_slice(b"\x1b[3m");
                 }
-                if !cur_underline && underline {
+                if !cur_underline && cell.underline {
                     out.extend_from_slice(b"\x1b[4m");
                 }
-                if !cur_inverse && inverse {
+                if !cur_inverse && cell.inverse {
                     out.extend_from_slice(b"\x1b[7m");
                 }
-                if cur_fg != fg {
-                    emit_sgr_fg(out, fg);
+                if cur_fg != cell.fg {
+                    emit_sgr_fg(out, cell.fg);
                 }
-                if cur_bg != bg {
-                    emit_sgr_bg(out, bg);
+                if cur_bg != cell.bg {
+                    emit_sgr_bg(out, cell.bg);
                 }
             }
 
-            cur_fg = fg;
-            cur_bg = bg;
-            cur_bold = bold;
-            cur_italic = italic;
-            cur_underline = underline;
-            cur_inverse = inverse;
+            cur_fg = cell.fg;
+            cur_bg = cell.bg;
+            cur_bold = cell.bold;
+            cur_italic = cell.italic;
+            cur_underline = cell.underline;
+            cur_inverse = cell.inverse;
         }
 
-        let contents = cell.contents();
-        if contents.is_empty() {
-            out.push(b' ');
-        } else {
-            out.extend_from_slice(contents.as_bytes());
-        }
+        out.extend_from_slice(cell.contents.as_bytes());
     }
 }
 
@@ -1183,48 +1190,16 @@ mod tests {
     /// Extract visible lines from a screen (strips trailing whitespace).
     fn visible_lines(screen: &vt100::Screen) -> Vec<String> {
         let (rows, cols) = screen.size();
-        (0..rows)
-            .map(|r| {
-                (0..cols)
-                    .map(|c| {
-                        screen.cell(r, c).map_or(" ".to_string(), |cell| {
-                            let s = cell.contents();
-                            if s.is_empty() {
-                                " ".to_string()
-                            } else {
-                                s.to_string()
-                            }
-                        })
-                    })
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        (0..rows).map(|r| read_row_text(screen, r, cols)).collect()
     }
 
     /// Extract all scrollback lines from a parser (oldest first).
     fn scrollback_lines(parser: &mut vt100::Parser, cols: u16) -> Vec<String> {
-        parser.screen_mut().set_scrollback(usize::MAX);
-        let depth = parser.screen().scrollback();
+        let depth = scrollback_depth(parser);
         let mut lines = Vec::new();
         for offset in (1..=depth).rev() {
             parser.screen_mut().set_scrollback(offset);
-            let row_text: String = (0..cols)
-                .map(|c| {
-                    parser.screen().cell(0, c).map_or(" ".to_string(), |cell| {
-                        let s = cell.contents();
-                        if s.is_empty() {
-                            " ".to_string()
-                        } else {
-                            s.to_string()
-                        }
-                    })
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_string();
-            lines.push(row_text);
+            lines.push(read_row_text(parser.screen(), 0, cols));
         }
         parser.screen_mut().set_scrollback(0);
         lines
@@ -1645,36 +1620,16 @@ mod tests {
     /// Extract ALL content from a VT: scrollback + visible, in order.
     /// Returns (scrollback_lines, visible_lines) — both oldest-first.
     fn server_all_content(vt: &mut VirtualTerminal) -> (Vec<String>, Vec<String>) {
-        let (rows, cols) = vt.parser.screen().size();
+        let (_, cols) = vt.parser.screen().size();
 
-        // Scrollback
-        vt.parser.screen_mut().set_scrollback(usize::MAX);
-        let depth = vt.parser.screen().scrollback();
+        let depth = scrollback_depth(&mut vt.parser);
         let mut sb = Vec::new();
         for offset in (1..=depth).rev() {
             vt.parser.screen_mut().set_scrollback(offset);
-            let row_text: String = (0..cols)
-                .map(|c| {
-                    vt.parser
-                        .screen()
-                        .cell(0, c)
-                        .map_or(" ".to_string(), |cell| {
-                            let s = cell.contents();
-                            if s.is_empty() {
-                                " ".to_string()
-                            } else {
-                                s.to_string()
-                            }
-                        })
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_string();
-            sb.push(row_text);
+            sb.push(read_row_text(vt.parser.screen(), 0, cols));
         }
         vt.parser.screen_mut().set_scrollback(0);
 
-        // Visible
         let vis = visible_lines(vt.parser.screen());
 
         (sb, vis)
