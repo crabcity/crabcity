@@ -83,9 +83,10 @@ pub(crate) async fn send_output_history(
     handle: &InstanceHandle,
     instance_id: &str,
     max_bytes: usize,
+    client_rows: u16,
     tx: &mpsc::Sender<ServerMessage>,
 ) -> Result<(), mpsc::error::SendError<ServerMessage>> {
-    let history = handle.get_recent_output(max_bytes).await;
+    let history = handle.get_recent_output(max_bytes, client_rows).await;
     if !history.is_empty() {
         tx.send(ServerMessage::OutputHistory {
             instance_id: instance_id.to_string(),
@@ -169,7 +170,7 @@ pub async fn handle_focus(
     instance_manager: Arc<InstanceManager>,
     tx: mpsc::Sender<ServerMessage>,
     session_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<String>>>,
-    max_history_bytes: usize,
+    mut refresh_rx: mpsc::Receiver<u16>,
 ) {
     debug!("Focusing on instance: {}", instance_id);
 
@@ -212,14 +213,12 @@ pub async fn handle_focus(
         }
     };
 
-    // Send terminal history (bounded by config)
-    if send_output_history(&handle, &instance_id, max_history_bytes, &tx)
-        .await
-        .is_err()
-    {
-        warn!(instance = %instance_id, "Failed to send OutputHistory - channel closed");
-        return;
-    }
+    // Don't send OutputHistory here — the TerminalVisible message that follows
+    // Focus will trigger a properly-drained replay with the correct client
+    // dimensions via the refresh channel.  Sending a preliminary replay with
+    // default rows would cause double-scrollback: ED2 clears the visible screen
+    // but NOT the client's scrollback buffer, so the second replay writes the
+    // same scrollback lines on top of the first, creating persistent duplicates.
 
     // Note: claude_state is already sent in FocusAck to prevent race conditions.
     // No need to send a separate StateChange here.
@@ -314,6 +313,7 @@ pub async fn handle_focus(
                             && tx_output.send(ServerMessage::Output {
                                 instance_id: instance_id_output.clone(),
                                 data,
+                                cursor: Some(event.cursor),
                             }).await.is_err() {
                                 break;
                             }
@@ -334,6 +334,35 @@ pub async fn handle_focus(
                         break;
                     }
                 }
+            }
+            // TerminalVisible: the handler resized the PTY and is asking us
+            // to re-send the full terminal state with the correct client_rows.
+            // We drain the broadcast receiver first so that output already
+            // baked into the replay isn't also forwarded as live Output
+            // (which would cause the client to see duplicate content).
+            Some(client_rows) = refresh_rx.recv() => {
+                debug!(
+                    instance = %instance_id,
+                    client_rows,
+                    "refresh_rx: sending OutputHistory"
+                );
+                if send_output_history(&handle, &instance_id, usize::MAX, client_rows, &tx)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                // Drain broadcasts already included in the replay.
+                let mut drained = 0u64;
+                while output_rx.try_recv().is_ok() { drained += 1; }
+                if drained > 0 {
+                    debug!(
+                        instance = %instance_id,
+                        drained,
+                        "refresh_rx: drained stale broadcasts"
+                    );
+                }
+                decoder.clear();
             }
             // Forward conversation events from server-owned watcher
             event = async {
@@ -699,7 +728,7 @@ mod tests {
     /// Helper: create a state manager with conversation turns pre-loaded.
     async fn setup_state_with_turns(turns: Vec<serde_json::Value>) -> Arc<GlobalStateManager> {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         mgr.set_test_conversation_turns("inst-1", turns).await;
         mgr
@@ -795,7 +824,7 @@ mod tests {
     #[tokio::test]
     async fn send_nothing_when_store_empty() {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         let (tx, mut rx) = mpsc::channel(16);
 
@@ -810,13 +839,11 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_sent_when_buffer_nonempty() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
-        vt.write()
-            .await
-            .process_output(b"Hello from test\r\nLine 2");
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
 
         let (tx, mut rx) = mpsc::channel(16);
-        send_output_history(&handle, "inst-1", 4096, &tx)
+        send_output_history(&handle, "inst-1", 4096, 24, &tx)
             .await
             .unwrap();
 
@@ -835,10 +862,10 @@ mod tests {
         // Even a fresh VT produces a screen-dump keyframe, so OutputHistory
         // is always sent. This is correct — the client gets a blank screen
         // rather than stale content.
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, mut rx) = mpsc::channel(16);
-        send_output_history(&handle, "inst-1", 4096, &tx)
+        send_output_history(&handle, "inst-1", 4096, 24, &tx)
             .await
             .unwrap();
 
@@ -852,12 +879,12 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_err_on_closed_channel() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, rx) = mpsc::channel(16);
         drop(rx); // close the receiver
 
-        let result = send_output_history(&handle, "inst-1", 4096, &tx).await;
+        let result = send_output_history(&handle, "inst-1", 4096, 24, &tx).await;
         assert!(result.is_err());
     }
 }

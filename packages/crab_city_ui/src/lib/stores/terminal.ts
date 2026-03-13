@@ -17,6 +17,11 @@ interface TerminalBuffer {
 	chunks: string[];
 	/** Whether terminal should be cleared before next write */
 	shouldClear: boolean;
+	/** When true, Output messages are silently dropped while waiting
+	 *  for OutputHistory (full replay). Set by markAwaitingReplay(),
+	 *  cleared by writeTerminalHistory(). Prevents stale Output from
+	 *  entering xterm's async write queue before the replay arrives. */
+	awaitingReplay: boolean;
 }
 
 // =============================================================================
@@ -49,7 +54,21 @@ export function writeTerminalOutput(instanceId: string, data: string): void {
 	terminalBuffers.update((buffers) => {
 		let buffer = buffers.get(instanceId);
 		if (!buffer) {
-			buffer = { chunks: [], shouldClear: false };
+			buffer = { chunks: [], shouldClear: false, awaitingReplay: false };
+		}
+
+		// If a full replay (OutputHistory) is pending or we're waiting for
+		// one (awaitingReplay), skip appending.  The replay will contain
+		// the complete terminal state — any Output arriving now is either
+		// already baked into the upcoming replay (duplicate) or a SIGWINCH
+		// redraw that will harmlessly overwrite the visible screen.
+		//
+		// Without this guard, accumulated Output enters xterm.js's async
+		// write queue before the replay, and terminal.clear() (which is
+		// synchronous) can't remove queued-but-unprocessed writes.  The
+		// result is duplicated scrollback content.
+		if (buffer.shouldClear || buffer.awaitingReplay) {
+			return buffers;
 		}
 
 		buffer.chunks.push(data);
@@ -66,12 +85,33 @@ export function writeTerminalOutput(instanceId: string, data: string): void {
 
 /**
  * Write history output (on focus switch) - clears terminal first.
+ * Clears the awaitingReplay flag so the subscription consumes the replay.
  */
 export function writeTerminalHistory(instanceId: string, data: string): void {
 	terminalBuffers.update((buffers) => {
 		buffers.set(instanceId, {
 			chunks: [data],
-			shouldClear: true
+			shouldClear: true,
+			awaitingReplay: false
+		});
+		return new Map(buffers);
+	});
+}
+
+/**
+ * Mark a terminal as awaiting a full replay (OutputHistory).
+ *
+ * Discards any accumulated Output chunks and blocks new Output from
+ * entering the buffer until writeTerminalHistory() arrives.  Call this
+ * BEFORE setting up the output subscription and sending TerminalVisible
+ * to prevent stale Output from racing into xterm.js's async write queue.
+ */
+export function markAwaitingReplay(instanceId: string): void {
+	terminalBuffers.update((buffers) => {
+		buffers.set(instanceId, {
+			chunks: [],
+			shouldClear: false,
+			awaitingReplay: true
 		});
 		return new Map(buffers);
 	});
@@ -90,12 +130,12 @@ export function consumeTerminalOutput(instanceId: string): TerminalBuffer {
 	const buffer = buffers.get(instanceId);
 
 	if (!buffer || (buffer.chunks.length === 0 && !buffer.shouldClear)) {
-		return { chunks: [], shouldClear: false };
+		return { chunks: [], shouldClear: false, awaitingReplay: false };
 	}
 
 	// Clear the buffer after consumption
 	terminalBuffers.update((b) => {
-		b.set(instanceId, { chunks: [], shouldClear: false });
+		b.set(instanceId, { chunks: [], shouldClear: false, awaitingReplay: false });
 		return new Map(b);
 	});
 
@@ -108,7 +148,9 @@ export function consumeTerminalOutput(instanceId: string): TerminalBuffer {
 export function hasPendingOutput(instanceId: string): boolean {
 	const buffers = get(terminalBuffers);
 	const buffer = buffers.get(instanceId);
-	return buffer ? buffer.chunks.length > 0 || buffer.shouldClear : false;
+	if (!buffer) return false;
+	if (buffer.awaitingReplay && buffer.chunks.length === 0 && !buffer.shouldClear) return false;
+	return buffer.chunks.length > 0 || buffer.shouldClear;
 }
 
 // =============================================================================
@@ -124,7 +166,14 @@ export const currentTerminalHasOutput = derived(
 	([$buffers, $instanceId]) => {
 		if (!$instanceId) return false;
 		const buffer = $buffers.get($instanceId);
-		return buffer ? buffer.chunks.length > 0 || buffer.shouldClear : false;
+		if (!buffer) return false;
+		// Don't signal when only awaitingReplay is set — the subscription
+		// would consume an empty buffer and reset the flag prematurely.
+		// Wait for writeTerminalHistory() which provides actual data.
+		if (buffer.awaitingReplay && buffer.chunks.length === 0 && !buffer.shouldClear) {
+			return false;
+		}
+		return buffer.chunks.length > 0 || buffer.shouldClear;
 	}
 );
 

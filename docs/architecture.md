@@ -35,8 +35,7 @@ This document covers the internal design of Crab City for contributors and curio
 crab_city (server + CLI + TUI)
 ├── claude_convo      (conversation log reader)
 ├── pty_manager        (PTY lifecycle)
-├── virtual_terminal   (screen buffer + viewport negotiation)
-└── compositor         (overlay layers for TUI)
+└── virtual_terminal   (screen buffer + viewport negotiation)
 
 tty_wrapper            (standalone HTTP-controlled PTY — not depended on by crab_city)
 crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature flag)
@@ -58,7 +57,7 @@ crab create / web UI "New Instance"
         │
         ▼
   instance_actor.rs (tokio::task)
-  ├── owns: PTY handle, virtual terminal, compositor, client registry
+  ├── owns: PTY handle, virtual terminal, client registry
   ├── reads PTY output → updates screen buffer → fans out to clients
   ├── receives client input → writes to PTY
   └── monitors process exit
@@ -163,8 +162,7 @@ For remote connections, auth uses JWT sessions with a configurable TTL. The firs
 
 Multiple clients share a single PTY per instance:
 
-- `virtual_terminal` maintains the screen buffer and negotiates dimensions as `min(all active viewports)`
-- `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
+- `virtual_terminal` maintains the screen buffer and negotiates dimensions as `min(all active viewports)`. On resize, the visible screen is saved, a fresh `vt100::Parser` is created at the new dimensions (clearing scrollback), and the visible content is restored. The PTY program's SIGWINCH redraw then rebuilds scrollback at the correct width — no duplicates, no virtual trim tracking. Both the server-side `VirtualTerminal::resize()` and the TUI client use this approach. The `recorder` submodule captures PTY output/input/resize events with microsecond timestamps for golden-test replay (enabled via `CRAB_CITY_VT_RECORD` env var)
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
 
 ## Web Terminal (Client-Side)

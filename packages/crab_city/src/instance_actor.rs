@@ -1,15 +1,23 @@
 use anyhow::Result;
-use compositor::{Anchor, Attrs, Compositor, LayerId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 use tracing::debug;
 use uuid::Uuid;
 
-use pty_manager::{PtyConfig, PtyHandle, PtyOutput};
+use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
-use crate::virtual_terminal::{ClientType, VirtualTerminal};
+use crate::virtual_terminal::{ClientType, VirtualTerminal, VtRecorder};
+
+/// PTY output enriched with cursor position from the VirtualTerminal.
+/// Produced by the VT processing task after feeding output to the parser.
+#[derive(Debug, Clone)]
+pub struct EnrichedOutput {
+    pub data: Vec<u8>,
+    pub cursor: (u16, u16),
+    pub timestamp: i64,
+}
 
 /// Commands that can be sent to an instance actor
 #[derive(Debug)]
@@ -28,12 +36,15 @@ pub enum InstanceCommand {
         respond_to: oneshot::Sender<Result<()>>,
     },
     SubscribeOutput {
-        respond_to: oneshot::Sender<broadcast::Receiver<PtyOutput>>,
+        respond_to: oneshot::Sender<broadcast::Receiver<EnrichedOutput>>,
     },
     /// Get recent output with a byte limit
-    /// Returns chunks from the end of the buffer up to max_bytes total
+    /// Returns chunks from the end of the buffer up to max_bytes total.
+    /// `client_rows` is the receiving terminal's height — used to size the
+    /// scrollback-to-keyframe flush so no lines are lost or garbled.
     GetRecentOutput {
         max_bytes: usize,
+        client_rows: u16,
         respond_to: oneshot::Sender<Vec<String>>,
     },
     SetSessionId {
@@ -76,24 +87,6 @@ pub enum InstanceCommand {
         connection_id: String,
         respond_to: oneshot::Sender<Option<(u16, u16)>>,
     },
-    /// Add a compositor overlay layer.
-    AddLayer {
-        anchor: Anchor,
-        width: u16,
-        height: u16,
-        z_order: i16,
-        respond_to: oneshot::Sender<LayerId>,
-    },
-    /// Fill text into a compositor layer.
-    UpdateLayerText {
-        id: LayerId,
-        row: u16,
-        col: u16,
-        text: String,
-        attrs: Attrs,
-    },
-    /// Remove a compositor layer.
-    RemoveLayer { id: LayerId },
     Stop {
         respond_to: oneshot::Sender<Result<()>>,
     },
@@ -164,7 +157,7 @@ impl InstanceHandle {
             .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))?
     }
 
-    pub async fn subscribe_output(&self) -> Result<broadcast::Receiver<PtyOutput>> {
+    pub async fn subscribe_output(&self) -> Result<broadcast::Receiver<EnrichedOutput>> {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(InstanceCommand::SubscribeOutput { respond_to: tx })
@@ -174,14 +167,16 @@ impl InstanceHandle {
             .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))
     }
 
-    /// Get recent output up to max_bytes total
-    /// Returns chunks from the end of the buffer
-    pub async fn get_recent_output(&self, max_bytes: usize) -> Vec<String> {
+    /// Get recent output up to max_bytes total.
+    /// `client_rows` is the receiving terminal's row count — used to size
+    /// the scrollback flush so the client gets the full history.
+    pub async fn get_recent_output(&self, max_bytes: usize, client_rows: u16) -> Vec<String> {
         let (tx, rx) = oneshot::channel();
         let _ = self
             .sender
             .send(InstanceCommand::GetRecentOutput {
                 max_bytes,
+                client_rows,
                 respond_to: tx,
             })
             .await;
@@ -343,55 +338,6 @@ impl InstanceHandle {
         Ok(())
     }
 
-    /// Add a compositor overlay layer. Returns the layer ID.
-    pub async fn add_layer(
-        &self,
-        anchor: Anchor,
-        width: u16,
-        height: u16,
-        z_order: i16,
-    ) -> Result<LayerId> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(InstanceCommand::AddLayer {
-                anchor,
-                width,
-                height,
-                z_order,
-                respond_to: tx,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("Instance actor is gone"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))
-    }
-
-    /// Fill text into a compositor layer at the given position.
-    pub async fn update_layer_text(
-        &self,
-        id: LayerId,
-        row: u16,
-        col: u16,
-        text: &str,
-        attrs: Attrs,
-    ) {
-        let _ = self
-            .sender
-            .send(InstanceCommand::UpdateLayerText {
-                id,
-                row,
-                col,
-                text: text.to_string(),
-                attrs,
-            })
-            .await;
-    }
-
-    /// Remove a compositor layer.
-    pub async fn remove_layer(&self, id: LayerId) {
-        let _ = self.sender.send(InstanceCommand::RemoveLayer { id }).await;
-    }
-
     pub fn id(&self) -> String {
         self.info.blocking_read().id.clone()
     }
@@ -410,13 +356,16 @@ pub struct SpawnOptions {
     pub working_dir: String,
     /// Maximum output ring buffer size in bytes
     pub max_buffer_bytes: usize,
+    /// Number of scrollback lines the server-side vt100 parser retains
+    pub scrollback_lines: usize,
+    /// Directory to write VT session recordings. None = recording disabled.
+    pub vt_record_dir: Option<std::path::PathBuf>,
 }
 
-/// Handle VT and compositor commands.
+/// Handle VT commands.
 /// Returns `None` if handled, `Some(cmd)` for PTY/metadata commands.
 async fn handle_vt_command(
-    vt: &RwLock<VirtualTerminal>,
-    compositor: &RwLock<Compositor>,
+    vt: &Mutex<VirtualTerminal>,
     cmd: InstanceCommand,
 ) -> Option<InstanceCommand> {
     match cmd {
@@ -427,7 +376,7 @@ async fn handle_vt_command(
             client_type,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.update_viewport(&connection_id, rows, cols, client_type);
             let _ = respond_to.send(result);
             None
@@ -437,7 +386,7 @@ async fn handle_vt_command(
             active,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.set_active(&connection_id, active);
             let _ = respond_to.send(result);
             None
@@ -446,24 +395,18 @@ async fn handle_vt_command(
             connection_id,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
+            let mut vt = vt.lock().await;
             let result = vt.remove_client(&connection_id);
             let _ = respond_to.send(result);
             None
         }
         InstanceCommand::GetRecentOutput {
             max_bytes,
+            client_rows,
             respond_to,
         } => {
-            let mut vt = vt.write().await;
-            let comp = compositor.read().await;
-            let replay = if comp.has_visible_layers() {
-                // Compose screen with overlay layers
-                comp.compose(vt.screen())
-            } else {
-                vt.replay()
-            };
-            drop(comp);
+            let mut vt = vt.lock().await;
+            let replay = vt.replay(client_rows);
             let data = if replay.len() > max_bytes {
                 let mut start = replay.len() - max_bytes;
                 // Skip past UTF-8 continuation bytes (10xxxxxx) so we
@@ -478,36 +421,6 @@ async fn handle_vt_command(
             let _ = respond_to.send(vec![String::from_utf8_lossy(&data).to_string()]);
             None
         }
-        InstanceCommand::AddLayer {
-            anchor,
-            width,
-            height,
-            z_order,
-            respond_to,
-        } => {
-            let mut comp = compositor.write().await;
-            let id = comp.add_layer(anchor, width, height, z_order);
-            let _ = respond_to.send(id);
-            None
-        }
-        InstanceCommand::UpdateLayerText {
-            id,
-            row,
-            col,
-            text,
-            attrs,
-        } => {
-            let mut comp = compositor.write().await;
-            if let Some(layer) = comp.layer_mut(id) {
-                layer.fill_text(row, col, &text, attrs);
-            }
-            None
-        }
-        InstanceCommand::RemoveLayer { id } => {
-            let mut comp = compositor.write().await;
-            comp.remove_layer(id);
-            None
-        }
         other => Some(other),
     }
 }
@@ -517,8 +430,9 @@ struct InstanceActor {
     info: Arc<RwLock<InstanceInfo>>,
     pty: PtyHandle,
     receiver: mpsc::Receiver<InstanceCommand>,
-    virtual_terminal: Arc<RwLock<VirtualTerminal>>,
-    compositor: Arc<RwLock<Compositor>>,
+    virtual_terminal: Arc<Mutex<VirtualTerminal>>,
+    enriched_tx: broadcast::Sender<EnrichedOutput>,
+    recorder: Option<Arc<Mutex<VtRecorder<std::fs::File>>>>,
 }
 
 impl InstanceActor {
@@ -567,28 +481,64 @@ impl InstanceActor {
         }));
 
         let (sender, receiver) = mpsc::channel(32);
-        let virtual_terminal = Arc::new(RwLock::new(VirtualTerminal::new(
+        let virtual_terminal = Arc::new(Mutex::new(VirtualTerminal::new(
             24,
             80,
             opts.max_buffer_bytes,
+            opts.scrollback_lines,
         )));
-        let compositor = Arc::new(RwLock::new(Compositor::new()));
+        let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
+
+        let recorder = opts.vt_record_dir.as_ref().and_then(|dir| {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                tracing::warn!(
+                    "VT recording disabled — cannot create {}: {e}",
+                    dir.display()
+                );
+                return None;
+            }
+            let path = dir.join(format!("{id}.vtr"));
+            match VtRecorder::open(&path, 24, 80, opts.scrollback_lines as u32) {
+                Ok(r) => {
+                    debug!("VT recording → {}", path.display());
+                    Some(Arc::new(Mutex::new(r)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "VT recording disabled — cannot open {}: {e}",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        });
 
         let actor = InstanceActor {
             info: info.clone(),
             pty: pty.clone(),
             receiver,
             virtual_terminal: virtual_terminal.clone(),
-            compositor: compositor.clone(),
+            enriched_tx: enriched_tx.clone(),
+            recorder: recorder.clone(),
         };
 
-        // Start the output collection task - feed PTY output to VirtualTerminal
+        // Start the output collection task - feed PTY output to VirtualTerminal,
+        // then broadcast enriched output with cursor position
         let mut output_rx = pty.subscribe();
         let vt_clone = virtual_terminal.clone();
         tokio::spawn(async move {
             while let Ok(event) = output_rx.recv().await {
-                let mut vt = vt_clone.write().await;
+                if let Some(rec) = &recorder {
+                    rec.lock().await.output(&event.data);
+                }
+                let mut vt = vt_clone.lock().await;
                 vt.process_output(&event.data);
+                let cursor = vt.cursor_position();
+                let _ = enriched_tx.send(EnrichedOutput {
+                    data: event.data,
+                    cursor,
+                    timestamp: event.timestamp,
+                });
             }
         });
 
@@ -605,7 +555,7 @@ impl InstanceActor {
         debug!("Instance actor '{}' started", name);
 
         while let Some(cmd) = self.receiver.recv().await {
-            let cmd = match handle_vt_command(&self.virtual_terminal, &self.compositor, cmd).await {
+            let cmd = match handle_vt_command(&self.virtual_terminal, cmd).await {
                 Some(cmd) => cmd,
                 None => continue,
             };
@@ -616,6 +566,9 @@ impl InstanceActor {
 
                 InstanceCommand::WriteInput { text, respond_to } => {
                     debug!("Writing {} bytes to PTY", text.len());
+                    if let Some(rec) = &self.recorder {
+                        rec.lock().await.input(text.as_bytes());
+                    }
                     let result = self
                         .pty
                         .write_str(&text)
@@ -629,6 +582,9 @@ impl InstanceActor {
                     cols,
                     respond_to,
                 } => {
+                    if let Some(rec) = &self.recorder {
+                        rec.lock().await.resize(rows, cols);
+                    }
                     let result = self
                         .pty
                         .resize(rows, cols)
@@ -638,7 +594,7 @@ impl InstanceActor {
                 }
 
                 InstanceCommand::SubscribeOutput { respond_to } => {
-                    let rx = self.pty.subscribe();
+                    let rx = self.enriched_tx.subscribe();
                     let _ = respond_to.send(rx);
                 }
 
@@ -709,12 +665,30 @@ pub async fn create_instance(opts: SpawnOptions) -> Result<InstanceHandle> {
 #[cfg(test)]
 impl InstanceHandle {
     /// Spawn a test actor backed by a VirtualTerminal only (no real PTY).
-    /// Returns the handle and a reference to the VT for injecting output.
+    /// Returns the handle, a reference to the VT for injecting output, and
+    /// a sender for injecting enriched output events.
     pub(crate) fn spawn_test(
         rows: u16,
         cols: u16,
         max_delta_bytes: usize,
-    ) -> (Self, Arc<RwLock<VirtualTerminal>>) {
+    ) -> (
+        Self,
+        Arc<Mutex<VirtualTerminal>>,
+        broadcast::Sender<EnrichedOutput>,
+    ) {
+        Self::spawn_test_with_scrollback(rows, cols, max_delta_bytes, 0)
+    }
+
+    pub(crate) fn spawn_test_with_scrollback(
+        rows: u16,
+        cols: u16,
+        max_delta_bytes: usize,
+        scrollback_lines: usize,
+    ) -> (
+        Self,
+        Arc<Mutex<VirtualTerminal>>,
+        broadcast::Sender<EnrichedOutput>,
+    ) {
         let info = Arc::new(RwLock::new(InstanceInfo {
             id: "test-instance".to_string(),
             name: "test".to_string(),
@@ -727,23 +701,28 @@ impl InstanceHandle {
             claude_state: None,
         }));
         let (sender, mut receiver) = mpsc::channel(32);
-        let vt = Arc::new(RwLock::new(VirtualTerminal::new(
+        let vt = Arc::new(Mutex::new(VirtualTerminal::new(
             rows,
             cols,
             max_delta_bytes,
+            scrollback_lines,
         )));
-        let comp = Arc::new(RwLock::new(Compositor::new()));
+        let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
+        let enriched_tx_actor = enriched_tx.clone();
         let vt_actor = vt.clone();
-        let comp_actor = comp.clone();
         tokio::spawn(async move {
             while let Some(cmd) = receiver.recv().await {
-                let cmd = match handle_vt_command(&vt_actor, &comp_actor, cmd).await {
+                let cmd = match handle_vt_command(&vt_actor, cmd).await {
                     Some(cmd) => cmd,
                     None => continue,
                 };
                 match cmd {
                     InstanceCommand::Resize { respond_to, .. } => {
                         let _ = respond_to.send(Ok(()));
+                    }
+                    InstanceCommand::SubscribeOutput { respond_to } => {
+                        let rx = enriched_tx_actor.subscribe();
+                        let _ = respond_to.send(rx);
                     }
                     InstanceCommand::Stop { respond_to } => {
                         let _ = respond_to.send(Ok(()));
@@ -754,7 +733,24 @@ impl InstanceHandle {
             }
         });
 
-        (InstanceHandle { sender, info }, vt)
+        (InstanceHandle { sender, info }, vt, enriched_tx)
+    }
+
+    /// Inject output through the enriched pipeline: processes data in the VT,
+    /// reads cursor position, and broadcasts an `EnrichedOutput` event.
+    pub(crate) async fn inject_output(
+        vt: &Mutex<VirtualTerminal>,
+        enriched_tx: &broadcast::Sender<EnrichedOutput>,
+        data: &[u8],
+    ) {
+        let mut vt = vt.lock().await;
+        vt.process_output(data);
+        let cursor = vt.cursor_position();
+        let _ = enriched_tx.send(EnrichedOutput {
+            data: data.to_vec(),
+            cursor,
+            timestamp: 0,
+        });
     }
 }
 
@@ -764,7 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_update_viewport() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let result = handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -780,7 +776,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_set_client_active() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -796,7 +792,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_remove_client() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("client-1", 40, 120, ClientType::Web)
@@ -811,14 +807,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_get_recent_output_replay() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Inject output directly into the VT
-        vt.write()
-            .await
-            .process_output(b"Hello from test\r\nLine 2");
+        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
 
-        let output = handle.get_recent_output(4096).await;
+        let output = handle.get_recent_output(4096, 24).await;
         assert_eq!(output.len(), 1);
         assert!(output[0].contains("Hello from test"));
         assert!(output[0].contains("Line 2"));
@@ -826,22 +820,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_get_recent_output_truncation() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
-        vt.write().await.process_output("A".repeat(200).as_bytes());
+        vt.lock().await.process_output("A".repeat(200).as_bytes());
 
-        let full = handle.get_recent_output(100_000).await;
+        let full = handle.get_recent_output(100_000, 24).await;
         let full_len = full[0].len();
         assert!(full_len > 50);
 
-        let truncated = handle.get_recent_output(50).await;
+        let truncated = handle.get_recent_output(50, 24).await;
         assert!(truncated[0].len() <= 50);
         assert!(truncated[0].len() < full_len);
     }
 
     #[tokio::test]
     async fn test_update_viewport_and_resize() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Dims change triggers resize (no-op in test actor)
         let result = handle
@@ -852,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_active_and_resize() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         handle
             .update_viewport("conn-1", 40, 120, ClientType::Web)
@@ -868,7 +862,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_client_and_resize_no_change() {
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Remove nonexistent → no dims change, no resize, still Ok
         let result = handle.remove_client_and_resize("nonexistent").await;
@@ -877,17 +871,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_never_splits_utf8() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Write box-drawing characters (3 bytes each in UTF-8)
         let content = "─".repeat(40); // 120 bytes
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         // The replay includes a keyframe prefix (ANSI escapes), so the
         // total is larger than 120 bytes.  Try various max_bytes values
         // that are likely to land mid-character.
         for max_bytes in 1..=150 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }
@@ -902,21 +896,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_preserves_content() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // Mix of ASCII and multi-byte: "hello──world" (5 + 6 + 5 = 16 bytes text)
         let content = "hello──world";
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         // Full replay should contain the content
-        let full = handle.get_recent_output(100_000).await;
+        let full = handle.get_recent_output(100_000, 24).await;
         assert!(full[0].contains("hello"));
         assert!(full[0].contains("──"));
         assert!(full[0].contains("world"));
 
         // Truncated replay should also be valid UTF-8 (no replacement chars)
         for max_bytes in 1..=60 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }
@@ -930,14 +924,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncation_4byte_chars() {
-        let (handle, vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         // 4-byte emoji characters
         let content = "🦀".repeat(10); // 40 bytes
-        vt.write().await.process_output(content.as_bytes());
+        vt.lock().await.process_output(content.as_bytes());
 
         for max_bytes in 1..=80 {
-            let output = handle.get_recent_output(max_bytes).await;
+            let output = handle.get_recent_output(max_bytes, 24).await;
             if output.is_empty() {
                 continue;
             }
@@ -947,5 +941,199 @@ mod tests {
                 max_bytes,
             );
         }
+    }
+
+    // ── Enriched output pipeline tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_ascii() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Hello").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.data, b"Hello");
+        assert_eq!(event.cursor, (0, 5));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_multiline() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Hello\r\nWorld").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.cursor, (1, 5));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_after_cup() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        // CUP moves cursor to row 10, col 20 (1-indexed) → (9, 19) 0-indexed
+        InstanceHandle::inject_output(&vt, &etx, b"\x1b[10;20H").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.cursor, (9, 19));
+    }
+
+    #[tokio::test]
+    async fn test_enriched_output_cursor_tracks_across_chunks() {
+        let (_handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = etx.subscribe();
+
+        InstanceHandle::inject_output(&vt, &etx, b"abc").await;
+        let e1 = rx.recv().await.unwrap();
+        assert_eq!(e1.cursor, (0, 3));
+
+        InstanceHandle::inject_output(&vt, &etx, b"def").await;
+        let e2 = rx.recv().await.unwrap();
+        assert_eq!(e2.cursor, (0, 6));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_output_receives_enriched() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let mut rx = handle.subscribe_output().await.unwrap();
+
+        InstanceHandle::inject_output(&vt, &etx, b"Test output").await;
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.data, b"Test output");
+        assert_eq!(event.cursor, (0, 11));
+    }
+
+    /// Simulate the multiplexed WebSocket duplication bug:
+    ///
+    /// 1. Focus subscribes to PTY output (like focus.rs:231)
+    /// 2. PTY output arrives — focus task forwards it to the client
+    /// 3. TerminalVisible handler generates a replay that ALSO includes this output
+    /// 4. Client processes both — duplication
+    ///
+    /// This test proves the overlap exists at the instance_actor API level.
+    #[tokio::test]
+    async fn test_multiplexed_focus_replay_overlap() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+
+        // Fill VT with initial content so scrollback has data.
+        for i in 0..12 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Init {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Step 1: Focus subscribes to output.
+        let mut output_rx = handle.subscribe_output().await.unwrap();
+
+        // Step 2: "Late" output arrives after subscribe.
+        // These are in BOTH the broadcast receiver AND the VT.
+        for i in 0..6 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Late {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Step 3: TerminalVisible handler generates replay from VT.
+        let replay_chunks = handle.get_recent_output(usize::MAX, 4).await;
+        let replay_data = replay_chunks.join("");
+
+        // Collect the broadcast messages the focus task would forward.
+        let mut broadcast_bytes = Vec::new();
+        while let Ok(event) = output_rx.try_recv() {
+            broadcast_bytes.extend_from_slice(&event.data);
+        }
+        assert!(
+            !broadcast_bytes.is_empty(),
+            "focus task should have received broadcast output"
+        );
+
+        // ── Clean client: replay only (what we want after the fix) ──
+        let mut clean = vt100::Parser::new(4, 40, 1000);
+        clean.process(replay_data.as_bytes());
+
+        // ── Buggy client: replay THEN broadcast (current broken behavior) ──
+        let mut buggy = vt100::Parser::new(4, 40, 1000);
+        buggy.process(replay_data.as_bytes());
+        buggy.process(&broadcast_bytes);
+
+        // Count "Late 00" occurrences across scrollback + visible screen.
+        let clean_count = count_occurrences(&mut clean, 40, "Late 00");
+        let buggy_count = count_occurrences(&mut buggy, 40, "Late 00");
+
+        assert_eq!(clean_count, 1, "clean client: 'Late 00' should appear once");
+        // BUG: the buggy client sees "Late 00" twice — once from the replay
+        // and once from the broadcast overlap pushing content into scrollback.
+        assert!(
+            buggy_count > 1,
+            "buggy client: 'Late 00' should be duplicated, got {buggy_count}"
+        );
+    }
+
+    /// After draining the broadcast receiver post-replay, the overlap is gone.
+    #[tokio::test]
+    async fn test_multiplexed_drain_prevents_duplication() {
+        let (handle, vt, etx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+
+        for i in 0..12 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Init {i:02}\r\n").as_bytes()).await;
+        }
+
+        let mut output_rx = handle.subscribe_output().await.unwrap();
+
+        for i in 0..6 {
+            InstanceHandle::inject_output(&vt, &etx, format!("Late {i:02}\r\n").as_bytes()).await;
+        }
+
+        // Generate replay.
+        let replay_chunks = handle.get_recent_output(usize::MAX, 4).await;
+        let replay_data = replay_chunks.join("");
+
+        // DRAIN: discard broadcast messages already baked into the replay.
+        while output_rx.try_recv().is_ok() {}
+
+        // After the drain, no stale broadcasts remain.
+        // Simulate client: write replay only (post-drain no extra output).
+        let mut client = vt100::Parser::new(4, 40, 1000);
+        client.process(replay_data.as_bytes());
+
+        let count = count_occurrences(&mut client, 40, "Late 00");
+        assert_eq!(count, 1, "'Late 00' should appear exactly once after drain");
+    }
+
+    /// Count how many times `needle` appears across scrollback + visible screen.
+    fn count_occurrences(parser: &mut vt100::Parser, cols: u16, needle: &str) -> usize {
+        let mut all_text = String::new();
+
+        // Visible screen
+        let (rows, _) = parser.screen().size();
+        for r in 0..rows {
+            for c in 0..cols {
+                if let Some(cell) = parser.screen().cell(r, c) {
+                    let s = cell.contents();
+                    if s.is_empty() {
+                        all_text.push(' ');
+                    } else {
+                        all_text.push_str(s);
+                    }
+                }
+            }
+            all_text.push('\n');
+        }
+
+        // Scrollback
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = parser.screen().scrollback();
+        for offset in (1..=depth).rev() {
+            parser.screen_mut().set_scrollback(offset);
+            for c in 0..cols {
+                if let Some(cell) = parser.screen().cell(0, c) {
+                    let s = cell.contents();
+                    if s.is_empty() {
+                        all_text.push(' ');
+                    } else {
+                        all_text.push_str(s);
+                    }
+                }
+            }
+            all_text.push('\n');
+        }
+        parser.screen_mut().set_scrollback(0);
+
+        all_text.matches(needle).count()
     }
 }

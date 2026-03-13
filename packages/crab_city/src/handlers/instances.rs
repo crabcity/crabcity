@@ -214,7 +214,7 @@ pub async fn get_instance_output(
 ) -> Response {
     if let Some(handle) = state.instance_manager.get_handle(&id).await {
         let max_bytes = state.server_config.websocket.max_history_replay_bytes;
-        let output = handle.get_recent_output(max_bytes).await;
+        let output = handle.get_recent_output(max_bytes, 24).await;
         Json(serde_json::json!({ "lines": output })).into_response()
     } else {
         StatusCode::NOT_FOUND.into_response()

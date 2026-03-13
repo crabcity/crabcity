@@ -16,11 +16,8 @@ use crate::repository::ConversationRepository;
 
 use crate::virtual_terminal::ClientType;
 
-use super::focus::{handle_focus, send_conversation_since, send_output_history};
-use super::protocol::{
-    BackpressureStats, ClientMessage, DEFAULT_MAX_HISTORY_BYTES, PresenceUser, ServerMessage,
-    WsUser,
-};
+use super::focus::{handle_focus, send_conversation_since};
+use super::protocol::{BackpressureStats, ClientMessage, PresenceUser, ServerMessage, WsUser};
 use super::state_manager::{GlobalStateManager, TERMINAL_LOCK_TIMEOUT_SECS};
 
 /// Handle a multiplexed WebSocket connection
@@ -28,7 +25,7 @@ pub async fn handle_multiplexed_ws(
     socket: WebSocket,
     instance_manager: Arc<InstanceManager>,
     state_manager: Arc<GlobalStateManager>,
-    server_config: Option<Arc<ServerConfig>>,
+    _server_config: Option<Arc<ServerConfig>>,
     server_metrics: Option<Arc<ServerMetrics>>,
     ws_user: Option<WsUser>,
     repository: Option<Arc<ConversationRepository>>,
@@ -46,12 +43,6 @@ pub async fn handle_multiplexed_ws(
         m.connection_opened();
     }
 
-    // Get max history bytes from config or use default
-    let max_history_bytes = server_config
-        .as_ref()
-        .map(|c| c.websocket.max_history_replay_bytes)
-        .unwrap_or(DEFAULT_MAX_HISTORY_BYTES);
-
     // Per-connection backpressure stats
     let stats = Arc::new(BackpressureStats::new());
 
@@ -66,6 +57,9 @@ pub async fn handle_multiplexed_ws(
     // Current focused instance and its cancellation token
     let focused_instance: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
     let focus_cancel: Arc<RwLock<Option<CancellationToken>>> = Arc::new(RwLock::new(None));
+    // Channel for the TerminalVisible handler to ask the focus task to re-send
+    // OutputHistory with the correct client_rows (after draining stale broadcasts).
+    let focus_refresh: Arc<RwLock<Option<mpsc::Sender<u16>>>> = Arc::new(RwLock::new(None));
 
     // Channel for session selection (when ambiguous)
     let (session_select_tx, session_select_rx) = mpsc::channel::<String>(1);
@@ -150,6 +144,7 @@ pub async fn handle_multiplexed_ws(
     let tx_input = tx.clone();
     let focused_clone: Arc<RwLock<Option<String>>> = focused_instance.clone();
     let focus_cancel_clone: Arc<RwLock<Option<CancellationToken>>> = focus_cancel.clone();
+    let focus_refresh_clone = focus_refresh.clone();
     let state_mgr = state_manager.clone();
     let inst_mgr = instance_manager.clone();
     let session_tx = session_select_tx.clone();
@@ -236,13 +231,17 @@ pub async fn handle_multiplexed_ws(
                                     broadcast_terminal_lock_update(&state_mgr, &instance_id).await;
                                 }
 
-                                // Start focus handling in background
+                                // Start focus handling in background.
+                                // The refresh channel lets the TerminalVisible handler
+                                // ask the focus task to re-send OutputHistory (with drain)
+                                // instead of sending it directly (which causes overlap).
                                 let tx_focus = tx_input.clone();
                                 let state_mgr_focus = state_mgr.clone();
                                 let inst_mgr_focus = inst_mgr.clone();
                                 let session_rx = session_rx_clone.clone();
+                                let (refresh_tx, refresh_rx) = mpsc::channel::<u16>(4);
+                                *focus_refresh_clone.write().await = Some(refresh_tx);
 
-                                let max_history = max_history_bytes;
                                 tokio::spawn(async move {
                                     handle_focus(
                                         instance_id,
@@ -252,7 +251,7 @@ pub async fn handle_multiplexed_ws(
                                         inst_mgr_focus,
                                         tx_focus,
                                         session_rx,
-                                        max_history,
+                                        refresh_rx,
                                     )
                                     .await;
                                 });
@@ -377,6 +376,13 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
+                                debug!(
+                                    conn = %connection_id_clone,
+                                    instance = %instance_id,
+                                    rows,
+                                    cols,
+                                    "TerminalVisible"
+                                );
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await {
                                     if let Err(e) = handle
                                         .update_viewport_and_resize(
@@ -390,18 +396,22 @@ pub async fn handle_multiplexed_ws(
                                         warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                     }
 
-                                    // Send current screen buffer so a freshly-mounted terminal
-                                    // gets the full display without needing a re-Focus.
-                                    let _ = send_output_history(
-                                        &handle,
-                                        &instance_id,
-                                        max_history_bytes,
-                                        &tx_input,
-                                    )
-                                    .await;
+                                    // Ask the focus task to re-send the full terminal
+                                    // state with the correct client_rows. The focus task
+                                    // drains its broadcast receiver before generating the
+                                    // replay, preventing overlap duplication.
+                                    if let Some(ref refresh_tx) = *focus_refresh_clone.read().await
+                                    {
+                                        let _ = refresh_tx.send(rows).await;
+                                    }
                                 }
                             }
                             ClientMessage::TerminalHidden { instance_id } => {
+                                debug!(
+                                    conn = %connection_id_clone,
+                                    instance = %instance_id,
+                                    "TerminalHidden"
+                                );
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await
                                     && let Err(e) = handle
                                         .set_active_and_resize(&connection_id_clone, false)

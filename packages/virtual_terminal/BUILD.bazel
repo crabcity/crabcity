@@ -7,6 +7,9 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     deps = [
+        "@crate_index//:ciborium",
+        "@crate_index//:serde",
+        "@crate_index//:tracing",
         "@crate_index//:vt100",
     ],
 )
@@ -14,4 +17,17 @@ rust_library(
 rust_test(
     name = "virtual_terminal_test",
     crate = ":virtual_terminal",
+    data = glob([
+        "fixtures/**",
+        "src/snapshots/**",
+    ]),
+    env = {
+        "INSTA_WORKSPACE_ROOT": ".",
+    },
+    rustc_env = {
+        "CARGO_MANIFEST_DIR": "packages/virtual_terminal",
+    },
+    deps = [
+        "@crate_index//:insta",
+    ],
 )

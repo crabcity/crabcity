@@ -14,7 +14,6 @@ rust_binary(
     edition = "2024",
     rustc_env = {"CARGO_PKG_VERSION": VERSION},
     deps = [
-        "//packages/compositor",
         "//packages/pty_manager",
         "//packages/virtual_terminal",
         "@crate_index//:anyhow",
@@ -75,7 +74,6 @@ rust_binary(
     edition = "2024",
     rustc_env = {"CARGO_PKG_VERSION": VERSION},
     deps = [
-        "//packages/compositor",
         "//packages/crab_city_ui/crate:crab_city_ui_crate",
         "//packages/pty_manager",
         "//packages/virtual_terminal",

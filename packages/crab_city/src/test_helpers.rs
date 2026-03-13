@@ -42,7 +42,13 @@ pub async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let (restart_tx, _restart_rx) = tokio::sync::watch::channel(());
 
     let state = AppState {
-        instance_manager: Arc::new(InstanceManager::new("echo".into(), 9000, 25 * 1024 * 1024)),
+        instance_manager: Arc::new(InstanceManager::new(
+            "echo".into(),
+            9000,
+            25 * 1024 * 1024,
+            0,
+            None,
+        )),
         conversation_watchers: Arc::new(Mutex::new(HashMap::new())),
         config: Arc::new(config),
         server_config: Arc::new(ServerConfig::from_file(&ServerFileConfig::default())),

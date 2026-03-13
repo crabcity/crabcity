@@ -78,6 +78,10 @@ crate_index.spec(
     version = "1.0",
 )
 crate_index.spec(
+    package = "ciborium",
+    version = "0.2",
+)
+crate_index.spec(
     features = ["serde"],
     package = "chrono",
     version = "0.4",
@@ -267,11 +271,11 @@ crate_index.spec(
 )
 crate_index.spec(
     package = "vt100",
-    version = "0.15",
+    version = "0.16",
 )
 crate_index.spec(
     package = "ratatui",
-    version = "0.29",
+    version = "0.30",
 )
 
 # File / directory utilities
@@ -359,6 +363,12 @@ crate_index.spec(
 crate_index.spec(
     package = "mime_guess",
     version = "2",
+)
+
+# Testing
+crate_index.spec(
+    package = "insta",
+    version = "1.42",
 )
 
 # Toolpath - provenance

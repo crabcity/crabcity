@@ -51,8 +51,7 @@ The terminal theme is solarized. Hardcoded ANSI colors are invisible or clash:
 crab_city (server + CLI + TUI)
 ├── claude_convo      (conversation log reader)
 ├── pty_manager        (PTY lifecycle)
-├── virtual_terminal   (screen buffer + viewport negotiation)
-└── compositor         (overlay layers for TUI)
+└── virtual_terminal   (screen buffer + viewport negotiation)
 
 tty_wrapper            (standalone HTTP-controlled PTY — not depended on by crab_city)
 crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature flag)
@@ -97,6 +96,7 @@ State is exposed as `ClaudeState` in `inference/state.rs` and broadcast to clien
 ### Terminal Multiplexing
 
 Multiple clients share a single PTY per instance:
-- `virtual_terminal` maintains the screen buffer and negotiates dimensions as min(all active viewports)
-- `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
+- `virtual_terminal` maintains the screen buffer, negotiates dimensions as min(all active viewports), and owns a server-side scrollback buffer (configurable via `scrollback_lines` in `[server]` config, default 10,000 lines). On resize, the visible screen is saved, a fresh parser is created at the new dimensions (clearing scrollback), and visible content is restored — the PTY program's SIGWINCH redraw rebuilds scrollback at the correct width
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
+
+The server's `vt100` parser aggregates terminal state — clients receive compacted snapshots (scrollback + visible screen keyframe), never raw PTY byte replay. This means intermediate cursor throbs, partial rewrites, and animation frames are collapsed into final line content. On focus switch (web) or attach (TUI), clients get the full aggregated state via `replay()`.

@@ -172,7 +172,12 @@ pub enum ServerMessage {
     // === High-resolution messages (focused instance only) ===
     // All content messages include instance_id for proper client-side routing
     /// Terminal output from focused instance
-    Output { instance_id: String, data: String },
+    Output {
+        instance_id: String,
+        data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<(u16, u16)>,
+    },
     /// Terminal history replay on focus switch
     OutputHistory { instance_id: String, data: String },
     /// Full conversation on focus switch
@@ -321,9 +326,6 @@ pub struct SessionCandidate {
     pub preview: Option<String>,
 }
 
-/// Default max history bytes if no config provided
-pub const DEFAULT_MAX_HISTORY_BYTES: usize = 64 * 1024; // 64KB
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,11 +466,31 @@ mod tests {
         let msg = ServerMessage::Output {
             instance_id: "inst-1".to_string(),
             data: "Hello from Claude!".to_string(),
+            cursor: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("Output"));
         assert!(json.contains("inst-1"));
         assert!(json.contains("Hello from Claude!"));
+        assert!(!json.contains("cursor"));
+    }
+
+    #[test]
+    fn test_server_message_output_with_cursor_serialization() {
+        let msg = ServerMessage::Output {
+            instance_id: "inst-1".to_string(),
+            data: "Hello!".to_string(),
+            cursor: Some((5, 10)),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("cursor"));
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ServerMessage::Output { cursor, .. } => {
+                assert_eq!(cursor, Some((5, 10)));
+            }
+            _ => panic!("Expected Output"),
+        }
     }
 
     #[test]
@@ -905,11 +927,6 @@ mod tests {
             }
             _ => panic!("Expected TerminalHidden message"),
         }
-    }
-
-    #[test]
-    fn test_default_max_history_bytes_constant() {
-        assert_eq!(DEFAULT_MAX_HISTORY_BYTES, 64 * 1024);
     }
 
     #[test]

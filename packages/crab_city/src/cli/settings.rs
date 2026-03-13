@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 use super::daemon::DaemonInfo;
+use crate::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
 
 /// Mirrors the server's GET /api/admin/config response.
 #[derive(Deserialize, Clone, Debug)]
@@ -22,6 +23,7 @@ struct ConfigState {
     port: u16,
     auth_enabled: bool,
     https: bool,
+    scrollback_lines: usize,
 }
 
 /// Which field is selected.
@@ -32,14 +34,16 @@ enum Field {
     Port,
     Auth,
     Https,
+    ScrollbackLines,
 }
 
-const FIELDS: [Field; 5] = [
+const FIELDS: [Field; 6] = [
     Field::Profile,
     Field::Host,
     Field::Port,
     Field::Auth,
     Field::Https,
+    Field::ScrollbackLines,
 ];
 
 const PROFILES: [Option<&str>; 4] = [Some("local"), Some("tunnel"), Some("server"), None];
@@ -120,6 +124,14 @@ pub fn run_settings(terminal: &mut DefaultTerminal, daemon: &DaemonInfo) -> Resu
                         if local.auth_enabled { "on" } else { "off" }.to_string(),
                     ),
                     Field::Https => ("HTTPS", if local.https { "on" } else { "off" }.to_string()),
+                    Field::ScrollbackLines => (
+                        "Scrollback",
+                        format_edit_or_value(
+                            &edit,
+                            Field::ScrollbackLines,
+                            &format!("{} lines", local.scrollback_lines),
+                        ),
+                    ),
                 };
 
                 let label_style = if is_selected {
@@ -207,6 +219,30 @@ pub fn run_settings(terminal: &mut DefaultTerminal, daemon: &DaemonInfo) -> Resu
                                     });
                                 }
                             }
+                            Field::ScrollbackLines => match ed.buffer.parse::<usize>() {
+                                Ok(n)
+                                    if (MIN_SCROLLBACK_LINES..=MAX_SCROLLBACK_LINES)
+                                        .contains(&n) =>
+                                {
+                                    local.scrollback_lines = n;
+                                    dirty = true;
+                                }
+                                Ok(_) => {
+                                    status = Some(StatusMessage {
+                                        text: format!(
+                                            "Must be {}\u{2013}{}",
+                                            MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES
+                                        ),
+                                        is_error: true,
+                                    });
+                                }
+                                Err(_) => {
+                                    status = Some(StatusMessage {
+                                        text: "Invalid number".to_string(),
+                                        is_error: true,
+                                    });
+                                }
+                            },
                             _ => {}
                         }
                         edit = None;
@@ -298,10 +334,19 @@ pub fn run_settings(terminal: &mut DefaultTerminal, daemon: &DaemonInfo) -> Resu
                         update_profile_after_edit(&mut local);
                         dirty = true;
                     }
+                    Field::ScrollbackLines => {
+                        let buf = local.scrollback_lines.to_string();
+                        let cursor = buf.len();
+                        edit = Some(EditState {
+                            field: Field::ScrollbackLines,
+                            buffer: buf,
+                            cursor,
+                        });
+                    }
                 },
                 KeyCode::Char('a') => {
                     // Apply ephemerally
-                    match apply_config(&client, daemon, &local, false) {
+                    match apply_config(&client, daemon, &local, &config, false) {
                         Ok(()) => {
                             status = Some(StatusMessage {
                                 text: "Applied (ephemeral) — server restarting...".to_string(),
@@ -325,7 +370,7 @@ pub fn run_settings(terminal: &mut DefaultTerminal, daemon: &DaemonInfo) -> Resu
                 }
                 KeyCode::Char('s') => {
                     // Save to config.toml and apply
-                    match apply_config(&client, daemon, &local, true) {
+                    match apply_config(&client, daemon, &local, &config, true) {
                         Ok(()) => {
                             status = Some(StatusMessage {
                                 text: "Saved to config.toml — server restarting...".to_string(),
@@ -417,23 +462,39 @@ fn fetch_config(client: &reqwest::blocking::Client, daemon: &DaemonInfo) -> Resu
     resp.json().context("Failed to parse config response")
 }
 
+/// Build a PATCH body containing only fields that differ from the server snapshot.
 fn apply_config(
     client: &reqwest::blocking::Client,
     daemon: &DaemonInfo,
     local: &ConfigState,
+    server: &ConfigState,
     save: bool,
 ) -> Result<()> {
     let url = format!("{}/api/admin/config", daemon.base_url());
-    let body = serde_json::json!({
-        "host": local.host,
-        "port": local.port,
-        "auth_enabled": local.auth_enabled,
-        "https": local.https,
-        "save": save,
-    });
+    let mut body = serde_json::Map::new();
+    if local.host != server.host {
+        body.insert("host".into(), serde_json::json!(local.host));
+    }
+    if local.port != server.port {
+        body.insert("port".into(), serde_json::json!(local.port));
+    }
+    if local.auth_enabled != server.auth_enabled {
+        body.insert("auth_enabled".into(), serde_json::json!(local.auth_enabled));
+    }
+    if local.https != server.https {
+        body.insert("https".into(), serde_json::json!(local.https));
+    }
+    if local.scrollback_lines != server.scrollback_lines {
+        body.insert(
+            "scrollback_lines".into(),
+            serde_json::json!(local.scrollback_lines),
+        );
+    }
+    body.insert("save".into(), serde_json::json!(save));
+
     let resp = client
         .patch(&url)
-        .json(&body)
+        .json(&serde_json::Value::Object(body))
         .send()
         .context("Failed to reach daemon config endpoint")?;
     if !resp.status().is_success() {
@@ -455,6 +516,7 @@ mod tests {
             port: 9000,
             auth_enabled: auth,
             https,
+            scrollback_lines: 10_000,
         }
     }
 

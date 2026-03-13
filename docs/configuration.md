@@ -83,6 +83,12 @@ max_buffer_mb = 25
 max_history_kb = 64
 # Hang detection timeout in seconds (0 = disabled)
 hang_timeout_secs = 300
+# Scrollback buffer lines for terminal attach (applies on next attach, 100–100,000)
+scrollback_lines = 10000
+# Directory to write VT session recordings (.vtr files) for debugging/golden tests.
+# When set, every instance captures PTY output/input/resize events with timestamps.
+# Omit or leave unset to disable recording.
+# vt_record_dir = "/tmp/vt-captures"
 ```
 
 ## Environment Variables
@@ -100,6 +106,8 @@ Every config field can be set via environment variable using the `CRAB_` prefix 
 | `CRAB_SERVER__MAX_BUFFER_MB` | `server.max_buffer_mb` | `50` |
 | `CRAB_SERVER__MAX_HISTORY_KB` | `server.max_history_kb` | `128` |
 | `CRAB_SERVER__HANG_TIMEOUT_SECS` | `server.hang_timeout_secs` | `600` |
+| `CRAB_SERVER__SCROLLBACK_LINES` | `server.scrollback_lines` | `10000` |
+| `CRAB_SERVER__VT_RECORD_DIR` | `server.vt_record_dir` | — |
 
 Legacy environment variables (still supported):
 

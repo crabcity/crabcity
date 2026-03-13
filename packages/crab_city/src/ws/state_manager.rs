@@ -1164,12 +1164,14 @@ mod tests {
         tx.send(ServerMessage::Output {
             instance_id: "inst-1".to_string(),
             data: "1".to_string(),
+            cursor: None,
         })
         .await
         .unwrap();
         tx.send(ServerMessage::Output {
             instance_id: "inst-1".to_string(),
             data: "2".to_string(),
+            cursor: None,
         })
         .await
         .unwrap();
@@ -1185,6 +1187,7 @@ mod tests {
         tx.send(ServerMessage::Output {
             instance_id: "inst-1".to_string(),
             data: "3".to_string(),
+            cursor: None,
         })
         .await
         .unwrap();
@@ -1796,7 +1799,7 @@ mod tests {
     #[tokio::test]
     async fn test_conversation_snapshot_roundtrip() {
         let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         state_mgr.insert_test_tracker("inst-1", handle).await;
 
         // Initially empty
@@ -1826,7 +1829,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_conversation_receives_events() {
         let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
         state_mgr.insert_test_tracker("inst-1", handle).await;
 
         // Subscribe BEFORE sending
