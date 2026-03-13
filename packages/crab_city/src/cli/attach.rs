@@ -365,7 +365,13 @@ async fn attach_session(
     let mut terminal = ratatui::init();
     let _ = ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture);
     let outcome = tokio::task::block_in_place(|| {
-        run_event_loop(&mut terminal, &mut vt_parser, &ws_read_rx, &ws_write_tx)
+        run_event_loop(
+            &mut terminal,
+            &mut vt_parser,
+            &ws_read_rx,
+            &ws_write_tx,
+            scrollback_lines,
+        )
     });
     let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
@@ -379,6 +385,7 @@ fn run_event_loop(
     vt_parser: &mut vt100::Parser,
     ws_read_rx: &std::sync::mpsc::Receiver<AttachEvent>,
     ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    scrollback_capacity: usize,
 ) -> Result<AttachOutcome> {
     let mut claude_state = ClaudeState::Initializing;
     let attach_time = Instant::now();
@@ -387,11 +394,6 @@ fn run_event_loop(
 
     // Scrollback: 0 = live screen (bottom), >0 = scrolled into history.
     let mut scroll_offset: usize = 0;
-
-    // After resize, the PTY program redraws via SIGWINCH, duplicating content
-    // already in scrollback. Track the post-resize scrollback depth so we can
-    // clamp the scroll viewport and hide stale pre-resize lines.
-    let mut scrollback_trim: usize = 0;
 
     loop {
         // Drain WS messages
@@ -410,14 +412,8 @@ fn run_event_loop(
             return Ok(AttachOutcome::Exited);
         }
 
-        // Apply scrollback viewport before reading the screen.
-        // Clamp to effective depth: total scrollback minus stale pre-resize
-        // lines, so the user can't scroll into duplicated SIGWINCH content.
-        vt_parser.screen_mut().set_scrollback(usize::MAX);
-        let total_depth = vt_parser.screen().scrollback();
-        let effective_depth = total_depth.saturating_sub(scrollback_trim);
-        let clamped = scroll_offset.min(effective_depth);
-        vt_parser.screen_mut().set_scrollback(clamped);
+        // Apply scrollback viewport — vt100 clamps to actual depth.
+        vt_parser.screen_mut().set_scrollback(scroll_offset);
         scroll_offset = vt_parser.screen().scrollback();
 
         // Render
@@ -517,12 +513,14 @@ fn run_event_loop(
 
                 Event::Resize(cols, rows) => {
                     let pty_rows = rows.saturating_sub(1).max(1);
-                    vt_parser.screen_mut().set_size(pty_rows, cols);
-                    // Record post-resize scrollback depth as trim point.
-                    // The SIGWINCH redraw will re-output this content.
-                    vt_parser.screen_mut().set_scrollback(usize::MAX);
-                    scrollback_trim = vt_parser.screen().scrollback();
-                    vt_parser.screen_mut().set_scrollback(0);
+                    // Save visible screen, recreate parser at new dims (clears
+                    // scrollback — SIGWINCH redraw will rebuild it correctly).
+                    let content = vt_parser.screen().contents_formatted();
+                    let cursor = vt_parser.screen().cursor_position();
+                    *vt_parser = vt100::Parser::new(pty_rows, cols, scrollback_capacity);
+                    vt_parser.process(&content);
+                    vt_parser
+                        .process(format!("\x1b[{};{}H", cursor.0 + 1, cursor.1 + 1).as_bytes());
                     let msg = WsMessage::Resize {
                         rows: pty_rows,
                         cols,

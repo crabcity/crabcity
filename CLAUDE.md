@@ -97,7 +97,7 @@ State is exposed as `ClaudeState` in `inference/state.rs` and broadcast to clien
 ### Terminal Multiplexing
 
 Multiple clients share a single PTY per instance:
-- `virtual_terminal` maintains the screen buffer, negotiates dimensions as min(all active viewports), and owns a server-side scrollback buffer (configurable via `scrollback_lines` in `[server]` config, default 10,000 lines). On resize, pre-resize scrollback is trimmed (`scrollback_trim`) to prevent duplication from SIGWINCH redraws
+- `virtual_terminal` maintains the screen buffer, negotiates dimensions as min(all active viewports), and owns a server-side scrollback buffer (configurable via `scrollback_lines` in `[server]` config, default 10,000 lines). On resize, the visible screen is saved, a fresh parser is created at the new dimensions (clearing scrollback), and visible content is restored — the PTY program's SIGWINCH redraw rebuilds scrollback at the correct width
 - `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
 
