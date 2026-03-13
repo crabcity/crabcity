@@ -8,6 +8,7 @@
 import { derived, writable } from 'svelte/store';
 import type { ClaudeState } from '$lib/types';
 import { currentInstanceId, instances } from './instances';
+import type { Readable } from 'svelte/store';
 
 // =============================================================================
 // Core State - Derived from per-instance state with memoization
@@ -74,6 +75,47 @@ export const isToolExecuting = derived(claudeState, ($state) => $state.type === 
 export const currentTool = derived(claudeState, ($state) =>
 	$state.type === 'ToolExecuting' ? $state.tool : null
 );
+
+// =============================================================================
+// Per-Instance Derived Stores (for pane-bound components)
+// =============================================================================
+
+/** Create a claude state store for a specific instance (with memoization) */
+export function claudeStateForInstance(instanceId: string): Readable<ClaudeState> {
+	const raw = derived(instances, ($instances): ClaudeState => {
+		const instance = $instances.get(instanceId);
+		return instance?.claude_state ?? { type: 'Idle' };
+	});
+
+	const memo = writable<ClaudeState>({ type: 'Idle' });
+	let lastKey: string | null = null;
+
+	raw.subscribe(($state) => {
+		const key = $state.type === 'ToolExecuting'
+			? `${$state.type}:${$state.tool}`
+			: $state.type;
+		if (key !== lastKey) {
+			lastKey = key;
+			memo.set($state);
+		}
+	});
+
+	return { subscribe: memo.subscribe };
+}
+
+/** Derive isActive for a specific instance */
+export function isActiveForInstance(instanceId: string): Readable<boolean> {
+	const state = claudeStateForInstance(instanceId);
+	return derived(state, ($s) =>
+		$s.type === 'Thinking' || $s.type === 'Responding' || $s.type === 'ToolExecuting'
+	);
+}
+
+/** Derive isStarting for a specific instance */
+export function isStartingForInstance(instanceId: string): Readable<boolean> {
+	const state = claudeStateForInstance(instanceId);
+	return derived(state, ($s) => $s.type === 'Initializing' || $s.type === 'Starting');
+}
 
 // =============================================================================
 // State Updates

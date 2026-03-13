@@ -1,11 +1,9 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import Terminal from './Terminal.svelte';
-	import ConversationView from './ConversationView.svelte';
-	import ErrorBoundary from './ErrorBoundary.svelte';
 	import SnakeGame from './SnakeGame.svelte';
 	import SnakeTeaser from './SnakeTeaser.svelte';
 	import MainHeader from './main-view/MainHeader.svelte';
+	import LayoutTree from './layout/LayoutTree.svelte';
 	import { currentInstance, currentInstanceId, isClaudeInstance, showTerminal, setTerminalMode, initTerminalModeFromUrl, initViewStateFromUrl } from '$lib/stores/instances';
 	import { connect, disconnect } from '$lib/stores/websocket';
 	import { isActive } from '$lib/stores/claude';
@@ -15,7 +13,14 @@
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { openGitTab, fetchGitDiff, gitDiff } from '$lib/stores/git';
 	import { diffEngine } from '$lib/stores/settings';
+	import { layoutRoot, setupLayoutSync, setupLayoutPersistence, tryRestoreLayout } from '$lib/stores/layout';
 	import { get } from 'svelte/store';
+
+	// Keep layout store in sync with showTerminal/currentInstanceId (Phase 1)
+	setupLayoutSync();
+	// Persist layout to localStorage and restore on load
+	setupLayoutPersistence();
+	tryRestoreLayout();
 
 	let lastInstanceId: string | null = null;
 	let hasInitializedFromUrl = false;
@@ -123,35 +128,7 @@
 
 		<!-- Content -->
 		<div class="content">
-			{#if $showTerminal}
-				<div class="terminal-container">
-					<ErrorBoundary>
-						{#snippet children()}
-							{#key 'terminal-' + $currentInstanceId}
-								<Terminal />
-							{/key}
-						{/snippet}
-					</ErrorBoundary>
-				</div>
-			{:else if $isClaudeInstance}
-				<ErrorBoundary>
-					{#snippet children()}
-						{#key 'conversation-' + $currentInstanceId}
-							<ConversationView />
-						{/key}
-					{/snippet}
-				</ErrorBoundary>
-			{:else}
-				<div class="terminal-container">
-					<ErrorBoundary>
-						{#snippet children()}
-							{#key 'terminal-' + $currentInstanceId}
-								<Terminal />
-							{/key}
-						{/snippet}
-					</ErrorBoundary>
-				</div>
-			{/if}
+			<LayoutTree node={$layoutRoot} depth={0} />
 		</div>
 	{:else}
 		<!-- Empty state -->
@@ -220,11 +197,6 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-	}
-
-	.terminal-container {
-		flex: 1;
-		min-height: 0;
 	}
 
 	.empty-state {
