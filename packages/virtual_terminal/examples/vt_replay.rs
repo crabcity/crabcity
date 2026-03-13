@@ -15,10 +15,7 @@ fn main() {
 
     for event in &recording.events {
         match event {
-            VtEvent::Output {
-                timestamp_us,
-                data,
-            } => {
+            VtEvent::Output { timestamp_us, data } => {
                 output_count += 1;
                 output_bytes += data.len();
                 last_ts = *timestamp_us;

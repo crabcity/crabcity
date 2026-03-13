@@ -388,6 +388,11 @@ fn run_event_loop(
     // Scrollback: 0 = live screen (bottom), >0 = scrolled into history.
     let mut scroll_offset: usize = 0;
 
+    // After resize, the PTY program redraws via SIGWINCH, duplicating content
+    // already in scrollback. Track the post-resize scrollback depth so we can
+    // clamp the scroll viewport and hide stale pre-resize lines.
+    let mut scrollback_trim: usize = 0;
+
     loop {
         // Drain WS messages
         let mut ws_closed = false;
@@ -406,9 +411,13 @@ fn run_event_loop(
         }
 
         // Apply scrollback viewport before reading the screen.
-        // set_scrollback clamps internally; read back the actual offset so our
-        // counter doesn't run past the real history depth.
-        vt_parser.screen_mut().set_scrollback(scroll_offset);
+        // Clamp to effective depth: total scrollback minus stale pre-resize
+        // lines, so the user can't scroll into duplicated SIGWINCH content.
+        vt_parser.screen_mut().set_scrollback(usize::MAX);
+        let total_depth = vt_parser.screen().scrollback();
+        let effective_depth = total_depth.saturating_sub(scrollback_trim);
+        let clamped = scroll_offset.min(effective_depth);
+        vt_parser.screen_mut().set_scrollback(clamped);
         scroll_offset = vt_parser.screen().scrollback();
 
         // Render
@@ -509,6 +518,11 @@ fn run_event_loop(
                 Event::Resize(cols, rows) => {
                     let pty_rows = rows.saturating_sub(1).max(1);
                     vt_parser.screen_mut().set_size(pty_rows, cols);
+                    // Record post-resize scrollback depth as trim point.
+                    // The SIGWINCH redraw will re-output this content.
+                    vt_parser.screen_mut().set_scrollback(usize::MAX);
+                    scrollback_trim = vt_parser.screen().scrollback();
+                    vt_parser.screen_mut().set_scrollback(0);
                     let msg = WsMessage::Resize {
                         rows: pty_rows,
                         cols,

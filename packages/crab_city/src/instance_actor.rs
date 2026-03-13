@@ -599,7 +599,10 @@ impl InstanceActor {
 
         let recorder = opts.vt_record_dir.as_ref().and_then(|dir| {
             if let Err(e) = std::fs::create_dir_all(dir) {
-                tracing::warn!("VT recording disabled — cannot create {}: {e}", dir.display());
+                tracing::warn!(
+                    "VT recording disabled — cannot create {}: {e}",
+                    dir.display()
+                );
                 return None;
             }
             let path = dir.join(format!("{id}.vtr"));
@@ -609,7 +612,10 @@ impl InstanceActor {
                     Some(Arc::new(Mutex::new(r)))
                 }
                 Err(e) => {
-                    tracing::warn!("VT recording disabled — cannot open {}: {e}", path.display());
+                    tracing::warn!(
+                        "VT recording disabled — cannot open {}: {e}",
+                        path.display()
+                    );
                     None
                 }
             }

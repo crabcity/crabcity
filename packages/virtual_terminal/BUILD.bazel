@@ -17,4 +17,17 @@ rust_library(
 rust_test(
     name = "virtual_terminal_test",
     crate = ":virtual_terminal",
+    data = glob([
+        "fixtures/**",
+        "src/snapshots/**",
+    ]),
+    env = {
+        "INSTA_WORKSPACE_ROOT": ".",
+    },
+    rustc_env = {
+        "CARGO_MANIFEST_DIR": "packages/virtual_terminal",
+    },
+    deps = [
+        "@crate_index//:insta",
+    ],
 )

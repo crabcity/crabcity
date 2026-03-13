@@ -365,6 +365,12 @@ crate_index.spec(
     version = "2",
 )
 
+# Testing
+crate_index.spec(
+    package = "insta",
+    version = "1.42",
+)
+
 # Toolpath - provenance
 crate_index.spec(
     features = ["watcher"],

@@ -1,0 +1,107 @@
+---
+source: packages/virtual_terminal/src/lib.rs
+assertion_line: 3710
+expression: "all_lines.join(\"\\n\")"
+---
+
+ ▐▛███▜▌   Claude Code v2.1.37
+▝▜█████▛▘  Opus 4.6 · Claude Max
+  ▘▘ ▝▝    ~/Devel/crabcity/toolpath
+
+❯ Read the first line of 20 files. Pick any files.
+
+⏺ Let me grab 20 files from the codebase.
+
+⏺ Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Now let me read line 1 of 20 diverse files.
+
+⏺ Read 20 files (ctrl+o to expand)
+  ⎿  Loaded packages/crab_city/CLAUDE.md
+
+⏺ Here are the first lines of 20 files:
+  #: 1
+  File: packages/crab_city/src/main.rs
+  First Line: pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+  ────────────────────────────────────────
+  #: 2
+  File: packages/virtual_terminal/src/lib.rs
+  First Line: //! Virtual Terminal
+  ────────────────────────────────────────
+  #: 3
+  File: packages/compositor/src/lib.rs
+  First Line: mod cell;
+  ────────────────────────────────────────
+  #: 4
+  File: packages/pty_manager/src/lib.rs
+  First Line: //! PTY Manager - Pure PTY lifecycle management library
+  ────────────────────────────────────────
+  #: 5
+  File: packages/tty_wrapper/src/main.rs
+  First Line: use anyhow::{Context, Result};
+  ────────────────────────────────────────
+  #: 6
+  File: Cargo.toml
+  First Line: [workspace]
+  ────────────────────────────────────────
+  #: 7
+  File: packages/crab_city/Cargo.toml
+  First Line: [package]
+  ────────────────────────────────────────
+  #: 8
+  File: packages/virtual_terminal/Cargo.toml
+  First Line: [package]
+  ────────────────────────────────────────
+  #: 9
+  File: packages/crab_city/src/config.rs
+  First Line: use anyhow::{Context, Result};
+  ────────────────────────────────────────
+  #: 10
+  File: packages/crab_city/src/db.rs
+  First Line: use anyhow::{Context, Result};
+  ────────────────────────────────────────
+  #: 11
+  File: packages/crab_city/src/auth.rs
+  First Line: //! Authentication module: password ops, session management,
+    extractors, middleware, handlers.
+  ────────────────────────────────────────
+  #: 12
+  File: packages/crab_city/src/models.rs
+  First Line: use chrono::Utc;
+  ────────────────────────────────────────
+  #: 13
+  File: packages/crab_city/src/ws/protocol.rs
+  First Line: //! WebSocket Protocol Types
+  ────────────────────────────────────────
+  #: 14
+  File: packages/crab_city/src/ws/handler.rs
+  First Line: //! WebSocket Handler
+  ────────────────────────────────────────
+  #: 15
+  File: packages/crab_city/src/instance_manager.rs
+  First Line: use anyhow::Result;
+  ────────────────────────────────────────
+  #: 16
+  File: packages/crab_city/src/inference/state.rs
+  First Line: //! Claude State Types
+  ────────────────────────────────────────
+  #: 17
+  File: packages/crab_city/src/cli/attach.rs
+  First Line: use anyhow::Result;
+  ────────────────────────────────────────
+  #: 18
+  File: packages/compositor/src/compositor.rs
+  First Line: use crate::cell::Cell;
+  ────────────────────────────────────────
+  #: 19
+  File: packages/crab_city/src/websocket_proxy.rs
+  First Line: use axum::extract::ws::{Message, WebSocket};
+  ────────────────────────────────────────
+  #: 20
+  File: rustfmt.toml
+  First Line: edition = "2024"
+
+───────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────
+  ⚡ clash disabled

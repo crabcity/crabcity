@@ -201,16 +201,20 @@ impl VirtualTerminal {
 
     /// Apply a resize to the vt100 parser (called when effective dims change).
     ///
-    /// Records the current scrollback depth as a trim point. After resize,
+    /// Records the post-resize scrollback depth as a trim point. After resize,
     /// the PTY program will receive SIGWINCH and typically redraw, re-outputting
     /// content already in scrollback. The trim point lets `render_scrollback`
     /// skip pre-resize lines, preventing duplication.
+    ///
+    /// Trim is recorded AFTER `set_size()` because the resize itself may push
+    /// visible-screen content into scrollback via line reflow — those
+    /// reflow-pushed lines are also stale.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.parser.screen_mut().set_size(rows, cols);
+
         self.parser.screen_mut().set_scrollback(usize::MAX);
         self.scrollback_trim = self.parser.screen().scrollback();
         self.parser.screen_mut().set_scrollback(0);
-
-        self.parser.screen_mut().set_size(rows, cols);
     }
 
     /// Current effective dimensions.
@@ -226,14 +230,19 @@ impl VirtualTerminal {
     /// Return all content as plain-text lines: scrollback (oldest first)
     /// then visible screen rows. Reads cells directly from the vt100 parser
     /// — same data the TUI renders.
+    ///
+    /// Respects `scrollback_trim`: after a resize, the PTY program redraws
+    /// via SIGWINCH, duplicating content already in scrollback. The trim
+    /// offset skips those stale pre-resize lines.
     pub fn lines(&mut self) -> Vec<String> {
         let (_, cols) = self.parser.screen().size();
 
-        // Scrollback
+        // Scrollback (skip oldest `scrollback_trim` lines — stale from resize)
         self.parser.screen_mut().set_scrollback(usize::MAX);
         let depth = self.parser.screen().scrollback();
-        let mut out = Vec::with_capacity(depth);
-        for offset in (1..=depth).rev() {
+        let effective = depth.saturating_sub(self.scrollback_trim);
+        let mut out = Vec::with_capacity(effective);
+        for offset in (1..=effective).rev() {
             self.parser.screen_mut().set_scrollback(offset);
             out.push(self.row_text(0, cols));
         }
@@ -325,10 +334,13 @@ impl VirtualTerminal {
             && (rows, cols) != self.effective_dims
         {
             self.effective_dims = (rows, cols);
-            // Resize in place — preserves scrollback history.  The visible
-            // screen may briefly show merged soft-wrapped lines, but the
-            // PTY's SIGWINCH redraw fixes it within milliseconds.
+            // Resize first, then record post-resize scrollback depth as
+            // the trim point — set_size() may push visible content into
+            // scrollback via reflow, and those lines are also stale.
             self.parser.screen_mut().set_size(rows, cols);
+            self.parser.screen_mut().set_scrollback(usize::MAX);
+            self.scrollback_trim = self.parser.screen().scrollback();
+            self.parser.screen_mut().set_scrollback(0);
             self.keyframe = None;
             self.deltas.clear();
             return Some((rows, cols));
@@ -1024,20 +1036,32 @@ mod tests {
         for i in 0..10 {
             vt.process_output(format!("Line {}\r\n", i).as_bytes());
         }
-        // Resize via viewport change
+        // Resize via viewport change — sets scrollback_trim to skip
+        // pre-resize content (will be re-output by SIGWINCH redraw)
         vt.update_viewport("cli", 30, 100, ClientType::Terminal);
-        // Scrollback should survive the dimension change
+
+        // Simulate SIGWINCH redraw: real programs clear + home before redrawing
+        vt.process_output(b"\x1b[2J\x1b[H");
+        for i in 0..10 {
+            vt.process_output(format!("Line {}\r\n", i).as_bytes());
+        }
+
+        // Scrollback should contain the redrawn content
         let replay = vt.replay(24);
         let replay_str = String::from_utf8_lossy(&replay);
         assert!(
             replay_str.contains("Line 0"),
-            "scrollback should survive resize"
+            "scrollback should survive resize after SIGWINCH redraw"
         );
     }
 
     /// Viewport-driven dimension changes must preserve scrollback history.
     /// Regression test: previously, `recalculate_effective_dims` replaced the
     /// entire vt100 parser, destroying all scrollback.
+    ///
+    /// After resize, `scrollback_trim` marks pre-resize scrollback as stale
+    /// (the PTY program's SIGWINCH redraw will re-output it). The rendered
+    /// output only includes post-resize content.
     #[test]
     fn test_viewport_change_preserves_scrollback() {
         let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
@@ -1060,7 +1084,13 @@ mod tests {
         vt.update_viewport("web-client", 30, 100, ClientType::Web);
         assert_eq!(vt.effective_dims(), (30, 100));
 
-        // Scrollback must survive the dimension change
+        // Simulate SIGWINCH redraw: clear + home + rewrite (like real programs)
+        vt.process_output(b"\x1b[2J\x1b[H");
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        // Scrollback must contain the redrawn content
         let replay_after = vt.replay(24);
         let after_str = String::from_utf8_lossy(&replay_after);
         assert!(
@@ -1510,7 +1540,7 @@ mod tests {
         );
     }
 
-    /// Scrollback survives dimension change.
+    /// Scrollback survives dimension change after SIGWINCH redraw.
     #[test]
     fn test_replay_after_resize() {
         let mut vt = VirtualTerminal::new(4, 40, 4096, 100);
@@ -1520,6 +1550,12 @@ mod tests {
 
         // Resize to 8×60
         vt.update_viewport("cli", 8, 60, ClientType::Terminal);
+
+        // Simulate SIGWINCH redraw: clear + home + rewrite (like real programs)
+        vt.process_output(b"\x1b[2J\x1b[H");
+        for i in 0..20 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
 
         let mut client = replay_roundtrip(&mut vt, 8, 60);
         let sb = scrollback_lines(&mut client, 60);
@@ -1534,7 +1570,7 @@ mod tests {
             "mid-range scrollback should survive resize"
         );
 
-        // Verify ordering
+        // Verify ordering and no duplicates
         let mut prev_num: Option<u32> = None;
         for line in &sb {
             if let Some(pos) = line.find("Line ") {
@@ -3638,5 +3674,38 @@ mod tests {
         let vis = visible_lines(client.screen());
         assert_eq!(vis[0], "Line A");
         assert_eq!(vis[1], "Line B");
+    }
+
+    /// Replay a real captured session (13 resize events) through the same
+    /// path the TUI and web terminal use: `replay()` → client vt100 parser
+    /// → read cells. Before the fix, scrollback_trim was not applied,
+    /// causing duplicate content from SIGWINCH redraws.
+    #[test]
+    fn test_resize_dedup_golden_recording() {
+        let fixture =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/resize_dedup.vtr");
+        let recording = VtRecording::from_file(&fixture).unwrap();
+        let mut vt = recording.replay(64 * 1024);
+
+        // Use the real client rendering path: replay() bytes → client parser
+        let state = vt.debug_state();
+        let (server_rows, server_cols) = state.screen_size;
+        let mut client = vt100::Parser::new(server_rows, server_cols, 10_000);
+        client.process(&vt.replay(server_rows));
+
+        // Read all content exactly as the TUI/web terminal would see it
+        let sb = scrollback_lines(&mut client, server_cols);
+        let vis = visible_lines(client.screen());
+        let all_lines: Vec<&str> = sb.iter().chain(vis.iter()).map(|s| s.as_str()).collect();
+
+        // Should contain the Claude Code banner exactly once
+        let banner_count = all_lines
+            .iter()
+            .filter(|l| l.contains("Claude Code"))
+            .count();
+        assert_eq!(banner_count, 1, "banner should appear exactly once");
+
+        // Snapshot the full rendered output for regression detection
+        insta::assert_snapshot!(all_lines.join("\n"));
     }
 }
