@@ -1,6 +1,5 @@
 ---
 source: packages/virtual_terminal/src/lib.rs
-assertion_line: 3710
 expression: "all_lines.join(\"\\n\")"
 ---
 
@@ -104,4 +103,4 @@ expression: "all_lines.join(\"\\n\")"
 ───────────────────────────────────────────────────────────────────────────
 ❯
 ───────────────────────────────────────────────────────────────────────────
-  ⚡ clash disabled
+  ⚡clash disabled
