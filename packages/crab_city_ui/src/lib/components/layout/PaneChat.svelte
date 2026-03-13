@@ -1,5 +1,11 @@
 <script lang="ts">
 	import ChatPanel from '../ChatPanel.svelte';
+
+	interface Props {
+		scope: 'global' | string;
+	}
+
+	let { scope }: Props = $props();
 </script>
 
 <div class="pane-chat">

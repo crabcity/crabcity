@@ -9,7 +9,6 @@
 	import ChannelChange from '$lib/components/ChannelChange.svelte';
 	import ServerShutdownModal from '$lib/components/ServerShutdownModal.svelte';
 	import ToastStack from '$lib/components/ToastStack.svelte';
-	import { sidebarOpen, closeSidebar, isDesktop } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen, closeExplorer } from '$lib/stores/files';
 	import { isChatOpen, closeChat, toggleChat, composeOpen, closeCompose, selectionMode, exitSelectionMode } from '$lib/stores/chat';
 	import { isTaskPanelOpen, closeTaskPanel, toggleTaskPanel } from '$lib/stores/tasks';
@@ -45,10 +44,6 @@
 
 
 
-	function handleOverlayClick() {
-		closeSidebar();
-	}
-
 	function handleKeydown(e: KeyboardEvent) {
 		// Cmd/Ctrl+Shift+L toggles theme
 		if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'L') {
@@ -71,8 +66,6 @@
 				closeTaskPanel();
 			} else if ($isExplorerOpen) {
 				closeExplorer();
-			} else if ($sidebarOpen) {
-				closeSidebar();
 			}
 		}
 		// Ctrl+Arrow moves focus between panes
@@ -158,17 +151,8 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="app-container">
-	<!-- Mobile overlay -->
-	{#if $sidebarOpen && !$isDesktop}
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="sidebar-overlay" onclick={handleOverlayClick}></div>
-	{/if}
-
-	<!-- Sidebar: visible on desktop, slide-out on mobile -->
-	<div class="sidebar-wrapper" class:open={$sidebarOpen} class:desktop={$isDesktop}>
-		<Sidebar />
-	</div>
+	<!-- Project rail sidebar — always visible -->
+	<Sidebar />
 
 	<MainView />
 
@@ -200,61 +184,9 @@
 	.app-container {
 		display: flex;
 		height: 100vh;
-		height: 100dvh; /* Dynamic viewport height for mobile browsers */
+		height: 100dvh;
 		width: 100vw;
 		overflow: hidden;
 		position: relative;
-	}
-
-	/* Mobile overlay when sidebar is open */
-	.sidebar-overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(2px);
-		z-index: 40;
-		animation: fade-in 0.2s ease;
-	}
-
-	@keyframes fade-in {
-		from { opacity: 0; }
-		to { opacity: 1; }
-	}
-
-	/* Sidebar wrapper - handles responsive positioning */
-	.sidebar-wrapper {
-		position: fixed;
-		top: 0;
-		left: 0;
-		bottom: 0;
-		width: var(--sidebar-width);
-		z-index: 50;
-		transform: translateX(-100%);
-		transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-		will-change: transform;
-	}
-
-	.sidebar-wrapper.open {
-		transform: translateX(0);
-	}
-
-	/* Desktop: sidebar is always visible and in flow */
-	.sidebar-wrapper.desktop {
-		position: relative;
-		transform: none;
-		flex-shrink: 0;
-	}
-
-	/* Responsive breakpoints */
-	@media (min-width: 1024px) {
-		.sidebar-wrapper {
-			position: relative;
-			transform: none;
-			flex-shrink: 0;
-		}
-
-		.sidebar-overlay {
-			display: none;
-		}
 	}
 </style>

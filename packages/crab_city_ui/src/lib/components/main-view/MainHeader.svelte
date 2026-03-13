@@ -1,61 +1,37 @@
 <script lang="ts">
-	import { currentInstance, currentInstanceId, isClaudeInstance, showTerminal, setTerminalMode, setCustomName } from '$lib/stores/instances';
-	import { sendRefresh, connectionStatus, instancePresence } from '$lib/stores/websocket';
-	import { currentTerminalLock } from '$lib/stores/terminalLock';
-	import { isActive, isStarting, isThinking, isToolExecuting, currentTool } from '$lib/stores/claude';
-	import { currentVerb, baudRate, activityLevel } from '$lib/stores/activity';
-	import { openSidebar, isDesktop, isMobile } from '$lib/stores/ui';
+	import { currentInstanceId, instanceList, createInstance, selectInstance } from '$lib/stores/instances';
+	import { connectionStatus } from '$lib/stores/websocket';
+	import { currentProject, projects } from '$lib/stores/projects';
+	import { getStateInfo } from '$lib/utils/instance-state';
+	import { isMobile, isDesktop } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
-	import { paneCount, splitPane, layoutState, applyPreset, resetLayout } from '$lib/stores/layout';
+	import { defaultCommand } from '$lib/stores/settings';
+	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
 	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
+	import { sendRefresh } from '$lib/stores/websocket';
+	import { activityLevel } from '$lib/stores/activity';
+	import InstanceChip from './InstanceChip.svelte';
 
-	let editingName = $state(false);
-	let editNameValue = $state('');
-
-	function startEditingName() {
-		if (!$currentInstance) return;
-		editNameValue = $currentInstance.custom_name ?? $currentInstance.name;
-		editingName = true;
-	}
-
-	function commitNameEdit() {
-		if (!editingName || !$currentInstance) return;
-		const trimmed = editNameValue.trim();
-		const newName = (!trimmed || trimmed === $currentInstance.name) ? null : trimmed;
-		setCustomName($currentInstance.id, newName);
-		editingName = false;
-	}
-
-	function handleNameKeydown(event: KeyboardEvent) {
-		if (event.key === 'Enter') {
-			event.preventDefault();
-			commitNameEdit();
-		} else if (event.key === 'Escape') {
-			event.preventDefault();
-			editingName = false;
-		}
-	}
-
-	let presence = $derived($currentInstanceId ? $instancePresence.get($currentInstanceId) ?? [] : []);
+	const isMultiPane = $derived($paneCount > 1);
 
 	function getStatusColor(status: string): string {
 		switch (status) {
-			case 'connected': return '#10b981';
-			case 'connecting': case 'reconnecting': return '#f59e0b';
-			case 'error': case 'server_gone': return '#ef4444';
-			default: return '#6b7280';
+			case 'connected': return 'var(--status-green)';
+			case 'connecting': case 'reconnecting': return 'var(--amber-500)';
+			case 'error': case 'server_gone': return 'var(--status-red)';
+			default: return 'var(--text-muted)';
 		}
 	}
 
 	function getStatusText(status: string): string {
 		switch (status) {
-			case 'connected': return 'Link Active';
-			case 'connecting': return 'Connecting...';
-			case 'reconnecting': return 'Signal Lost';
-			case 'server_gone': return 'Server Offline';
-			case 'error': return 'Signal Lost';
+			case 'connected': return 'Online';
+			case 'connecting': return 'Connecting';
+			case 'reconnecting': return 'Reconnecting';
+			case 'server_gone': return 'Offline';
+			case 'error': return 'Error';
 			default: return 'No Signal';
 		}
 	}
@@ -72,45 +48,62 @@
 		prevConnectionStatus = status;
 	});
 
-	$effect(() => {
-		$currentInstanceId;
-		editingName = false;
-	});
-
-	function toggleTerminal() {
-		setTerminalMode(!$showTerminal);
+	/** Focus the first pane showing this instance, or bind the focused pane to it */
+	function handleChipClick(instanceId: string) {
+		const state = $layoutState;
+		// Try to find a pane already showing this instance
+		for (const [paneId, pane] of state.panes) {
+			const paneInstId = getPaneInstanceId(pane.content);
+			if (paneInstId === instanceId) {
+				focusPane(paneId);
+				selectInstance(instanceId, false);
+				return;
+			}
+		}
+		// No pane shows this instance — bind focused pane to it
+		const focusedId = state.focusedPaneId;
+		const focusedPane = state.panes.get(focusedId);
+		if (focusedPane && 'instanceId' in focusedPane.content) {
+			setPaneContent(focusedId, { ...focusedPane.content, instanceId });
+		}
+		selectInstance(instanceId, false);
 	}
 
-	const isMultiPane = $derived($paneCount > 1);
+	let isCreating = $state(false);
 
-	/** In multi-pane mode, open a panel type as a new split pane instead of an overlay */
+	async function handleCreateInstance() {
+		if (isCreating) return;
+		isCreating = true;
+		const result = await createInstance({
+			command: $defaultCommand,
+			working_dir: $currentProject?.workingDir
+		});
+		if (result) {
+			selectInstance(result.id);
+		}
+		isCreating = false;
+	}
+
+	/** In multi-pane mode, open a panel type as a new split pane */
 	function openAsSplit(kind: PaneContentKind) {
 		const focusedId = $layoutState.focusedPaneId;
-		splitPane(focusedId, 'vertical', { kind });
+		const instanceId = getPaneInstanceId($layoutState.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null }) ?? $currentInstanceId;
+		splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId));
 	}
 
 	function handleFilesClick() {
-		if (isMultiPane) {
-			openAsSplit('file-explorer');
-		} else {
-			toggleExplorer();
-		}
+		if (isMultiPane) openAsSplit('file-explorer');
+		else toggleExplorer();
 	}
 
 	function handleTasksClick() {
-		if (isMultiPane) {
-			openAsSplit('tasks');
-		} else {
-			toggleTaskPanel();
-		}
+		if (isMultiPane) openAsSplit('tasks');
+		else toggleTaskPanel();
 	}
 
 	function handleChatClick() {
-		if (isMultiPane) {
-			openAsSplit('chat');
-		} else {
-			toggleChat();
-		}
+		if (isMultiPane) openAsSplit('chat');
+		else toggleChat();
 	}
 
 	let showPresetMenu = $state(false);
@@ -125,92 +118,64 @@
 	}
 
 	function handlePresetMenuBlur() {
-		// Delay to allow click on menu items
 		setTimeout(() => { showPresetMenu = false; }, 150);
 	}
+
+	// Instance fleet for the current project
+	const fleetInstances = $derived($currentProject?.instances ?? $instanceList);
 </script>
 
 <header class="main-header">
-	{#if !$isDesktop}
-		<button class="menu-btn" onclick={openSidebar} aria-label="Open menu">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M4 6h16M4 12h16M4 18h16" />
-			</svg>
-		</button>
-	{/if}
-
-	<div class="header-info">
-		{#if editingName}
-			<!-- svelte-ignore a11y_autofocus -->
-			<input
-				class="instance-name-input"
-				type="text"
-				bind:value={editNameValue}
-				onblur={commitNameEdit}
-				onkeydown={handleNameKeydown}
-				autofocus
-			/>
+	<!-- Left: Project identity + connection status -->
+	<div class="header-project">
+		{#if $currentProject}
+			<span class="project-name">{$currentProject.name}</span>
+			{#if $projects.length > 1}
+				<span class="project-count">{$projects.length} projects</span>
+			{/if}
 		{:else}
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<h2 class="instance-name" ondblclick={startEditingName}>{$currentInstance?.custom_name ?? $currentInstance?.name}</h2>
+			<span class="project-name">Crab City</span>
 		{/if}
 		<span
-			class="connection-status"
-			class:signal-lost={$connectionStatus === 'error' || $connectionStatus === 'reconnecting' || $connectionStatus === 'disconnected' || $connectionStatus === 'server_gone'}
-			class:server-offline={$connectionStatus === 'server_gone'}
+			class="connection-dot"
+			class:signal-lost={$connectionStatus === 'error' || $connectionStatus === 'reconnecting' || $connectionStatus === 'server_gone'}
 			class:signal-restored={showRestored}
-			style="color: {getStatusColor($connectionStatus)}"
-		>
-			{showRestored ? 'Link Restored' : getStatusText($connectionStatus)}
-		</span>
-		{#if presence.length > 1}
-			<span class="presence-bar">
-				{#each presence as user}
-					<span class="presence-user" class:has-lock={$currentTerminalLock?.holder?.user_id === user.user_id}>
-						{#if $currentTerminalLock?.holder?.user_id === user.user_id}
-							<svg class="lock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-								<rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-								<path d="M7 11V7a5 5 0 0110 0v4" />
-							</svg>
-						{/if}
-						{user.display_name}
-					</span>
-				{/each}
-			</span>
-		{/if}
+			style="background: {getStatusColor($connectionStatus)}"
+			title={showRestored ? 'Link Restored' : getStatusText($connectionStatus)}
+		></span>
 	</div>
 
-	{#if ($isActive || $isStarting) && $isClaudeInstance}
-		<div class="baud-panel" class:thinking={$isThinking} class:tool={$isToolExecuting} class:starting={$isStarting} class:compact={!$isDesktop}>
-			<div class="panel-scanline"></div>
-			<div class="panel-led" class:pulse={$activityLevel > 0 || $isStarting}></div>
-			{#if $isDesktop}
-				<span class="panel-label">
-					{#if $isStarting}
-						BOOT
-					{:else if $isToolExecuting && $currentTool}
-						{$currentTool.toUpperCase().slice(0, 8)}
-					{:else}
-						{$currentVerb.toUpperCase()}
-					{/if}
-				</span>
+	<!-- Center: Instance fleet chips -->
+	<div class="header-fleet">
+		{#if fleetInstances.length === 0}
+			<span class="fleet-empty">No instances</span>
+		{:else}
+			{#each fleetInstances as instance (instance.id)}
+				{@const stateInfo = getStateInfo(instance.id, instance.claude_state, instance.claude_state_stale)}
+				<InstanceChip
+					{instance}
+					isFocused={$currentInstanceId === instance.id}
+					{stateInfo}
+					onclick={() => handleChipClick(instance.id)}
+				/>
+			{/each}
+		{/if}
+		<button
+			class="fleet-add"
+			onclick={handleCreateInstance}
+			disabled={isCreating}
+			title="New instance"
+			aria-label="Create new instance"
+		>
+			{#if isCreating}
+				<span class="mini-spinner"></span>
+			{:else}
+				+
 			{/if}
-			<div class="panel-meter">
-				{#each Array($isMobile ? 5 : 10) as _, i}
-					<div
-						class="panel-bar"
-						class:active={$isStarting ? i < ($isMobile ? 2 : 3) : $activityLevel > i / ($isMobile ? 5 : 10)}
-						class:hot={i >= ($isMobile ? 3 : 7)}
-						class:warn={i >= ($isMobile ? 2 : 4) && i < ($isMobile ? 3 : 7)}
-					></div>
-				{/each}
-			</div>
-			{#if !$isMobile}
-				<span class="panel-rate">{$isStarting ? 'INIT' : $baudRate.toString().padStart(4, '0')}</span>
-			{/if}
-		</div>
-	{/if}
+		</button>
+	</div>
 
+	<!-- Right: Actions -->
 	<div class="header-actions">
 		<div class="preset-wrapper">
 			<button
@@ -263,40 +228,25 @@
 			class="action-btn icon-only-mobile"
 			class:active={!isMultiPane && $isExplorerOpen}
 			onclick={handleFilesClick}
-			title="Files (⌘E)"
+			title="Files"
 			aria-label="Toggle file explorer"
-			aria-pressed={!isMultiPane && $isExplorerOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
 			</svg>
 			<span class="btn-label">Files</span>
 		</button>
-		<button class="action-btn icon-only-mobile" onclick={sendRefresh} title="Refresh" aria-label="Refresh conversation">
+		<button class="action-btn icon-only-mobile" onclick={sendRefresh} title="Refresh" aria-label="Refresh">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
 			</svg>
 		</button>
 		<button
-			class="action-btn icon-only-mobile"
-			class:active={$showTerminal}
-			onclick={toggleTerminal}
-			title="Toggle terminal"
-			aria-label="Toggle terminal view"
-			aria-pressed={$showTerminal}
-		>
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M4 17l6-6-6-6M12 19h8" />
-			</svg>
-			<span class="btn-label">Terminal</span>
-		</button>
-		<button
 			class="action-btn icon-only-mobile tasks-btn"
 			class:active={!isMultiPane && $isTaskPanelOpen}
 			onclick={handleTasksClick}
-			title="Tasks (Q)"
+			title="Tasks"
 			aria-label="Toggle task panel"
-			aria-pressed={!isMultiPane && $isTaskPanelOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -310,9 +260,8 @@
 			class="action-btn icon-only-mobile chat-btn"
 			class:active={!isMultiPane && $isChatOpen}
 			onclick={handleChatClick}
-			title="Chat (C)"
+			title="Chat"
 			aria-label="Toggle chat panel"
-			aria-pressed={!isMultiPane && $isChatOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -329,170 +278,143 @@
 	.main-header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
-		padding: 12px 16px;
+		gap: 12px;
+		padding: 6px 12px;
 		background: linear-gradient(180deg, var(--surface-600) 0%, var(--surface-700) 100%);
 		border-bottom: 1px solid var(--surface-border);
 		flex-shrink: 0;
 		box-shadow: var(--elevation-low);
+		min-height: 40px;
 	}
 
-	.menu-btn {
+	/* Left: Project identity */
+	.header-project {
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 40px;
-		height: 40px;
-		background: transparent;
-		border: 1px solid var(--surface-border);
-		border-radius: 4px;
-		color: var(--text-secondary);
-		cursor: pointer;
-		transition: all 0.15s ease;
+		gap: 6px;
 		flex-shrink: 0;
 	}
 
-	.menu-btn:hover, .menu-btn:active {
+	.project-name {
+		font-size: 12px;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		color: var(--amber-400);
+		text-shadow: var(--emphasis-strong);
+		text-transform: uppercase;
+		font-family: var(--font-display);
+	}
+
+	.project-count {
+		font-size: 9px;
+		color: var(--text-muted);
+		letter-spacing: 0.05em;
+	}
+
+	.connection-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.connection-dot.signal-lost:not(.signal-restored) {
+		animation: dot-blink 1.5s ease-in-out infinite;
+	}
+
+	.connection-dot.signal-restored {
+		animation: dot-flash 0.5s ease-out;
+	}
+
+	@keyframes dot-blink {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+
+	@keyframes dot-flash {
+		0% { box-shadow: 0 0 8px currentColor; }
+		100% { box-shadow: none; }
+	}
+
+	/* Center: Fleet */
+	.header-fleet {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: 1;
+		min-width: 0;
+		overflow-x: auto;
+		padding: 2px 0;
+	}
+
+	.header-fleet::-webkit-scrollbar { height: 0; }
+
+	.fleet-empty {
+		font-size: 10px;
+		color: var(--text-muted);
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+	}
+
+	.fleet-add {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		background: var(--surface-600);
+		border: 1px dashed var(--surface-border);
+		border-radius: 3px;
+		color: var(--text-muted);
+		font-size: 14px;
+		font-family: inherit;
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: all 0.15s ease;
+	}
+
+	.fleet-add:hover:not(:disabled) {
 		border-color: var(--amber-600);
 		color: var(--amber-400);
 		background: var(--tint-active);
 	}
 
-	.menu-btn svg {
-		width: 20px;
-		height: 20px;
-	}
+	.fleet-add:disabled { opacity: 0.5; cursor: not-allowed; }
 
-	.header-info {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex: 1;
-		min-width: 0;
-	}
-
-	.instance-name {
-		margin: 0;
-		font-size: 13px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		color: var(--amber-400);
-		text-shadow: var(--emphasis-strong);
-		transition: text-shadow 0.8s ease;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		cursor: default;
-		font-family: var(--font-display);
-	}
-
-	.instance-name-input {
-		margin: 0;
-		font-size: 13px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		font-family: inherit;
-		color: var(--amber-400);
-		background: var(--surface-600);
-		border: 1px solid var(--amber-600);
-		border-radius: 2px;
-		padding: 2px 6px;
-		outline: none;
-		min-width: 120px;
-		max-width: 300px;
-	}
-
-	.connection-status {
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		flex-shrink: 0;
-		transition: all 0.3s ease;
-		font-family: var(--font-mono);
-	}
-
-	.connection-status.signal-lost:not(.server-offline) {
-		animation: signal-pulse 1.5s ease-in-out infinite;
-	}
-
-	/* Server offline: steady red, no pulsing — this isn't transient */
-	.connection-status.server-offline {
-		animation: none;
-	}
-
-	@keyframes signal-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
-	}
-
-	.connection-status.signal-restored {
-		color: var(--status-green) !important;
-		text-shadow: var(--emphasis);
-		animation: signal-restore-flash 0.5s ease-out;
-	}
-
-	@keyframes signal-restore-flash {
-		0% { filter: brightness(3); }
-		100% { filter: brightness(1); }
-	}
-
-	.presence-bar {
-		display: flex;
-		gap: 6px;
-		align-items: center;
-		flex-shrink: 0;
-	}
-
-	.presence-user {
-		font-size: 10px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		color: var(--text-secondary);
-		background: var(--tint-active-strong);
-		border: 1px solid var(--tint-focus);
-		border-radius: 3px;
-		padding: 2px 6px;
-		display: flex;
-		align-items: center;
-		gap: 3px;
-	}
-
-	.presence-user.has-lock {
-		border-color: var(--status-green-border);
-		background: var(--status-green-tint);
-	}
-
-	.lock-icon {
+	.mini-spinner {
 		width: 10px;
 		height: 10px;
-		flex-shrink: 0;
-		color: var(--status-green-text);
+		border: 1.5px solid var(--surface-border);
+		border-top-color: var(--amber-500);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
 	}
 
+	@keyframes spin { to { transform: rotate(360deg); } }
+
+	/* Right: Actions */
 	.header-actions {
 		display: flex;
-		gap: 8px;
+		gap: 6px;
 		flex-shrink: 0;
 	}
 
 	.action-btn {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 8px 14px;
+		gap: 4px;
+		padding: 5px 10px;
 		background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
 		border: 1px solid var(--surface-border);
-		border-radius: 4px;
+		border-radius: 3px;
 		color: var(--text-secondary);
-		font-size: 11px;
+		font-size: 10px;
 		font-weight: 600;
 		font-family: inherit;
 		letter-spacing: 0.05em;
 		cursor: pointer;
 		transition: all 0.15s ease;
-		min-height: 40px;
+		min-height: 28px;
 	}
 
 	.action-btn:hover {
@@ -510,55 +432,33 @@
 	}
 
 	.action-btn svg {
-		width: 14px;
-		height: 14px;
+		width: 12px;
+		height: 12px;
 		flex-shrink: 0;
 	}
 
-	.btn-label {
-		display: inline;
-	}
+	.btn-label { display: inline; }
 
-	.tasks-btn {
-		position: relative;
-	}
+	.tasks-btn, .chat-btn { position: relative; }
 
-	.tasks-badge {
+	.tasks-badge, .chat-badge {
 		position: absolute;
-		top: 2px;
-		right: 2px;
-		min-width: 16px;
-		height: 16px;
-		padding: 0 4px;
-		font-size: 9px;
+		top: 0;
+		right: 0;
+		min-width: 14px;
+		height: 14px;
+		padding: 0 3px;
+		font-size: 8px;
 		font-weight: 700;
-		line-height: 16px;
+		line-height: 14px;
 		text-align: center;
-		border-radius: 8px;
+		border-radius: 7px;
 		background: var(--amber-500);
 		color: var(--surface-900);
 		box-shadow: var(--elevation-low);
-	}
-
-	.chat-btn {
-		position: relative;
 	}
 
 	.chat-badge {
-		position: absolute;
-		top: 2px;
-		right: 2px;
-		min-width: 16px;
-		height: 16px;
-		padding: 0 4px;
-		font-size: 9px;
-		font-weight: 700;
-		line-height: 16px;
-		text-align: center;
-		border-radius: 8px;
-		background: var(--amber-500);
-		color: var(--surface-900);
-		box-shadow: var(--elevation-low);
 		animation: badge-pulse 2s ease-in-out infinite;
 	}
 
@@ -567,27 +467,20 @@
 		50% { box-shadow: var(--elevation-high); }
 	}
 
+	/* Mobile */
 	@media (max-width: 639px) {
 		.main-header {
-			padding: 10px 12px;
+			padding: 4px 8px;
 			gap: 6px;
 		}
 
-		.header-info {
-			gap: 8px;
-		}
-
-		.instance-name {
-			font-size: 12px;
-		}
-
-		.connection-status {
+		.header-project {
 			display: none;
 		}
 
 		.action-btn.icon-only-mobile {
-			padding: 8px;
-			min-width: 40px;
+			padding: 5px;
+			min-width: 28px;
 			justify-content: center;
 		}
 
@@ -595,301 +488,21 @@
 			display: none;
 		}
 
-		.header-actions {
-			gap: 6px;
-		}
+		.header-actions { gap: 4px; }
 	}
 
 	@media (min-width: 640px) and (max-width: 1023px) {
-		.instance-name {
-			max-width: 150px;
-		}
-	}
-
-	.baud-panel {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 6px 14px;
-		background: linear-gradient(180deg, var(--surface-600) 0%, var(--surface-700) 100%);
-		border: 1px solid var(--surface-border);
-		border-radius: 4px;
-		font-family: var(--font-mono);
-		overflow: hidden;
-		box-shadow: var(--depth-up);
-	}
-
-	.baud-panel::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: var(--texture-overlay);
-		opacity: var(--texture-opacity);
-		pointer-events: none;
-		z-index: 10;
-	}
-
-	.panel-scanline {
-		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
-		height: 2px;
-		background: linear-gradient(90deg, transparent, var(--amber-500), transparent);
-		opacity: var(--texture-opacity);
-		animation: panel-scan 1.5s linear infinite;
-		z-index: 5;
-	}
-
-	@keyframes panel-scan {
-		0% { top: 0; opacity: 1; }
-		100% { top: 100%; opacity: 0.3; }
-	}
-
-	.baud-panel.starting {
-		border-color: var(--surface-border);
-		box-shadow: var(--depth-up);
-	}
-
-	.baud-panel.starting .panel-scanline {
-		background: linear-gradient(90deg, transparent, var(--amber-500), transparent);
-		animation: panel-scan 3s linear infinite;
-	}
-
-	.baud-panel.starting .panel-led {
-		animation: led-boot-pulse 2s ease-in-out infinite;
-	}
-
-	@keyframes led-boot-pulse {
-		0%, 100% { opacity: 0.3; }
-		50% { opacity: 1; box-shadow: 0 0 6px var(--amber-500); }
-	}
-
-	.baud-panel.starting .panel-bar.active {
-		animation: bar-boot-pulse 2s ease-in-out infinite;
-	}
-
-	@keyframes bar-boot-pulse {
-		0%, 100% { opacity: 0.4; }
-		50% { opacity: 1; }
-	}
-
-	.baud-panel.starting .panel-rate {
-		color: var(--text-secondary);
-		font-size: 10px;
-		letter-spacing: 0.08em;
-	}
-
-	.baud-panel.thinking {
-		border-color: var(--surface-border);
-		box-shadow: var(--depth-up);
-	}
-
-	.baud-panel.thinking .panel-scanline {
-		background: linear-gradient(90deg, transparent, var(--purple-500), transparent);
-	}
-
-	.baud-panel.thinking .panel-led {
-		background: var(--purple-500);
-		box-shadow: var(--elevation-low);
-	}
-
-	.baud-panel.thinking .panel-label {
-		color: var(--purple-400);
-	}
-
-	.baud-panel.thinking .panel-rate {
-		color: var(--text-primary);
-		text-shadow: var(--emphasis);
-	}
-
-	.baud-panel.thinking .panel-bar.active {
-		background: var(--purple-500);
-		box-shadow: var(--elevation-low);
-	}
-
-	.panel-led {
-		width: 6px;
-		height: 6px;
-		background: var(--amber-500);
-		border-radius: 50%;
-		box-shadow: var(--elevation-low);
-		flex-shrink: 0;
-	}
-
-	.panel-led.pulse {
-		animation: led-glow 0.4s ease-in-out infinite alternate;
-	}
-
-	@keyframes led-glow {
-		0% { opacity: 0.5; }
-		100% { opacity: 1; box-shadow: 0 0 8px currentColor, 0 0 16px currentColor; }
-	}
-
-	.panel-label {
-		font-size: 10px;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		color: var(--amber-500);
-		text-shadow: var(--emphasis);
-		min-width: 50px;
-	}
-
-	.panel-meter {
-		display: flex;
-		gap: 2px;
-	}
-
-	.panel-bar {
-		width: 6px;
-		height: 16px;
-		background: var(--surface-500);
-		border: 1px solid var(--surface-border);
-		border-radius: 1px;
-		transition: all 0.06s ease;
-	}
-
-	.panel-bar.active {
-		background: var(--amber-500);
-		box-shadow: var(--elevation-low);
-		border-color: var(--amber-500);
-	}
-
-	.panel-bar.active.warn {
-		background: var(--status-yellow);
-		box-shadow: var(--elevation-low);
-		border-color: var(--status-yellow);
-	}
-
-	.panel-bar.active.hot {
-		background: var(--status-red);
-		box-shadow: var(--elevation-low);
-		border-color: var(--status-red);
-		animation: bar-flash 0.1s ease infinite;
-	}
-
-	@keyframes bar-flash {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.7; }
-	}
-
-	.panel-rate {
-		font-size: 12px;
-		font-weight: 700;
-		color: var(--amber-400);
-		text-shadow: var(--emphasis);
-		font-variant-numeric: tabular-nums;
-		min-width: 36px;
-		text-align: right;
-	}
-
-	.baud-panel.compact {
-		padding: 4px 10px;
-		gap: 6px;
-	}
-
-	.baud-panel.compact .panel-bar {
-		width: 5px;
-		height: 12px;
-	}
-
-	@media (max-width: 639px) {
-		.baud-panel {
+		.action-btn.icon-only-mobile .btn-label {
 			display: none;
 		}
-	}
 
-	@media (min-width: 640px) and (max-width: 1023px) {
-		.baud-panel {
-			padding: 4px 10px;
-			gap: 6px;
-		}
-
-		.panel-label {
-			font-size: 9px;
-			min-width: 40px;
-		}
-
-		.panel-bar {
-			width: 5px;
-			height: 12px;
-		}
-
-		.panel-rate {
-			font-size: 10px;
-			min-width: 28px;
+		.action-btn.icon-only-mobile {
+			padding: 5px 8px;
 		}
 	}
 
-	:global([data-theme="analog"]) .main-header {
-		background-color: var(--surface-800);
-		background-image: var(--grain-fine), var(--grain-coarse), var(--ink-wash);
-		background-blend-mode: multiply, multiply, normal;
-		border-bottom-width: 2px;
-	}
-
-	:global([data-theme="analog"]) .baud-panel::before {
-		display: none;
-	}
-
-	:global([data-theme="analog"]) .panel-scanline {
-		display: none;
-	}
-
-	:global([data-theme="analog"]) .baud-panel {
-		background-color: var(--surface-700);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-		border-width: 2px;
-	}
-
-	:global([data-theme="analog"]) .panel-label {
-		font-family: 'Source Serif 4', Georgia, serif;
-		font-style: italic;
-		font-weight: 600;
-		letter-spacing: 0;
-		text-transform: lowercase;
-		color: var(--text-secondary);
-	}
-
-	:global([data-theme="analog"]) .panel-bar.active.hot {
-		animation: none;
-	}
-
-	:global([data-theme="analog"]) .action-btn {
-		background-color: var(--surface-600);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-		border-width: 1.5px;
-		box-shadow: var(--elevation-low);
-	}
-
-	:global([data-theme="analog"]) .action-btn:hover {
-		background-color: var(--surface-500);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-	}
-
-	:global([data-theme="analog"]) .action-btn.active {
-		background-color: var(--tint-active-strong);
-		background-image: var(--grain-fine), var(--ink-wash);
-		background-blend-mode: multiply, normal;
-		border-width: 2px;
-		box-shadow:
-			var(--elevation-low),
-			inset 0 1px 3px rgba(42, 31, 24, 0.06);
-	}
-
-	:global([data-theme="analog"]) .chat-badge {
-		animation: none;
-		box-shadow: 0 0 2px rgba(42, 31, 24, 0.2);
-	}
-
-	/* Layout preset menu */
-	.preset-wrapper {
-		position: relative;
-	}
+	/* Preset menu */
+	.preset-wrapper { position: relative; }
 
 	.preset-menu {
 		position: absolute;
@@ -929,18 +542,9 @@
 		text-align: left;
 	}
 
-	.preset-item:hover {
-		background: var(--tint-active-strong);
-		color: var(--amber-400);
-	}
-
-	.preset-item.reset {
-		color: var(--text-muted);
-	}
-
-	.preset-item.reset:hover {
-		color: var(--text-primary);
-	}
+	.preset-item:hover { background: var(--tint-active-strong); color: var(--amber-400); }
+	.preset-item.reset { color: var(--text-muted); }
+	.preset-item.reset:hover { color: var(--text-primary); }
 
 	.preset-icon {
 		display: flex;
@@ -951,14 +555,45 @@
 		flex-shrink: 0;
 	}
 
-	.preset-icon svg {
-		width: 14px;
-		height: 14px;
-	}
+	.preset-icon svg { width: 14px; height: 14px; }
 
 	.preset-divider {
 		height: 1px;
 		margin: 4px 0;
 		background: var(--surface-border);
+	}
+
+	/* Analog theme */
+	:global([data-theme="analog"]) .main-header {
+		background-color: var(--surface-800);
+		background-image: var(--grain-fine), var(--grain-coarse), var(--ink-wash);
+		background-blend-mode: multiply, multiply, normal;
+		border-bottom-width: 2px;
+	}
+
+	:global([data-theme="analog"]) .action-btn {
+		background-color: var(--surface-600);
+		background-image: var(--grain-fine);
+		background-blend-mode: multiply;
+		border-width: 1.5px;
+		box-shadow: var(--elevation-low);
+	}
+
+	:global([data-theme="analog"]) .action-btn:hover {
+		background-color: var(--surface-500);
+		background-image: var(--grain-fine);
+		background-blend-mode: multiply;
+	}
+
+	:global([data-theme="analog"]) .action-btn.active {
+		background-color: var(--tint-active-strong);
+		background-image: var(--grain-fine), var(--ink-wash);
+		background-blend-mode: multiply, normal;
+		border-width: 2px;
+	}
+
+	:global([data-theme="analog"]) .chat-badge {
+		animation: none;
+		box-shadow: 0 0 2px rgba(42, 31, 24, 0.2);
 	}
 </style>
