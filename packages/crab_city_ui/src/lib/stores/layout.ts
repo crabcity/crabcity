@@ -256,9 +256,14 @@ export function splitPane(
 		const newPaneId = genPaneId();
 		const splitId = genSplitId();
 
+		const clonedContent = newContent ?? structuredClone(sourcePane.content);
+		if (clonedContent.kind === 'terminal' && !newContent) {
+			clonedContent.instanceId = null;
+		}
+
 		const newPane: PaneState = {
 			id: newPaneId,
-			content: newContent ?? structuredClone(sourcePane.content)
+			content: clonedContent
 		};
 
 		const splitNode: SplitNode = {
@@ -731,7 +736,7 @@ export function applyPreset(preset: LayoutPreset): void {
 			},
 			panes: new Map([
 				[convId, { id: convId, content: { kind: 'conversation', instanceId } as PaneContent }],
-				[termId, { id: termId, content: { kind: 'terminal', instanceId } as PaneContent }]
+				[termId, { id: termId, content: { kind: 'terminal', instanceId: null } as PaneContent }]
 			]),
 			focusedPaneId: convId
 		});
@@ -739,7 +744,7 @@ export function applyPreset(preset: LayoutPreset): void {
 	}
 
 	if (preset === 'side-by-side') {
-		// Terminal A (50%) | Terminal B (50%)
+		// Conversation A (50%) | Conversation B (50%)
 		const leftId = genPaneId();
 		const rightId = genPaneId();
 		const splitId = genSplitId();
@@ -755,8 +760,8 @@ export function applyPreset(preset: LayoutPreset): void {
 				]
 			},
 			panes: new Map([
-				[leftId, { id: leftId, content: { kind: 'terminal', instanceId } as PaneContent }],
-				[rightId, { id: rightId, content: { kind: 'terminal', instanceId } as PaneContent }]
+				[leftId, { id: leftId, content: { kind: 'conversation', instanceId } as PaneContent }],
+				[rightId, { id: rightId, content: { kind: 'conversation', instanceId } as PaneContent }]
 			]),
 			focusedPaneId: leftId
 		});

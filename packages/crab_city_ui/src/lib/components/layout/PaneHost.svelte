@@ -9,7 +9,7 @@
 	import PaneGit from './PaneGit.svelte';
 	import PaneChrome from './PaneChrome.svelte';
 	import PaneLanding from './PaneLanding.svelte';
-	import { instances } from '$lib/stores/instances';
+	import PaneInstancePicker from './PaneInstancePicker.svelte';
 
 	interface Props {
 		paneId: string;
@@ -21,16 +21,13 @@
 	const isFocused = $derived($layoutState.focusedPaneId === paneId);
 	const showChrome = $derived($paneCount > 1);
 
-	// Resolve effective content kind.
-	// When kind is 'conversation' but instance is not Claude, fall back to terminal.
-	const effectiveKind = $derived.by(() => {
-		if (!pane) return 'terminal';
-		const content = pane.content;
-		if (content.kind === 'conversation' && content.instanceId) {
-			const inst = $instances.get(content.instanceId);
-			if (inst && !inst.command.includes('claude')) return 'terminal';
-		}
-		return content.kind;
+	// Pane kinds that require an instanceId to render content
+	const INSTANCE_KINDS = new Set(['terminal', 'conversation', 'file-explorer', 'tasks', 'git']);
+
+	const needsInstancePicker = $derived.by(() => {
+		if (!pane) return false;
+		if (!INSTANCE_KINDS.has(pane.content.kind)) return false;
+		return !getPaneInstanceId(pane.content);
 	});
 
 	function handleFocus() {
@@ -52,9 +49,11 @@
 	<div class="pane-content">
 		{#if pane}
 			{@const content = pane.content}
-			{#if effectiveKind === 'terminal' && 'instanceId' in content && content.instanceId}
+			{#if needsInstancePicker}
+				<PaneInstancePicker paneId={pane.id} kind={content.kind} />
+			{:else if content.kind === 'terminal' && content.instanceId}
 				<PaneTerminal instanceId={content.instanceId} />
-			{:else if effectiveKind === 'conversation' && 'instanceId' in content && content.instanceId}
+			{:else if content.kind === 'conversation' && content.instanceId}
 				<PaneConversation instanceId={content.instanceId} />
 			{:else if content.kind === 'file-explorer' && 'instanceId' in content}
 				<PaneFileExplorer instanceId={content.instanceId} />
