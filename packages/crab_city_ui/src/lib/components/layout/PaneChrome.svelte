@@ -1,7 +1,9 @@
 <script lang="ts">
 	import type { PaneState, PaneContentKind, PaneContent } from '$lib/stores/layout';
 	import { paneCount, splitPane, closePane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
-	import { instances, instanceList, currentInstanceId } from '$lib/stores/instances';
+	import { instances, instanceList, currentInstanceId, createInstance, selectInstance } from '$lib/stores/instances';
+	import { defaultCommand } from '$lib/stores/settings';
+	import { currentProject } from '$lib/stores/projects';
 
 	interface Props {
 		pane: PaneState;
@@ -21,6 +23,15 @@
 	);
 
 	const paneInstanceId = $derived(getPaneInstanceId(pane.content));
+
+	// Terminal panes show only shell instances; other kinds show only Claude instances
+	const filteredInstances = $derived(
+		$instanceList.filter((inst) =>
+			pane.content.kind === 'terminal'
+				? !inst.command.includes('claude')
+				: inst.command.includes('claude')
+		)
+	);
 
 	// Instance status indicator for terminal/conversation panes
 	const instanceStatus = $derived.by((): 'thinking' | 'responding' | 'tool' | 'idle' | null => {
@@ -73,12 +84,38 @@
 
 	function handleContentChange(e: Event) {
 		const newKind = (e.target as HTMLSelectElement).value as PaneContentKind;
+		if (newKind === 'terminal') {
+			setPaneContent(pane.id, { kind: 'terminal', instanceId: null });
+			return;
+		}
 		const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
 		setPaneContent(pane.id, defaultContentForKind(newKind, instanceId));
 	}
 
-	function handleInstanceChange(e: Event) {
-		const newId = (e.target as HTMLSelectElement).value || null;
+	let isCreating = $state(false);
+
+	async function handleInstanceChange(e: Event) {
+		const select = e.target as HTMLSelectElement;
+		const value = select.value;
+
+		if (value === '__new__') {
+			// Reset select to current value while creating
+			select.value = paneInstanceId ?? '';
+			if (isCreating) return;
+			isCreating = true;
+			const result = await createInstance({
+				command: $defaultCommand,
+				working_dir: $currentProject?.workingDir
+			});
+			if (result && 'instanceId' in pane.content) {
+				setPaneContent(pane.id, { ...pane.content, instanceId: result.id });
+				selectInstance(result.id);
+			}
+			isCreating = false;
+			return;
+		}
+
+		const newId = value || null;
 		if ('instanceId' in pane.content) {
 			setPaneContent(pane.id, { ...pane.content, instanceId: newId });
 		}
@@ -118,11 +155,13 @@
 			value={paneInstanceId ?? ''}
 			onchange={handleInstanceChange}
 			aria-label="Instance"
+			disabled={isCreating}
 		>
 			<option value="">None</option>
-			{#each $instanceList as inst}
+			{#each filteredInstances as inst}
 				<option value={inst.id}>{inst.custom_name ?? inst.name}</option>
 			{/each}
+			<option value="__new__">+ New</option>
 		</select>
 	{:else if pane.content.kind === 'file-viewer'}
 		<span class="chrome-sep">/</span>
