@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::Path;
 use virtual_terminal::{VtEvent, VtRecording};
 
@@ -57,7 +56,6 @@ fn main() {
     );
     eprintln!("Duration: {:.3}s", duration_s);
 
-    // Replay into a VT and emit scrollback + visible screen as ANSI
     let mut vt = recording.replay(64 * 1024);
     let state = vt.debug_state();
 
@@ -73,8 +71,10 @@ fn main() {
     );
     eprintln!();
 
-    // Emit the full replay (scrollback + visible screen) as ANSI to stdout
-    let replay = vt.replay(state.screen_size.0);
-    std::io::stdout().write_all(&replay).unwrap();
-    std::io::stdout().flush().unwrap();
+    // Print all lines (scrollback + visible) reading cells directly
+    // from the vt100 parser — same data path the TUI uses.
+    let lines = vt.lines();
+    for line in &lines {
+        println!("{}", line);
+    }
 }

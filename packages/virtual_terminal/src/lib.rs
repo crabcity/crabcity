@@ -223,6 +223,50 @@ impl VirtualTerminal {
         self.parser.screen().alternate_screen()
     }
 
+    /// Return all content as plain-text lines: scrollback (oldest first)
+    /// then visible screen rows. Reads cells directly from the vt100 parser
+    /// — same data the TUI renders.
+    pub fn lines(&mut self) -> Vec<String> {
+        let (_, cols) = self.parser.screen().size();
+
+        // Scrollback
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = self.parser.screen().scrollback();
+        let mut out = Vec::with_capacity(depth);
+        for offset in (1..=depth).rev() {
+            self.parser.screen_mut().set_scrollback(offset);
+            out.push(self.row_text(0, cols));
+        }
+        self.parser.screen_mut().set_scrollback(0);
+
+        // Visible screen
+        let (rows, cols) = self.parser.screen().size();
+        for r in 0..rows {
+            out.push(self.row_text(r, cols));
+        }
+        out
+    }
+
+    fn row_text(&self, row: u16, cols: u16) -> String {
+        let mut s = String::new();
+        for c in 0..cols {
+            if let Some(cell) = self.parser.screen().cell(row, c) {
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let contents = cell.contents();
+                if contents.is_empty() {
+                    s.push(' ');
+                } else {
+                    s.push_str(contents);
+                }
+            } else {
+                s.push(' ');
+            }
+        }
+        s.trim_end().to_string()
+    }
+
     /// Diagnostic dump of VT state for debugging replay/corruption issues.
     pub fn debug_state(&mut self) -> VtDebugState {
         let screen = self.parser.screen();
