@@ -89,15 +89,6 @@ impl ClaudeState {
     }
 }
 
-/// State update with metadata (sent through channels)
-#[derive(Clone, Debug)]
-pub struct StateUpdate {
-    pub state: ClaudeState,
-    /// True if terminal output is stale (no recent activity)
-    /// Indicates lower confidence in state accuracy during extended thinking
-    pub terminal_stale: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

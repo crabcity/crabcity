@@ -17,10 +17,8 @@
 //! - `ToolExecuting` - Claude is running a tool
 //! - `WaitingForInput` - Claude is waiting for user confirmation
 
-#[allow(dead_code)]
-mod engine;
 mod manager;
 mod state;
 
-pub use manager::{StateManager, StateManagerConfig, spawn_state_manager};
-pub use state::{ClaudeState, StateSignal, StateUpdate};
+pub use manager::{StateManager, StateManagerConfig};
+pub use state::{ClaudeState, StateSignal};

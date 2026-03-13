@@ -5,18 +5,14 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tokio::sync::{RwLock, broadcast};
+use tracing::{debug, info, warn};
 
-use crate::inference::{
-    ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
-};
+use crate::inference::ClaudeState;
 use crate::instance_actor::InstanceHandle;
 use crate::models::normalize_attribution_content;
 use crate::repository::ConversationRepository;
 
-use super::conversation_watcher::run_server_conversation_watcher;
 use super::protocol::{PresenceUser, ServerMessage, WsUser};
 
 /// Everything a transport layer knows about an input event.
@@ -109,188 +105,36 @@ pub enum ConversationEvent {
     },
 }
 
-/// Per-instance conversation broadcast channel.
-pub type ConversationBroadcast = broadcast::Sender<ConversationEvent>;
-
 /// Create a new state broadcast channel
 pub fn create_state_broadcast() -> StateBroadcast {
     let (tx, _) = broadcast::channel(256);
     tx
 }
 
-/// Per-instance state tracking (lives in GlobalStateManager)
+/// Per-instance tracking (lives in GlobalStateManager).
+///
+/// State detection and conversation tracking are now owned by each actor's
+/// ProcessDriver. The tracker only holds metadata needed for presence,
+/// session claiming, and lifecycle management.
 pub(crate) struct InstanceTracker {
-    pub instance_id: String,
     pub handle: InstanceHandle,
     pub working_dir: String,
     pub created_at: DateTime<Utc>,
     pub is_claude: bool,
-    /// Sender for state signals to this instance's state manager
-    signal_tx: Option<mpsc::Sender<StateSignal>>,
-    /// Cancellation token to stop background tasks when instance is unregistered
-    cancel: CancellationToken,
-    /// Formatted conversation turns maintained by the server-owned watcher.
-    conversation_turns: Arc<RwLock<Vec<serde_json::Value>>>,
-    /// Broadcast channel for conversation events (Full/Update).
-    conversation_tx: ConversationBroadcast,
 }
 
 impl InstanceTracker {
     pub fn new(
-        instance_id: String,
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
     ) -> Self {
-        let (conversation_tx, _) = broadcast::channel(64);
         Self {
-            instance_id,
             handle,
             working_dir,
             created_at,
             is_claude,
-            signal_tx: None,
-            cancel: CancellationToken::new(),
-            conversation_turns: Arc::new(RwLock::new(Vec::new())),
-            conversation_tx,
-        }
-    }
-
-    /// Start the state manager for this instance
-    pub fn start_state_manager(
-        &mut self,
-        broadcast_tx: StateBroadcast,
-        global_state_manager: Arc<GlobalStateManager>,
-        repository: Option<Arc<ConversationRepository>>,
-    ) {
-        if !self.is_claude {
-            return;
-        }
-
-        let (signal_tx, signal_rx) = mpsc::channel::<StateSignal>(100);
-        let (state_tx, mut state_rx) = mpsc::channel::<StateUpdate>(100);
-
-        // Spawn the state manager
-        let _handle = spawn_state_manager(signal_rx, state_tx, StateManagerConfig::default());
-
-        // Forward state changes to broadcast and instance actor
-        let instance_id = self.instance_id.clone();
-        let handle = self.handle.clone();
-        tokio::spawn(async move {
-            while let Some(update) = state_rx.recv().await {
-                info!(
-                    "[STATE-FWD {}] State changed to {:?} (stale={})",
-                    instance_id, update.state, update.terminal_stale
-                );
-                // Update the instance actor's stored state
-                if let Err(e) = handle.set_claude_state(update.state.clone()).await {
-                    debug!("Failed to update instance state: {}", e);
-                }
-                // Broadcast to all connected clients (include staleness)
-                let _ =
-                    broadcast_tx.send((instance_id.clone(), update.state, update.terminal_stale));
-            }
-            warn!("[STATE-FWD {}] State receiver closed", instance_id);
-        });
-
-        // Spawn background PTY reader to continuously feed state manager
-        // This runs INDEPENDENTLY of focus, so state updates even when not viewing this instance
-        let signal_tx_pty = signal_tx.clone();
-        let handle_pty = self.handle.clone();
-        let instance_id_pty = self.instance_id.clone();
-        let cancel_pty = self.cancel.clone();
-
-        tokio::spawn(async move {
-            // Subscribe to PTY output
-            let mut output_rx = match handle_pty.subscribe_output().await {
-                Ok(rx) => rx,
-                Err(e) => {
-                    error!(
-                        "Failed to subscribe to PTY output for state tracking: {}",
-                        e
-                    );
-                    return;
-                }
-            };
-
-            debug!(
-                "Started background PTY state tracking for instance {}",
-                instance_id_pty
-            );
-
-            loop {
-                tokio::select! {
-                    _ = cancel_pty.cancelled() => {
-                        debug!("Stopping background PTY state tracking for instance {}", instance_id_pty);
-                        break;
-                    }
-                    result = output_rx.recv() => {
-                        match result {
-                            Ok(event) => {
-                                let data = String::from_utf8_lossy(&event.data).to_string();
-                                // Feed the state manager
-                                if signal_tx_pty.send(StateSignal::TerminalOutput { data }).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!("State tracking PTY output lagged by {} messages for {}", n, instance_id_pty);
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                debug!("PTY output channel closed for state tracking {}", instance_id_pty);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // Spawn the server-owned conversation watcher.
-        // This is the single watcher per instance: does session discovery, maintains
-        // formatted conversation data, broadcasts updates, and feeds state signals.
-        let signal_tx_convo = signal_tx.clone();
-        let instance_id_convo = self.instance_id.clone();
-        let working_dir_convo = self.working_dir.clone();
-        let created_at_convo = self.created_at;
-        let cancel_convo = self.cancel.clone();
-        let state_manager_convo = global_state_manager.clone();
-        let convo_turns = self.conversation_turns.clone();
-        let convo_tx = self.conversation_tx.clone();
-
-        tokio::spawn(async move {
-            run_server_conversation_watcher(
-                instance_id_convo,
-                working_dir_convo,
-                created_at_convo,
-                cancel_convo,
-                signal_tx_convo,
-                state_manager_convo,
-                convo_turns,
-                convo_tx,
-                repository,
-            )
-            .await;
-        });
-
-        self.signal_tx = Some(signal_tx);
-    }
-
-    /// Stop background tasks for this instance
-    pub fn stop(&self) {
-        self.cancel.cancel();
-    }
-
-    /// Send a signal to this instance's state manager
-    pub async fn send_signal(&self, signal: StateSignal) {
-        if let Some(tx) = &self.signal_tx
-            && tx.send(signal).await.is_err()
-        {
-            warn!(
-                "Failed to send signal to state manager for instance {} (receiver dropped)",
-                self.instance_id
-            );
         }
     }
 }
@@ -695,43 +539,24 @@ impl GlobalStateManager {
         false
     }
 
-    /// Register a new instance for state tracking.
-    ///
-    /// When `has_driver` is true, the instance actor owns a ProcessDriver that
-    /// handles state management and conversation tracking. The GSM only needs
-    /// the tracker for presence, session claiming, and lifecycle.
+    /// Register a new instance. The actor's ProcessDriver handles state detection
+    /// and conversation tracking. The GSM only needs the tracker for presence,
+    /// session claiming, and lifecycle.
     pub async fn register_instance(
-        self: &Arc<Self>,
+        &self,
         instance_id: String,
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
-        has_driver: bool,
-        repository: Option<Arc<ConversationRepository>>,
     ) {
-        let mut tracker = InstanceTracker::new(
-            instance_id.clone(),
-            handle,
-            working_dir,
-            created_at,
-            is_claude,
-        );
-        // Only start GSM-owned state manager if the actor doesn't have its own driver.
-        // ProcessDriver-equipped actors handle state detection and conversation watching internally.
-        if !has_driver {
-            tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
-        }
-
+        let tracker = InstanceTracker::new(handle, working_dir, created_at, is_claude);
         self.trackers.write().await.insert(instance_id, tracker);
     }
 
     /// Unregister an instance
     pub async fn unregister_instance(&self, instance_id: &str) {
-        if let Some(tracker) = self.trackers.write().await.remove(instance_id) {
-            // Stop background tasks before dropping
-            tracker.stop();
-        }
+        self.trackers.write().await.remove(instance_id);
         // Release any claimed sessions
         self.release_session(instance_id).await;
         // Clean up first_input_at tracking
@@ -776,40 +601,25 @@ impl GlobalStateManager {
         })
     }
 
-    /// Send a signal to an instance's state manager
-    pub async fn send_signal(&self, instance_id: &str, signal: StateSignal) {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            tracker.send_signal(signal).await;
-        }
-    }
-
     /// Unified input handler — the single entry point for all terminal input.
     ///
     /// Both the multiplexed WebSocket handler (web) and the TUI proxy call
     /// this instead of duplicating the input ceremony. Performs:
     ///
-    /// 1. State signal (`TerminalInput`) for idle→thinking detection
-    /// 2. Session discovery content tracking (`mark_first_input`)
-    /// 3. Terminal lock keepalive (`touch_terminal_lock`)
-    /// 4. Real-time attribution tracking (`push_pending_attribution`)
-    /// 5. DB attribution persistence (`record_input_attribution`)
-    /// 6. PTY write (`handle.write_input`)
+    /// 1. Session discovery content tracking (`mark_first_input`)
+    /// 2. Terminal lock keepalive (`touch_terminal_lock`)
+    /// 3. Real-time attribution tracking (`push_pending_attribution`)
+    /// 4. DB attribution persistence (`record_input_attribution`)
+    /// 5. PTY write (`handle.write_input`)
     ///
-    /// Steps 3–5 are skipped when `ctx.user` is `None` (TUI path).
+    /// Steps 2–4 are skipped when `ctx.user` is `None` (TUI path).
+    /// State detection (idle→thinking) is handled by the actor's ProcessDriver
+    /// via `driver.on_input()` in the WriteInput command handler.
     pub async fn handle_input(
         &self,
         ctx: InputContext,
         repository: Option<&Arc<ConversationRepository>>,
     ) -> Result<(), String> {
-        // 1. State signal for idle→thinking detection
-        self.send_signal(
-            &ctx.instance_id,
-            StateSignal::TerminalInput {
-                data: ctx.data.clone(),
-            },
-        )
-        .await;
-
         let handle = self
             .get_handle(&ctx.instance_id)
             .await
@@ -883,32 +693,6 @@ impl GlobalStateManager {
     /// Broadcast an instance lifecycle event to all connected WebSocket clients
     pub fn broadcast_lifecycle(&self, msg: ServerMessage) {
         let _ = self.lifecycle_tx.send(msg);
-    }
-
-    // =========================================================================
-    // Conversation data (server-owned watcher)
-    // =========================================================================
-
-    /// Get a snapshot of the current formatted conversation turns for an instance.
-    pub async fn get_conversation_snapshot(&self, instance_id: &str) -> Vec<serde_json::Value> {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            tracker.conversation_turns.read().await.clone()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Subscribe to conversation events (Full/Update) for an instance.
-    /// Returns None if the instance doesn't exist.
-    pub async fn subscribe_conversation(
-        &self,
-        instance_id: &str,
-    ) -> Option<broadcast::Receiver<ConversationEvent>> {
-        self.trackers
-            .read()
-            .await
-            .get(instance_id)
-            .map(|t| t.conversation_tx.subscribe())
     }
 
     // =========================================================================
@@ -999,35 +783,18 @@ impl GlobalStateManager {
     /// Insert a minimal tracker for testing conversation data flow.
     /// Does NOT spawn any background tasks (watcher, state manager).
     pub(crate) async fn insert_test_tracker(&self, instance_id: &str, handle: InstanceHandle) {
-        let tracker = InstanceTracker::new(
-            instance_id.to_string(),
-            handle,
-            "/tmp/test".to_string(),
-            Utc::now(),
-            true,
-        );
+        let tracker = InstanceTracker::new(handle, "/tmp/test".to_string(), Utc::now(), true);
         self.trackers
             .write()
             .await
             .insert(instance_id.to_string(), tracker);
-    }
-
-    /// Write conversation turns directly into a tracker's store (for testing).
-    pub(crate) async fn set_test_conversation_turns(
-        &self,
-        instance_id: &str,
-        turns: Vec<serde_json::Value>,
-    ) {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            let mut store = tracker.conversation_turns.write().await;
-            *store = turns;
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_mark_first_input_returns_true_then_false() {
@@ -1920,91 +1687,6 @@ mod tests {
         assert_eq!(id, "inst-1");
         assert!(matches!(state, ClaudeState::Idle));
         assert!(!stale);
-    }
-
-    // =========================================================================
-    // Conversation store tests
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_conversation_snapshot_empty_without_tracker() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let turns = state_mgr.get_conversation_snapshot("nonexistent").await;
-        assert!(turns.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_conversation_snapshot_roundtrip() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
-        state_mgr.insert_test_tracker("inst-1", handle).await;
-
-        // Initially empty
-        assert!(
-            state_mgr
-                .get_conversation_snapshot("inst-1")
-                .await
-                .is_empty()
-        );
-
-        // Write turns
-        let turns = vec![
-            serde_json::json!({"uuid": "t1", "role": "user", "content": "hello"}),
-            serde_json::json!({"uuid": "t2", "role": "assistant", "content": "hi"}),
-        ];
-        state_mgr
-            .set_test_conversation_turns("inst-1", turns.clone())
-            .await;
-
-        // Read them back
-        let snapshot = state_mgr.get_conversation_snapshot("inst-1").await;
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot[0]["uuid"], "t1");
-        assert_eq!(snapshot[1]["uuid"], "t2");
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_conversation_receives_events() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
-        state_mgr.insert_test_tracker("inst-1", handle).await;
-
-        // Subscribe BEFORE sending
-        let mut rx = state_mgr
-            .subscribe_conversation("inst-1")
-            .await
-            .expect("tracker exists");
-
-        // Manually broadcast a ConversationEvent via the tracker's channel
-        {
-            let trackers = state_mgr.trackers.read().await;
-            let tracker = trackers.get("inst-1").unwrap();
-            let _ = tracker.conversation_tx.send(ConversationEvent::Full {
-                instance_id: "inst-1".to_string(),
-                turns: vec![serde_json::json!({"uuid": "t1"})],
-            });
-        }
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            ConversationEvent::Full { instance_id, turns } => {
-                assert_eq!(instance_id, "inst-1");
-                assert_eq!(turns.len(), 1);
-                assert_eq!(turns[0]["uuid"], "t1");
-            }
-            _ => panic!("expected Full event"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_conversation_nonexistent_returns_none() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        assert!(
-            state_mgr
-                .subscribe_conversation("nonexistent")
-                .await
-                .is_none()
-        );
     }
 
     // =========================================================================

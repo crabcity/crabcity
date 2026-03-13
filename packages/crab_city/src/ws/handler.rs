@@ -262,22 +262,21 @@ pub async fn handle_multiplexed_ws(
                                 // Sync conversation without changing focus
                                 // This is used when a tab becomes visible again
                                 if let Some(id) = focused_clone.read().await.clone() {
-                                    let tx_sync = tx_input.clone();
-                                    let state_mgr_sync = state_mgr.clone();
-                                    let repo_sync = repository_clone.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = send_conversation_since(
-                                            &id,
-                                            since_uuid.as_deref(),
-                                            &state_mgr_sync,
-                                            &tx_sync,
-                                            repo_sync.as_ref(),
-                                        )
-                                        .await
-                                        {
-                                            error!("Failed to sync conversation: {}", e);
-                                        }
-                                    });
+                                    if let Some(h) = state_mgr.get_handle(&id).await {
+                                        let tx_sync = tx_input.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = send_conversation_since(
+                                                &id,
+                                                since_uuid.as_deref(),
+                                                &h,
+                                                &tx_sync,
+                                            )
+                                            .await
+                                            {
+                                                error!("Failed to sync conversation: {}", e);
+                                            }
+                                        });
+                                    }
                                 }
                             }
                             ClientMessage::Input {

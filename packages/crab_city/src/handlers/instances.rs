@@ -107,8 +107,6 @@ pub async fn create_instance(
                         instance.working_dir.clone(),
                         created_at,
                         is_claude,
-                        true, // has_driver — the actor owns its ProcessDriver
-                        Some(state.repository.clone()),
                     )
                     .await;
             }

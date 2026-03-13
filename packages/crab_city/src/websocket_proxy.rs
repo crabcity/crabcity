@@ -93,31 +93,18 @@ pub async fn handle_proxy(
     let mut state_rx: Option<broadcast::Receiver<(String, ClaudeState, bool)>> =
         global_state_manager.as_ref().map(|gsm| gsm.subscribe());
 
-    // Subscribe to conversation events — try the actor's driver first (new path),
-    // fall back to GSM's server-owned watcher (legacy path).
+    // Subscribe to conversation events from the actor's driver.
     let mut convo_rx: Option<broadcast::Receiver<ConversationEvent>> = if is_claude {
-        let driver_rx = handle.subscribe_conversation().await;
-        if driver_rx.is_some() {
-            driver_rx
-        } else if let Some(ref gsm) = global_state_manager {
-            gsm.subscribe_conversation(&instance_id).await
-        } else {
-            None
-        }
+        handle.subscribe_conversation().await
     } else {
         None
     };
 
-    // Send current conversation snapshot — try actor's driver first, fall back to GSM.
+    // Send current conversation snapshot from the actor's driver.
     if is_claude {
         let turns = handle.get_conversation_snapshot().await;
         if !turns.is_empty() {
             let _ = tx.send(WsMessage::ConversationFull { turns }).await;
-        } else if let Some(ref gsm) = global_state_manager {
-            let turns = gsm.get_conversation_snapshot(&instance_id).await;
-            if !turns.is_empty() {
-                let _ = tx.send(WsMessage::ConversationFull { turns }).await;
-            }
         }
     }
 
@@ -219,7 +206,6 @@ pub async fn handle_proxy(
     let tx_events = tx.clone();
     let instance_id_events = instance_id.clone();
     let handle_for_events = handle.clone();
-    let gsm_for_events = global_state_manager.clone();
     let events_task = async move {
         loop {
             tokio::select! {
@@ -266,15 +252,10 @@ pub async fn handle_proxy(
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            // Re-sync: try actor's driver first, fall back to GSM
+                            // Re-sync from actor's driver
                             let turns = handle_for_events.get_conversation_snapshot().await;
                             if !turns.is_empty() {
                                 let _ = tx_events.send(WsMessage::ConversationFull { turns }).await;
-                            } else if let Some(ref gsm) = gsm_for_events {
-                                let turns = gsm.get_conversation_snapshot(&instance_id_events).await;
-                                if !turns.is_empty() {
-                                    let _ = tx_events.send(WsMessage::ConversationFull { turns }).await;
-                                }
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => break,

@@ -247,12 +247,6 @@ impl InstanceHandle {
         Ok(())
     }
 
-    /// Set the claude state directly on the shared info (used by legacy GSM state manager).
-    pub async fn set_claude_state(&self, state: ClaudeState) -> Result<()> {
-        self.info.write().await.claude_state = Some(state);
-        Ok(())
-    }
-
     pub async fn get_conversation_snapshot(&self) -> Vec<serde_json::Value> {
         let (tx, rx) = oneshot::channel();
         let _ = self
@@ -819,7 +813,9 @@ impl InstanceHandle {
         cols: u16,
         max_delta_bytes: usize,
     ) -> (Self, mpsc::Sender<Vec<u8>>) {
-        Self::spawn_test_with_scrollback(rows, cols, max_delta_bytes, 0)
+        let (handle, output_tx, _convo) =
+            Self::spawn_test_with_scrollback(rows, cols, max_delta_bytes, 0);
+        (handle, output_tx)
     }
 
     pub(crate) fn spawn_test_with_scrollback(
@@ -827,7 +823,11 @@ impl InstanceHandle {
         cols: u16,
         max_delta_bytes: usize,
         scrollback_lines: usize,
-    ) -> (Self, mpsc::Sender<Vec<u8>>) {
+    ) -> (
+        Self,
+        mpsc::Sender<Vec<u8>>,
+        Arc<RwLock<Vec<serde_json::Value>>>,
+    ) {
         use crate::process_driver::ShellDriver;
         let driver: Box<dyn ProcessDriver> = Box::new(ShellDriver);
         let info = Arc::new(RwLock::new(InstanceInfo {
@@ -846,6 +846,9 @@ impl InstanceHandle {
         let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
         let enriched_tx_actor = enriched_tx.clone();
         let info_actor = info.clone();
+        let conversation_turns: Arc<RwLock<Vec<serde_json::Value>>> =
+            Arc::new(RwLock::new(Vec::new()));
+        let convo_turns_actor = conversation_turns.clone();
         let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(64);
         tokio::spawn(async move {
             loop {
@@ -882,6 +885,13 @@ impl InstanceHandle {
                                 // Accept writes silently (no real PTY in test)
                                 let _ = respond_to.send(Ok(text.len()));
                             }
+                            InstanceCommand::GetConversationSnapshot { respond_to } => {
+                                let turns = convo_turns_actor.read().await.clone();
+                                let _ = respond_to.send(turns);
+                            }
+                            InstanceCommand::SubscribeConversation { respond_to } => {
+                                let _ = respond_to.send(None);
+                            }
                             _ => {}
                         }
                     }
@@ -899,7 +909,11 @@ impl InstanceHandle {
             }
         });
 
-        (InstanceHandle { sender, info }, output_tx)
+        (
+            InstanceHandle { sender, info },
+            output_tx,
+            conversation_turns,
+        )
     }
 
     /// Inject output into the test actor and yield so it processes the bytes.
@@ -1168,7 +1182,8 @@ mod tests {
     /// This test proves the overlap exists at the instance_actor API level.
     #[tokio::test]
     async fn test_multiplexed_focus_replay_overlap() {
-        let (handle, output_tx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+        let (handle, output_tx, _convo) =
+            InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
 
         // Fill VT with initial content so scrollback has data.
         for i in 0..12 {
@@ -1223,7 +1238,8 @@ mod tests {
     /// After draining the broadcast receiver post-replay, the overlap is gone.
     #[tokio::test]
     async fn test_multiplexed_drain_prevents_duplication() {
-        let (handle, output_tx) = InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
+        let (handle, output_tx, _convo) =
+            InstanceHandle::spawn_test_with_scrollback(4, 40, 4096, 500);
 
         for i in 0..12 {
             InstanceHandle::inject_output(&output_tx, format!("Init {i:02}\r\n").as_bytes()).await;
