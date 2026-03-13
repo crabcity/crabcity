@@ -32,6 +32,7 @@ pub struct InstanceManager {
     base_directory: String,
     max_buffer_bytes: usize,
     scrollback_lines: usize,
+    vt_record_dir: Option<std::path::PathBuf>,
 }
 
 impl InstanceManager {
@@ -40,6 +41,7 @@ impl InstanceManager {
         _base_port: u16,
         max_buffer_bytes: usize,
         scrollback_lines: usize,
+        vt_record_dir: Option<std::path::PathBuf>,
     ) -> Self {
         let base_directory = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
@@ -53,6 +55,7 @@ impl InstanceManager {
             base_directory,
             max_buffer_bytes,
             scrollback_lines,
+            vt_record_dir,
         }
     }
 
@@ -162,6 +165,7 @@ impl InstanceManager {
             working_dir: working_dir.clone(),
             max_buffer_bytes: self.max_buffer_bytes,
             scrollback_lines: self.scrollback_lines,
+            vt_record_dir: self.vt_record_dir.clone(),
         })
         .await?;
 
@@ -292,7 +296,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn test_manager() -> InstanceManager {
-        InstanceManager::new("claude".to_string(), 0, 1024 * 1024, 0)
+        InstanceManager::new("claude".to_string(), 0, 1024 * 1024, 0, None)
     }
 
     #[test]

@@ -78,6 +78,10 @@ crate_index.spec(
     version = "1.0",
 )
 crate_index.spec(
+    package = "ciborium",
+    version = "0.2",
+)
+crate_index.spec(
     features = ["serde"],
     package = "chrono",
     version = "0.4",

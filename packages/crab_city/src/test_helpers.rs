@@ -47,6 +47,7 @@ pub async fn test_app_state() -> (AppState, tempfile::TempDir) {
             9000,
             25 * 1024 * 1024,
             0,
+            None,
         )),
         conversation_watchers: Arc::new(Mutex::new(HashMap::new())),
         config: Arc::new(config),

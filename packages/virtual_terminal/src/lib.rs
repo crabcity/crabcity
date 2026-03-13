@@ -4,6 +4,9 @@
 //! generates keyframe snapshots, stores deltas (raw PTY output since last
 //! keyframe), and negotiates dimensions across multiple clients.
 
+pub mod recorder;
+pub use recorder::{VtEvent, VtRecorder, VtRecording, VtRecordingHeader};
+
 use std::collections::HashMap;
 
 /// Type of client connection.
@@ -43,6 +46,26 @@ pub struct VirtualTerminal {
 
     /// Max delta buffer size before auto-compaction
     max_delta_bytes: usize,
+
+    /// Scrollback lines to skip during replay. On resize, the PTY program
+    /// receives SIGWINCH and typically redraws, re-outputting content that's
+    /// already in scrollback. We record the pre-resize scrollback depth so
+    /// that `render_scrollback` skips those stale lines, preventing
+    /// duplication.
+    scrollback_trim: usize,
+}
+
+/// Diagnostic snapshot of VT state for debugging.
+#[derive(Debug)]
+pub struct VtDebugState {
+    pub effective_dims: (u16, u16),
+    pub screen_size: (u16, u16),
+    pub alternate_screen: bool,
+    pub scrollback_depth: usize,
+    pub cursor_position: (u16, u16),
+    pub active_viewports: usize,
+    pub total_viewports: usize,
+    pub visible_rows: Vec<String>,
 }
 
 impl VirtualTerminal {
@@ -55,6 +78,7 @@ impl VirtualTerminal {
             keyframe: None,
             deltas: Vec::new(),
             max_delta_bytes,
+            scrollback_trim: 0,
         }
     }
 
@@ -104,15 +128,40 @@ impl VirtualTerminal {
     /// The only mutation is the temporary `set_scrollback()` viewport shift
     /// used to walk scrollback pages; this is restored to 0 before return.
     pub fn replay(&mut self, client_rows: u16) -> Vec<u8> {
+        let screen = self.parser.screen();
+        let (eff_rows, eff_cols) = screen.size();
+        let alt_screen = screen.alternate_screen();
+
+        // Snapshot scrollback depth before replay touches the offset
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let scrollback_depth = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(0);
+
         let mut result = Vec::new();
 
-        let has_scrollback = render_scrollback(&mut self.parser, &mut result);
+        let scrollback_lines =
+            render_scrollback(&mut self.parser, self.scrollback_trim, &mut result);
+        let scrollback_bytes = result.len();
 
-        if has_scrollback {
-            append_scrollback_flush(&mut result, client_rows);
+        if scrollback_lines > 0 {
+            append_scrollback_flush(&mut result, scrollback_lines, client_rows);
         }
 
         render_visible_screen(self.parser.screen(), &mut result);
+
+        tracing::debug!(
+            client_rows,
+            eff_rows,
+            eff_cols,
+            alt_screen,
+            scrollback_depth,
+            scrollback_trim = self.scrollback_trim,
+            scrollback_lines,
+            scrollback_bytes,
+            total_bytes = result.len(),
+            "VT replay generated"
+        );
+
         result
     }
 
@@ -151,13 +200,77 @@ impl VirtualTerminal {
     }
 
     /// Apply a resize to the vt100 parser (called when effective dims change).
+    ///
+    /// Records the current scrollback depth as a trim point. After resize,
+    /// the PTY program will receive SIGWINCH and typically redraw, re-outputting
+    /// content already in scrollback. The trim point lets `render_scrollback`
+    /// skip pre-resize lines, preventing duplication.
     pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        self.scrollback_trim = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(0);
+
         self.parser.screen_mut().set_size(rows, cols);
     }
 
     /// Current effective dimensions.
     pub fn effective_dims(&self) -> (u16, u16) {
         self.effective_dims
+    }
+
+    /// Whether the terminal is in alternate screen mode.
+    pub fn alternate_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    /// Diagnostic dump of VT state for debugging replay/corruption issues.
+    pub fn debug_state(&mut self) -> VtDebugState {
+        let screen = self.parser.screen();
+        let (rows, cols) = screen.size();
+        let alt = screen.alternate_screen();
+        let cursor = screen.cursor_position();
+
+        // Measure scrollback
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let scrollback_depth = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(0);
+
+        // Collect visible row text
+        let mut visible_rows = Vec::new();
+        for r in 0..rows {
+            let mut row_text = String::new();
+            for c in 0..cols {
+                if let Some(cell) = self.parser.screen().cell(r, c) {
+                    if cell.is_wide_continuation() {
+                        continue;
+                    }
+                    let contents = cell.contents();
+                    if contents.is_empty() {
+                        row_text.push(' ');
+                    } else {
+                        row_text.push_str(contents);
+                    }
+                } else {
+                    row_text.push(' ');
+                }
+            }
+            visible_rows.push(row_text.trim_end().to_string());
+        }
+
+        VtDebugState {
+            effective_dims: self.effective_dims,
+            screen_size: (rows, cols),
+            alternate_screen: alt,
+            scrollback_depth,
+            cursor_position: cursor,
+            active_viewports: self
+                .client_viewports
+                .iter()
+                .filter(|(_, v)| v.is_active)
+                .count(),
+            total_viewports: self.client_viewports.len(),
+            visible_rows,
+        }
     }
 
     /// Recalculate effective dims from active viewports.
@@ -197,22 +310,31 @@ impl VirtualTerminal {
 /// cells, which stomp earlier pages when scrollback is emitted page-by-page.
 ///
 /// Temporarily shifts the parser's scrollback viewport (restored to 0 on return).
-fn render_scrollback(parser: &mut vt100::Parser, out: &mut Vec<u8>) -> bool {
+/// Render scrollback content as plain rows (no CUP). Returns the number of
+/// scrollback lines emitted (0 means no scrollback).
+///
+/// `trim` specifies how many of the oldest scrollback lines to skip (set by
+/// `resize()` to avoid re-emitting content the PTY will re-output after
+/// SIGWINCH).
+fn render_scrollback(parser: &mut vt100::Parser, trim: usize, out: &mut Vec<u8>) -> usize {
     parser.screen_mut().set_scrollback(usize::MAX);
     let total_scrollback = parser.screen().scrollback();
+    let effective = total_scrollback.saturating_sub(trim);
 
-    if total_scrollback == 0 {
+    if effective == 0 {
         parser.screen_mut().set_scrollback(0);
-        return false;
+        return 0;
     }
 
     let (rows, cols) = parser.screen().size();
     let page_size = rows as usize;
 
-    // Iterate from oldest scrollback to newest, one page at a time.
+    // Iterate from oldest (post-trim) scrollback to newest, one page at a time.
     // At scrollback=N, viewport row 0 is N lines back from the live screen.
-    // The top min(N, screen_height) rows are scrollback content.
-    let mut remaining = total_scrollback;
+    // Using `effective` instead of `total_scrollback` skips the oldest `trim`
+    // lines — they were produced at the pre-resize column width and will be
+    // re-output by the PTY's SIGWINCH redraw.
+    let mut remaining = effective;
     while remaining > 0 {
         parser.screen_mut().set_scrollback(remaining);
         let page_rows = remaining.min(page_size);
@@ -226,22 +348,26 @@ fn render_scrollback(parser: &mut vt100::Parser, out: &mut Vec<u8>) -> bool {
     }
 
     parser.screen_mut().set_scrollback(0);
-    true
+    effective
 }
 
 /// Push scrollback content off the client's visible screen into its
-/// scrollback buffer. The scrollback lines we just emitted scrolled through
-/// the receiving terminal — the last `client_rows` of them are still on
-/// the visible screen. This sequence scrolls them into the client's
-/// scrollback buffer before the keyframe's `\x1b[2J` erases the display.
+/// scrollback buffer. After emitting `scrollback_lines` rows of text (each
+/// ending with `\r\n`), some of those lines remain on the client's visible
+/// screen. We need exactly that many newlines from the bottom to scroll
+/// them into the client's scrollback before the keyframe's `\x1b[2J` clears
+/// the display.
 ///
-/// We use the CLIENT's row count — the server's effective dims may differ
-/// (e.g. the client's Resize hasn't been processed yet, or min-of-viewports
-/// shrank the PTY). Using the wrong count either loses scrollback lines or
-/// injects blank rows.
-fn append_scrollback_flush(out: &mut Vec<u8>, client_rows: u16) {
+/// After writing N lines into a `client_rows`-tall terminal:
+///   - If N < client_rows: all N lines are on-screen (cursor at row N+1).
+///   - If N >= client_rows: `client_rows - 1` lines remain on-screen
+///     (the rest already scrolled from the `\r\n` at the end of each line).
+///
+/// So the flush count is `min(N, client_rows - 1)`.
+fn append_scrollback_flush(out: &mut Vec<u8>, scrollback_lines: usize, client_rows: u16) {
+    let flush_count = scrollback_lines.min(client_rows.saturating_sub(1) as usize);
     out.extend_from_slice(format!("\x1b[{};1H", client_rows).as_bytes());
-    for _ in 0..client_rows {
+    for _ in 0..flush_count {
         out.push(b'\n');
     }
 }
@@ -1087,23 +1213,31 @@ mod tests {
         assert_eq!(vis[3], "", "visible row 3 (empty after last \\r\\n)");
 
         let sb = scrollback_lines(&mut client, 40);
-        // Filter out empty lines from the scroll-push mechanism
-        let content_sb: Vec<_> = sb.iter().filter(|l| !l.is_empty()).collect();
+        // No blank lines should appear in scrollback — flush should be exact
+        let blank_count = sb.iter().filter(|l| l.is_empty()).count();
+        assert_eq!(
+            blank_count,
+            0,
+            "scrollback should have no blank lines, got {} blank out of {} total",
+            blank_count,
+            sb.len()
+        );
         // Scrollback should contain Line 00..Line 16 in order
-        assert!(
-            content_sb.len() >= 16,
-            "expected at least 16 content scrollback lines, got {}",
-            content_sb.len()
+        assert_eq!(
+            sb.len(),
+            17,
+            "expected exactly 17 scrollback lines (Line 00..16), got {}",
+            sb.len()
         );
         assert!(
-            content_sb.first().unwrap().contains("Line 00"),
+            sb.first().unwrap().contains("Line 00"),
             "first scrollback line should be Line 00, got {:?}",
-            content_sb.first()
+            sb.first()
         );
         assert!(
-            content_sb.last().unwrap().contains("Line 16"),
+            sb.last().unwrap().contains("Line 16"),
             "last content scrollback line should be Line 16, got {:?}",
-            content_sb.last()
+            sb.last()
         );
     }
 
@@ -1173,17 +1307,19 @@ mod tests {
 
         let mut client = replay_roundtrip(&mut vt, 4, 40);
         let sb = scrollback_lines(&mut client, 40);
-        // Filter out empty lines from the scroll-push mechanism
-        let content_sb: Vec<_> = sb.into_iter().filter(|l| !l.is_empty()).collect();
 
-        assert!(
-            content_sb.len() >= 8,
-            "should have at least 8 content scrollback lines, got {}",
-            content_sb.len()
+        let blank_count = sb.iter().filter(|l| l.is_empty()).count();
+        assert_eq!(blank_count, 0, "scrollback should have no blank lines");
+
+        assert_eq!(
+            sb.len(),
+            9,
+            "expected exactly 9 scrollback lines (indented line 0..8), got {}",
+            sb.len()
         );
 
-        // All content scrollback lines should have the indentation and correct content
-        for (idx, line) in content_sb.iter().enumerate() {
+        // All scrollback lines should have the indentation and correct content
+        for (idx, line) in sb.iter().enumerate() {
             assert!(
                 line.starts_with("    indented line"),
                 "scrollback line {} should start with '    indented line', got {:?}",
@@ -1193,8 +1329,8 @@ mod tests {
         }
 
         // No line should contain content from another line (no overwrite artifacts)
-        for line in &content_sb {
-            let matches: Vec<_> = content_sb
+        for line in &sb {
+            let matches: Vec<_> = sb
                 .iter()
                 .filter(|other| line.contains(other.as_str()))
                 .collect();
@@ -1216,10 +1352,18 @@ mod tests {
 
         let mut client = replay_roundtrip(&mut vt, 4, 80);
         let sb = scrollback_lines(&mut client, 80);
-        // Filter out empty lines from the scroll-push mechanism
-        let content_lines: Vec<_> = sb.iter().filter(|l| !l.is_empty()).collect();
 
-        for (idx, line) in content_lines.iter().enumerate() {
+        let blank_count = sb.iter().filter(|l| l.is_empty()).count();
+        assert_eq!(blank_count, 0, "scrollback should have no blank lines");
+
+        assert_eq!(
+            sb.len(),
+            9,
+            "expected exactly 9 scrollback lines (Hi 0..8), got {}",
+            sb.len()
+        );
+
+        for (idx, line) in sb.iter().enumerate() {
             assert!(
                 line.starts_with("Hi "),
                 "scrollback line {} should start with 'Hi ', got {:?}",
@@ -1227,11 +1371,6 @@ mod tests {
                 line
             );
         }
-        assert!(
-            content_lines.len() >= 8,
-            "should have at least 8 content scrollback lines, got {}",
-            content_lines.len()
-        );
     }
 
     /// Client bigger than server — content should still be correct.
@@ -1376,16 +1515,18 @@ mod tests {
 
         let mut client = replay_roundtrip(&mut vt, 4, 40);
         let sb = scrollback_lines(&mut client, 40);
-        // Filter out empty lines from the scroll-push mechanism
-        let content_sb: Vec<_> = sb.into_iter().filter(|l| !l.is_empty()).collect();
 
-        assert!(
-            content_sb.len() >= 4,
-            "should have at least 4 CJK scrollback lines, got {}",
-            content_sb.len()
+        let blank_count = sb.iter().filter(|l| l.is_empty()).count();
+        assert_eq!(blank_count, 0, "scrollback should have no blank lines");
+
+        assert_eq!(
+            sb.len(),
+            5,
+            "expected exactly 5 CJK scrollback lines, got {}",
+            sb.len()
         );
 
-        for (idx, line) in content_sb.iter().enumerate() {
+        for (idx, line) in sb.iter().enumerate() {
             assert!(
                 line.contains("行"),
                 "scrollback line {} should contain CJK char, got {:?}",
@@ -1399,6 +1540,82 @@ mod tests {
                 line
             );
         }
+    }
+
+    /// Regression: resize + SIGWINCH redraw must not duplicate scrollback.
+    /// Simulates: TUI at 53×209, web connects at 45×156, PTY redraws.
+    #[test]
+    fn test_resize_sigwinch_no_scrollback_duplication() {
+        let mut vt = VirtualTerminal::new(53, 209, 4096, 10000);
+
+        // Fill terminal: 89 lines → 36 scrollback + 53 visible (cursor on last row)
+        for i in 0..89 {
+            vt.process_output(format!("Line {:03}\r\n", i).as_bytes());
+        }
+
+        // Verify pre-resize state
+        vt.parser.screen_mut().set_scrollback(usize::MAX);
+        let pre_scrollback = vt.parser.screen().scrollback();
+        vt.parser.screen_mut().set_scrollback(0);
+        assert_eq!(pre_scrollback, 37, "pre-resize scrollback");
+
+        // Web client connects → resize to 45×156 (simulates viewport negotiation)
+        vt.resize(45, 156);
+
+        // Simulate SIGWINCH redraw: PTY clears screen and re-outputs content
+        // at the new column width.  This is what Claude does after resize.
+        vt.process_output(b"\x1b[H\x1b[2J"); // clear screen
+        for i in 0..89 {
+            vt.process_output(format!("Line {:03}\r\n", i).as_bytes());
+        }
+
+        // Replay for a 45-row client
+        let mut client = replay_roundtrip(&mut vt, 45, 156);
+        let sb = scrollback_lines(&mut client, 156);
+
+        // Scrollback should only contain post-resize content (from the redraw).
+        // Pre-resize scrollback (at 209-col width) should be trimmed.
+        // No line should appear more than once.
+        let mut seen = std::collections::HashSet::new();
+        for (idx, line) in sb.iter().enumerate() {
+            if let Some(pos) = line.find("Line ") {
+                let label = &line[pos..pos + 8];
+                assert!(
+                    seen.insert(label.to_string()),
+                    "scrollback line {} is duplicated: {:?}",
+                    idx,
+                    label,
+                );
+            }
+        }
+    }
+
+    /// Regression: small scrollback (< client_rows) must not inject blank
+    /// lines into the client's scrollback buffer during flush.
+    #[test]
+    fn test_replay_flush_no_blank_gap() {
+        // Simulate the exact production scenario: 53-row client, few scrollback lines
+        let mut vt = VirtualTerminal::new(53, 209, 4096, 10000);
+        // 58 lines in 53 rows → 6 scrollback lines (Line 00..05)
+        for i in 0..58 {
+            vt.process_output(format!("Line {:02}\r\n", i).as_bytes());
+        }
+
+        let mut client = replay_roundtrip(&mut vt, 53, 209);
+        let sb = scrollback_lines(&mut client, 209);
+
+        // Every scrollback line must have content — no blank gap
+        for (idx, line) in sb.iter().enumerate() {
+            assert!(
+                !line.is_empty(),
+                "scrollback line {} is blank (flush injected empty rows)",
+                idx,
+            );
+        }
+
+        assert_eq!(sb.len(), 6, "expected 6 scrollback lines, got {}", sb.len());
+        assert!(sb[0].contains("Line 00"));
+        assert!(sb[5].contains("Line 05"));
     }
 
     // ── View-switch test harness ────────────────────────────────────
@@ -2888,6 +3105,467 @@ mod tests {
         assert_eq!(
             replay_before, replay_after,
             "single-client view-switch cycles should not alter the replay"
+        );
+    }
+
+    // ── Resize race diagnostic tests ────────────────────────────────
+    //
+    // Between UpdateViewport (set_size on VT) and Resize (SIGWINCH to
+    // child), PTY output arrives formatted for the OLD dimensions but
+    // is processed by a VT at the NEW dimensions.  These tests verify
+    // whether that transient mismatch corrupts scrollback.
+
+    /// Helper: generate CUP-positioned output that a shell/TUI would
+    /// produce at the given dimensions.  Each row gets `\x1b[R;1H` + text.
+    fn cup_output(rows: u16, cols: u16, label: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for r in 0..rows {
+            out.extend_from_slice(format!("\x1b[{};1H", r + 1).as_bytes());
+            let text = format!("{} r{:02} {}x{}", label, r, rows, cols);
+            out.extend_from_slice(text.as_bytes());
+            // Pad remaining cols with spaces to simulate full-width writes
+            let remaining = cols as usize - text.len().min(cols as usize);
+            for _ in 0..remaining {
+                out.push(b' ');
+            }
+        }
+        out
+    }
+
+    /// Simulate the resize race: VT resized to new dims, then output
+    /// at OLD dims arrives before SIGWINCH.  Check scrollback integrity.
+    #[test]
+    fn test_resize_race_output_at_old_dims() {
+        let old_rows: u16 = 24;
+        let old_cols: u16 = 80;
+        let new_rows: u16 = 52;
+        let new_cols: u16 = 193;
+
+        let mut vt = VirtualTerminal::new(old_rows, old_cols, 4096, 500);
+
+        // Phase 1: initial output at old dims — fills scrollback
+        for i in 0..60 {
+            vt.process_output(format!("Init {:03}\r\n", i).as_bytes());
+        }
+
+        // Capture scrollback baseline
+        let (sb_before, vis_before) = server_all_content(&mut vt);
+        let init_count_before = (0..60)
+            .filter(|i| {
+                let needle = format!("Init {:03}", i);
+                count_in_all(&sb_before, &vis_before, &needle) == 1
+            })
+            .count();
+        assert_eq!(
+            init_count_before, 60,
+            "all Init lines should be present once before resize"
+        );
+
+        // Phase 2: web client connects — VT resizes to new dims
+        // (simulates UpdateViewport actor command)
+        vt.update_viewport("web", new_rows, new_cols, ClientType::Web);
+
+        // Phase 3: output at OLD dims arrives BEFORE SIGWINCH
+        // (PTY reader processes output during the race window)
+        // This simulates a few lines scrolling at the bottom of a 24-row screen
+        // being processed by a VT that's now 52 rows.
+        for i in 0..5 {
+            vt.process_output(format!("Race {:02}\r\n", i).as_bytes());
+        }
+
+        // Phase 4: SIGWINCH arrives — child redraws at new dims
+        let mut redraw = Vec::new();
+        redraw.extend_from_slice(b"\x1b[H\x1b[2J");
+        for r in 0..new_rows {
+            redraw.extend_from_slice(
+                format!("New r{:02} {}x{}\r\n", r, new_rows, new_cols).as_bytes(),
+            );
+        }
+        vt.process_output(&redraw);
+
+        // Phase 5: check server VT for Init duplicates
+        let (sb_after, vis_after) = server_all_content(&mut vt);
+        let mut init_dups = Vec::new();
+        for i in 0..60 {
+            let needle = format!("Init {:03}", i);
+            let n = count_in_all(&sb_after, &vis_after, &needle);
+            if n > 1 {
+                init_dups.push((needle, n));
+            }
+        }
+
+        // Phase 6: replay to client and check
+        let replay = vt.replay(new_rows);
+        let mut client = vt100::Parser::new(new_rows, new_cols, 1000);
+        client.process(&replay);
+        let (csb, cvis) = client_all_content(&mut client);
+        let mut client_dups = Vec::new();
+        for i in 0..60 {
+            let needle = format!("Init {:03}", i);
+            let n = count_in_all(&csb, &cvis, &needle);
+            if n > 1 {
+                client_dups.push((needle, n));
+            }
+        }
+
+        if !init_dups.is_empty() || !client_dups.is_empty() {
+            eprintln!("=== RESIZE RACE DIAGNOSTIC ===");
+            eprintln!("server dups: {:?}", &init_dups[..init_dups.len().min(5)]);
+            eprintln!(
+                "client dups: {:?}",
+                &client_dups[..client_dups.len().min(5)]
+            );
+            let sb_ne: Vec<_> = sb_after.iter().filter(|l| !l.is_empty()).collect();
+            eprintln!(
+                "server scrollback[..10]: {:?}",
+                &sb_ne[..sb_ne.len().min(10)]
+            );
+        }
+
+        assert!(
+            init_dups.is_empty(),
+            "resize race: server has {} Init dups: {:?}",
+            init_dups.len(),
+            &init_dups[..init_dups.len().min(10)]
+        );
+        assert!(
+            client_dups.is_empty(),
+            "resize race: client has {} Init dups: {:?}",
+            client_dups.len(),
+            &client_dups[..client_dups.len().min(10)]
+        );
+    }
+
+    /// Same resize race but with CUP-positioned content (full-screen TUI).
+    #[test]
+    fn test_resize_race_cup_content() {
+        let old_rows: u16 = 24;
+        let old_cols: u16 = 80;
+
+        let mut vt = VirtualTerminal::new(old_rows, old_cols, 4096, 500);
+
+        // Fill with scrolling content, then a CUP-positioned redraw
+        for i in 0..40 {
+            vt.process_output(format!("Scroll {:03}\r\n", i).as_bytes());
+        }
+        // Full-screen CUP redraw at 24×80
+        vt.process_output(&cup_output(old_rows, old_cols, "CUP"));
+
+        // Web client with different dims
+        vt.update_viewport("web", 52, 193, ClientType::Web);
+
+        // CUP output at OLD dims during race window
+        vt.process_output(&cup_output(old_rows, old_cols, "RACE"));
+
+        // SIGWINCH redraw at new dims
+        let mut redraw = Vec::new();
+        redraw.extend_from_slice(b"\x1b[H\x1b[2J");
+        redraw.extend_from_slice(&cup_output(52, 193, "NEW"));
+        vt.process_output(&redraw);
+
+        // Replay should be valid
+        let replay = vt.replay(52);
+        let mut client = vt100::Parser::new(52, 193, 1000);
+        client.process(&replay);
+        let vis = visible_lines(client.screen());
+        let vis_ne: Vec<_> = vis.iter().filter(|l| !l.is_empty()).collect();
+
+        // Visible screen should show "NEW" content, not "RACE" or "CUP"
+        for line in &vis_ne {
+            assert!(
+                !line.contains("RACE") && !line.contains("CUP"),
+                "visible screen should only contain NEW content after SIGWINCH, got: {:?}",
+                line
+            );
+        }
+    }
+
+    /// Test that from_utf8_lossy round-trip doesn't corrupt replay bytes.
+    /// This simulates the server's GetRecentOutput conversion.
+    #[test]
+    fn test_replay_utf8_lossy_roundtrip() {
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 500);
+        // Content with UTF-8 characters
+        for i in 0..50 {
+            vt.process_output(format!("├── Line {:03} ─────┤\r\n", i).as_bytes());
+        }
+
+        let replay = vt.replay(24);
+
+        // Simulate server's conversion: bytes → String via from_utf8_lossy → bytes
+        let as_string = String::from_utf8_lossy(&replay).to_string();
+        let roundtripped = as_string.as_bytes();
+
+        // Bytes should be identical (no lossy replacement)
+        assert_eq!(
+            replay.len(),
+            roundtripped.len(),
+            "from_utf8_lossy changed replay byte length: {} → {}",
+            replay.len(),
+            roundtripped.len()
+        );
+        assert_eq!(
+            &replay, roundtripped,
+            "from_utf8_lossy modified replay bytes"
+        );
+
+        // Client should see correct content through either path
+        let mut client_direct = vt100::Parser::new(24, 80, 1000);
+        client_direct.process(&replay);
+        let vis_direct = visible_lines(client_direct.screen());
+
+        let mut client_lossy = vt100::Parser::new(24, 80, 1000);
+        client_lossy.process(roundtripped);
+        let vis_lossy = visible_lines(client_lossy.screen());
+
+        assert_eq!(
+            vis_direct, vis_lossy,
+            "visible lines differ after from_utf8_lossy round-trip"
+        );
+    }
+
+    /// Cell-by-cell comparison: server VT visible screen vs client after replay.
+    /// If these differ, the replay format has a rendering bug.
+    #[test]
+    fn test_replay_cell_by_cell_server_vs_client() {
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 500);
+
+        // Complex content: SGR colors, CUP positioning, scrolling
+        for i in 0..30 {
+            vt.process_output(format!("\x1b[32mGreen {:03}\x1b[0m\r\n", i).as_bytes());
+        }
+        // CUP-positioned status line
+        vt.process_output(b"\x1b[24;1H\x1b[7mStatus: OK\x1b[0m");
+
+        let replay = vt.replay(24);
+        let mut client = vt100::Parser::new(24, 80, 1000);
+        client.process(&replay);
+
+        // Compare each cell on the visible screen
+        let (rows, cols) = vt.screen().size();
+        let mut mismatches = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                let server_cell = vt.screen().cell(r, c);
+                let client_cell = client.screen().cell(r, c);
+                match (server_cell, client_cell) {
+                    (Some(sc), Some(cc)) => {
+                        if sc.contents() != cc.contents() {
+                            mismatches.push(format!(
+                                "({},{}) content: server={:?} client={:?}",
+                                r,
+                                c,
+                                sc.contents(),
+                                cc.contents()
+                            ));
+                        }
+                        if sc.fgcolor() != cc.fgcolor() {
+                            mismatches.push(format!(
+                                "({},{}) fgcolor: server={:?} client={:?}",
+                                r,
+                                c,
+                                sc.fgcolor(),
+                                cc.fgcolor()
+                            ));
+                        }
+                    }
+                    (None, Some(_)) | (Some(_), None) => {
+                        mismatches.push(format!(
+                            "({},{}) cell existence mismatch: server={} client={}",
+                            r,
+                            c,
+                            server_cell.is_some(),
+                            client_cell.is_some()
+                        ));
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+
+        if !mismatches.is_empty() {
+            eprintln!("=== CELL MISMATCH DIAGNOSTIC ===");
+            for m in &mismatches[..mismatches.len().min(20)] {
+                eprintln!("  {}", m);
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "found {} cell mismatches between server VT and client replay.\n  \
+             first 5: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(5)]
+        );
+    }
+
+    /// Test set_size row-shrink behavior: do excess rows go to scrollback?
+    /// This is critical for understanding corruption from resize cycles.
+    #[test]
+    fn test_set_size_shrink_scrollback_behavior() {
+        let mut parser = vt100::Parser::new(52, 193, 500);
+
+        // Fill all 52 rows with content
+        for r in 0..52 {
+            parser.process(format!("\x1b[{};1HRow {:02} at 52x193", r + 1, r).as_bytes());
+        }
+
+        // Verify content before shrink
+        let before_vis = visible_lines(parser.screen());
+        let before_ne: Vec<_> = before_vis.iter().filter(|l| !l.is_empty()).collect();
+        assert_eq!(before_ne.len(), 52, "should have 52 non-empty rows");
+
+        // Check scrollback before shrink
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let sb_before = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(0);
+
+        // Shrink from 52 to 24 rows
+        parser.screen_mut().set_size(24, 80);
+
+        let after_vis = visible_lines(parser.screen());
+        let after_ne: Vec<_> = after_vis.iter().filter(|l| !l.is_empty()).collect();
+
+        // Check scrollback after shrink
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let sb_after = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(0);
+
+        eprintln!("=== SET_SIZE SHRINK BEHAVIOR ===");
+        eprintln!("Before: 52 rows, scrollback={}", sb_before);
+        eprintln!(
+            "After: 24 rows, scrollback={}, visible non-empty={}",
+            sb_after,
+            after_ne.len()
+        );
+        eprintln!("Visible[..5]: {:?}", &after_ne[..after_ne.len().min(5)]);
+
+        if sb_after > sb_before {
+            let sb_lines = scrollback_lines(&mut parser, 80);
+            let sb_ne: Vec<_> = sb_lines.iter().filter(|l| !l.is_empty()).collect();
+            eprintln!(
+                "New scrollback content[..10]: {:?}",
+                &sb_ne[..sb_ne.len().min(10)]
+            );
+        }
+
+        // The key question: did rows 24-51 go to scrollback?
+        // If yes, scrollback grew by ~28 rows.
+        eprintln!(
+            "Scrollback grew by: {} rows",
+            sb_after as i64 - sb_before as i64
+        );
+    }
+
+    /// Reproduce the EXACT user scenario with resize cycles and check
+    /// that scrollback doesn't accumulate garbage across cycles.
+    #[test]
+    fn test_resize_cycle_scrollback_accumulation() {
+        // Start at typical TUI-like dims
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 500);
+        vt.update_viewport("web", 24, 80, ClientType::Web);
+
+        // Fill with content
+        for i in 0..60 {
+            vt.process_output(format!("Line {:03}\r\n", i).as_bytes());
+        }
+
+        // Baseline: count scrollback lines
+        vt.parser.screen_mut().set_scrollback(usize::MAX);
+        let baseline_sb = vt.parser.screen().scrollback();
+        vt.parser.screen_mut().set_scrollback(0);
+        let baseline_replay = vt.replay(24);
+
+        // TUI connects with larger dims
+        vt.update_viewport("tui", 52, 193, ClientType::Terminal);
+        // Effective = min(24, 52) x min(80, 193) = 24x80
+
+        // Now simulate 5 web close/open cycles (TUI stays connected)
+        for cycle in 0..5 {
+            // Web closes → effective dims become TUI-only (52x193)
+            if let Some((r, c)) = vt.set_active("web", false) {
+                vt.resize(r, c);
+                // SIGWINCH redraw at larger dims
+                let mut redraw = Vec::new();
+                redraw.extend_from_slice(b"\x1b[H\x1b[2J");
+                for row in 0..r {
+                    redraw
+                        .extend_from_slice(format!("Redraw c{} r{:02}\r\n", cycle, row).as_bytes());
+                }
+                vt.process_output(&redraw);
+            }
+
+            // Check scrollback growth
+            vt.parser.screen_mut().set_scrollback(usize::MAX);
+            let mid_sb = vt.parser.screen().scrollback();
+            vt.parser.screen_mut().set_scrollback(0);
+
+            // Web opens → effective dims shrink back to 24x80
+            if let Some((r, c)) = vt.update_viewport("web", 24, 80, ClientType::Web) {
+                vt.resize(r, c);
+                // SIGWINCH redraw at smaller dims
+                let mut redraw = Vec::new();
+                redraw.extend_from_slice(b"\x1b[H\x1b[2J");
+                for row in 0..r {
+                    redraw.extend_from_slice(format!("Show c{} r{:02}\r\n", cycle, row).as_bytes());
+                }
+                vt.process_output(&redraw);
+            }
+
+            vt.parser.screen_mut().set_scrollback(usize::MAX);
+            let end_sb = vt.parser.screen().scrollback();
+            vt.parser.screen_mut().set_scrollback(0);
+
+            eprintln!(
+                "Cycle {}: mid_sb={} end_sb={} (baseline={})",
+                cycle, mid_sb, end_sb, baseline_sb
+            );
+        }
+
+        // After 5 cycles: check for Line duplicates
+        let (sb_final, vis_final) = server_all_content(&mut vt);
+        let mut dups = Vec::new();
+        for i in 0..60 {
+            let needle = format!("Line {:03}", i);
+            let n = count_in_all(&sb_final, &vis_final, &needle);
+            if n > 1 {
+                dups.push((needle.clone(), n));
+            }
+        }
+
+        if !dups.is_empty() {
+            eprintln!("=== RESIZE CYCLE ACCUMULATION ===");
+            eprintln!("Found {} duplicated Line entries", dups.len());
+            eprintln!("Dups: {:?}", &dups[..dups.len().min(10)]);
+        }
+
+        // Replay to client and check
+        let post_replay = vt.replay(24);
+        let mut client = vt100::Parser::new(24, 80, 1000);
+        client.process(&post_replay);
+        let (csb, cvis) = client_all_content(&mut client);
+        let mut client_dups = Vec::new();
+        for i in 0..60 {
+            let needle = format!("Line {:03}", i);
+            let n = count_in_all(&csb, &cvis, &needle);
+            if n > 1 {
+                client_dups.push((needle, n));
+            }
+        }
+
+        // This test is DIAGNOSTIC — we want to see the output even if it passes.
+        // The actual assertion:
+        assert!(
+            dups.is_empty(),
+            "server has {} Line dups after 5 resize cycles: {:?}",
+            dups.len(),
+            &dups[..dups.len().min(10)]
+        );
+        assert!(
+            client_dups.is_empty(),
+            "client has {} Line dups after 5 resize cycles: {:?}",
+            client_dups.len(),
+            &client_dups[..client_dups.len().min(10)]
         );
     }
 

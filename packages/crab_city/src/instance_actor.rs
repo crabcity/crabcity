@@ -9,7 +9,7 @@ use uuid::Uuid;
 use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
-use crate::virtual_terminal::{ClientType, VirtualTerminal};
+use crate::virtual_terminal::{ClientType, VirtualTerminal, VtRecorder};
 
 /// PTY output enriched with cursor position from the VirtualTerminal.
 /// Produced by the VT processing task after feeding output to the parser.
@@ -426,6 +426,8 @@ pub struct SpawnOptions {
     pub max_buffer_bytes: usize,
     /// Number of scrollback lines the server-side vt100 parser retains
     pub scrollback_lines: usize,
+    /// Directory to write VT session recordings. None = recording disabled.
+    pub vt_record_dir: Option<std::path::PathBuf>,
 }
 
 /// Handle VT and compositor commands.
@@ -537,6 +539,7 @@ struct InstanceActor {
     virtual_terminal: Arc<Mutex<VirtualTerminal>>,
     compositor: Arc<RwLock<Compositor>>,
     enriched_tx: broadcast::Sender<EnrichedOutput>,
+    recorder: Option<Arc<Mutex<VtRecorder<std::fs::File>>>>,
 }
 
 impl InstanceActor {
@@ -594,6 +597,24 @@ impl InstanceActor {
         let compositor = Arc::new(RwLock::new(Compositor::new()));
         let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
 
+        let recorder = opts.vt_record_dir.as_ref().and_then(|dir| {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                tracing::warn!("VT recording disabled — cannot create {}: {e}", dir.display());
+                return None;
+            }
+            let path = dir.join(format!("{id}.vtr"));
+            match VtRecorder::open(&path, 24, 80, opts.scrollback_lines as u32) {
+                Ok(r) => {
+                    debug!("VT recording → {}", path.display());
+                    Some(Arc::new(Mutex::new(r)))
+                }
+                Err(e) => {
+                    tracing::warn!("VT recording disabled — cannot open {}: {e}", path.display());
+                    None
+                }
+            }
+        });
+
         let actor = InstanceActor {
             info: info.clone(),
             pty: pty.clone(),
@@ -601,6 +622,7 @@ impl InstanceActor {
             virtual_terminal: virtual_terminal.clone(),
             compositor: compositor.clone(),
             enriched_tx: enriched_tx.clone(),
+            recorder: recorder.clone(),
         };
 
         // Start the output collection task - feed PTY output to VirtualTerminal,
@@ -609,6 +631,9 @@ impl InstanceActor {
         let vt_clone = virtual_terminal.clone();
         tokio::spawn(async move {
             while let Ok(event) = output_rx.recv().await {
+                if let Some(rec) = &recorder {
+                    rec.lock().await.output(&event.data);
+                }
                 let mut vt = vt_clone.lock().await;
                 vt.process_output(&event.data);
                 let cursor = vt.cursor_position();
@@ -644,6 +669,9 @@ impl InstanceActor {
 
                 InstanceCommand::WriteInput { text, respond_to } => {
                     debug!("Writing {} bytes to PTY", text.len());
+                    if let Some(rec) = &self.recorder {
+                        rec.lock().await.input(text.as_bytes());
+                    }
                     let result = self
                         .pty
                         .write_str(&text)
@@ -657,6 +685,9 @@ impl InstanceActor {
                     cols,
                     respond_to,
                 } => {
+                    if let Some(rec) = &self.recorder {
+                        rec.lock().await.resize(rows, cols);
+                    }
                     let result = self
                         .pty
                         .resize(rows, cols)

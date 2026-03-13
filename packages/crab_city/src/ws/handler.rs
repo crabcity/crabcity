@@ -376,6 +376,13 @@ pub async fn handle_multiplexed_ws(
                                 rows,
                                 cols,
                             } => {
+                                debug!(
+                                    conn = %connection_id_clone,
+                                    instance = %instance_id,
+                                    rows,
+                                    cols,
+                                    "TerminalVisible"
+                                );
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await {
                                     if let Err(e) = handle
                                         .update_viewport_and_resize(
@@ -400,6 +407,11 @@ pub async fn handle_multiplexed_ws(
                                 }
                             }
                             ClientMessage::TerminalHidden { instance_id } => {
+                                debug!(
+                                    conn = %connection_id_clone,
+                                    instance = %instance_id,
+                                    "TerminalHidden"
+                                );
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await
                                     && let Err(e) = handle
                                         .set_active_and_resize(&connection_id_clone, false)

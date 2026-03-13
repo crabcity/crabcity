@@ -79,6 +79,10 @@ pub struct ServerFileConfig {
     pub hang_timeout_secs: u64,
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: usize,
+    /// Directory to write VT session recordings (`.vtr` files) for golden tests.
+    /// When set, every instance captures PTY output/input/resize events.
+    #[serde(default)]
+    pub vt_record_dir: Option<String>,
 }
 
 impl Default for ServerFileConfig {
@@ -90,6 +94,7 @@ impl Default for ServerFileConfig {
             max_history_kb: default_max_history_kb(),
             hang_timeout_secs: default_hang_timeout_secs(),
             scrollback_lines: default_scrollback_lines(),
+            vt_record_dir: None,
         }
     }
 }
@@ -257,6 +262,8 @@ pub struct InstanceConfig {
     /// Number of PTY spawn retries
     #[allow(dead_code)]
     pub spawn_retries: usize,
+    /// Directory to write VT session recordings. None = recording disabled.
+    pub vt_record_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +302,7 @@ impl ServerConfig {
                     Some(Duration::from_secs(fc.hang_timeout_secs))
                 },
                 spawn_retries: 2,
+                vt_record_dir: fc.vt_record_dir.as_deref().map(PathBuf::from),
             },
             websocket: WebSocketConfig {
                 send_channel_capacity: 100,

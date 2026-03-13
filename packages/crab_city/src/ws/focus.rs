@@ -341,6 +341,11 @@ pub async fn handle_focus(
             // baked into the replay isn't also forwarded as live Output
             // (which would cause the client to see duplicate content).
             Some(client_rows) = refresh_rx.recv() => {
+                debug!(
+                    instance = %instance_id,
+                    client_rows,
+                    "refresh_rx: sending OutputHistory"
+                );
                 if send_output_history(&handle, &instance_id, usize::MAX, client_rows, &tx)
                     .await
                     .is_err()
@@ -348,7 +353,15 @@ pub async fn handle_focus(
                     break;
                 }
                 // Drain broadcasts already included in the replay.
-                while output_rx.try_recv().is_ok() {}
+                let mut drained = 0u64;
+                while output_rx.try_recv().is_ok() { drained += 1; }
+                if drained > 0 {
+                    debug!(
+                        instance = %instance_id,
+                        drained,
+                        "refresh_rx: drained stale broadcasts"
+                    );
+                }
                 decoder.clear();
             }
             // Forward conversation events from server-owned watcher

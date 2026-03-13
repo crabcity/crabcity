@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence, reconnect, shutdownReason } from '$lib/stores/websocket';
-	import { currentTerminalHasOutput, consumeTerminalOutput } from '$lib/stores/terminal';
+	import { currentTerminalHasOutput, consumeTerminalOutput, markAwaitingReplay } from '$lib/stores/terminal';
 	import { currentInstanceId, consumeTerminalFocus } from '$lib/stores/instances';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
 	import { theme } from '$lib/stores/settings';
@@ -165,6 +165,14 @@
 			requestAnimationFrame(() => {
 				fitAddon?.fit();
 				isReady = true;
+
+				// Discard any Output accumulated while the terminal was hidden
+				// and block new Output until the full replay (OutputHistory)
+				// arrives.  Without this, stale Output enters xterm.js's async
+				// write queue before the replay, and terminal.clear() can't
+				// remove queued-but-unprocessed writes — causing duplicated
+				// scrollback content on view switch / reload.
+				markAwaitingReplay(mountedInstanceId!);
 
 				// Now that terminal is ready, set up output subscription
 				setupOutputSubscription();
