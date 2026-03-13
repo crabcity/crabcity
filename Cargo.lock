@@ -484,13 +484,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "compositor"
-version = "0.2.0"
-dependencies = [
- "vt100",
-]
-
-[[package]]
 name = "compression-codecs"
 version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,7 +551,6 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "compositor",
  "crab_city_ui",
  "dirs 5.0.1",
  "figment",

@@ -71,7 +71,7 @@ Use `sqlx::query!` / `sqlx::query_as!` for compile-time checked queries.
 
 ### Instance Lifecycle
 
-Instances flow through: Created → Running → Stopped. The actor model (`instance_actor.rs`) owns the PTY handle, virtual terminal, and compositor for each instance. The `instance_manager.rs` coordinates creation and teardown.
+Instances flow through: Created → Running → Stopped. The actor model (`instance_actor.rs`) owns the PTY handle and virtual terminal for each instance. The `instance_manager.rs` coordinates creation and teardown.
 
 ## Testing
 

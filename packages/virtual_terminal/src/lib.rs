@@ -1645,7 +1645,7 @@ mod tests {
     /// Extract ALL content from a VT: scrollback + visible, in order.
     /// Returns (scrollback_lines, visible_lines) — both oldest-first.
     fn server_all_content(vt: &mut VirtualTerminal) -> (Vec<String>, Vec<String>) {
-        let (rows, cols) = vt.parser.screen().size();
+        let (_rows, cols) = vt.parser.screen().size();
 
         // Scrollback
         vt.parser.screen_mut().set_scrollback(usize::MAX);
@@ -1682,7 +1682,7 @@ mod tests {
 
     /// Extract ALL content from a client parser: scrollback + visible.
     fn client_all_content(parser: &mut vt100::Parser) -> (Vec<String>, Vec<String>) {
-        let (rows, cols) = parser.screen().size();
+        let (_rows, cols) = parser.screen().size();
         let sb = scrollback_lines(parser, cols);
         let vis = visible_lines(parser.screen());
         (sb, vis)
@@ -1785,7 +1785,7 @@ mod tests {
 
         // Baseline: check server state
         let (sb_before, vis_before) = server_all_content(&mut vt);
-        let content_before = sb_before
+        let _content_before = sb_before
             .iter()
             .chain(vis_before.iter())
             .filter(|l| !l.is_empty())
@@ -2321,7 +2321,7 @@ mod tests {
 
             // Collect ALL client scrollback lines
             let sb = scrollback_lines(&mut client, 80);
-            let vis = visible_lines(client.screen());
+            let _vis = visible_lines(client.screen());
 
             // Find runs of empty lines in scrollback
             let mut empty_run = 0;
@@ -2397,7 +2397,7 @@ mod tests {
                 scrollback_section.len(),
                 scrollback_lines.len()
             );
-            if scrollback_lines.len() > 0 {
+            if !scrollback_lines.is_empty() {
                 eprintln!(
                     "  first 3: {:?}",
                     &scrollback_lines[..scrollback_lines.len().min(3)]
@@ -2799,13 +2799,13 @@ mod tests {
         // Lines should be in ascending order
         let mut prev: Option<u32> = None;
         for line in &content {
-            if let Some(pos) = line.find("Line ") {
-                if let Ok(num) = line[pos + 5..pos + 7].trim().parse::<u32>() {
-                    if let Some(p) = prev {
-                        assert!(num > p, "order broken: {} then {}", p, num);
-                    }
-                    prev = Some(num);
+            if let Some(pos) = line.find("Line ")
+                && let Ok(num) = line[pos + 5..pos + 7].trim().parse::<u32>()
+            {
+                if let Some(p) = prev {
+                    assert!(num > p, "order broken: {} then {}", p, num);
                 }
+                prev = Some(num);
             }
         }
     }
@@ -3140,9 +3140,7 @@ mod tests {
             out.extend_from_slice(text.as_bytes());
             // Pad remaining cols with spaces to simulate full-width writes
             let remaining = cols as usize - text.len().min(cols as usize);
-            for _ in 0..remaining {
-                out.push(b' ');
-            }
+            out.extend(std::iter::repeat_n(b' ', remaining));
         }
         out
     }
@@ -3489,7 +3487,7 @@ mod tests {
         vt.parser.screen_mut().set_scrollback(usize::MAX);
         let baseline_sb = vt.parser.screen().scrollback();
         vt.parser.screen_mut().set_scrollback(0);
-        let baseline_replay = vt.replay(24);
+        let _baseline_replay = vt.replay(24);
 
         // TUI connects with larger dims
         vt.update_viewport("tui", 52, 193, ClientType::Terminal);
