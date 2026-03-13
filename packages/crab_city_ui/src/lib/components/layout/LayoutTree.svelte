@@ -96,6 +96,7 @@
 
 <script module lang="ts">
 	import type { LayoutNode as LN, PaneState as PS } from '$lib/stores/layout';
+	import { getPaneInstanceId } from '$lib/stores/layout';
 	import type { Instance as Inst } from '$lib/types';
 
 	function collectLeaves(node: LN): string[] {
@@ -105,13 +106,18 @@
 
 	function getMobileTabLabel(pane: PS | undefined, instanceMap: Map<string, Inst>): string {
 		if (!pane) return 'Pane';
-		const kind = pane.content.kind;
-		if ((kind === 'terminal' || kind === 'conversation') && pane.content.instanceId) {
-			const inst = instanceMap.get(pane.content.instanceId);
+		const content = pane.content;
+		const kind = content.kind;
+		if ((kind === 'terminal' || kind === 'conversation') && content.instanceId) {
+			const inst = instanceMap.get(content.instanceId);
 			if (inst) {
 				const name = inst.custom_name || inst.name;
 				return name.length > 12 ? name.slice(0, 12) + '\u2026' : name;
 			}
+		}
+		if (kind === 'file-viewer' && content.filePath) {
+			const filename = content.filePath.split('/').pop() ?? 'File';
+			return filename.length > 12 ? filename.slice(0, 12) + '\u2026' : filename;
 		}
 		const kindLabels: Record<string, string> = {
 			'terminal': 'Terminal',
@@ -130,9 +136,9 @@
 		instanceMap: Map<string, Inst>
 	): 'thinking' | 'responding' | 'tool' | null {
 		if (!pane) return null;
-		const kind = pane.content.kind;
-		if (kind !== 'terminal' && kind !== 'conversation') return null;
-		const id = pane.content.instanceId;
+		const content = pane.content;
+		if (content.kind !== 'terminal' && content.kind !== 'conversation') return null;
+		const id = content.instanceId;
 		if (!id) return null;
 		const inst = instanceMap.get(id);
 		if (!inst) return null;

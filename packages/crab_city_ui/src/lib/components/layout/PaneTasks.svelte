@@ -1,5 +1,11 @@
 <script lang="ts">
 	import TaskPanel from '../TaskPanel.svelte';
+
+	interface Props {
+		instanceId: string | null;
+	}
+
+	let { instanceId }: Props = $props();
 </script>
 
 <div class="pane-tasks">

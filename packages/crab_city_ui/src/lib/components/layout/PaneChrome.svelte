@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { PaneState, PaneContentKind } from '$lib/stores/layout';
-	import { paneCount, splitPane, closePane, setPaneContent } from '$lib/stores/layout';
-	import { instances } from '$lib/stores/instances';
+	import type { PaneState, PaneContentKind, PaneContent } from '$lib/stores/layout';
+	import { paneCount, splitPane, closePane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
+	import { instances, instanceList, currentInstanceId } from '$lib/stores/instances';
 
 	interface Props {
 		pane: PaneState;
@@ -11,13 +11,23 @@
 
 	const canClose = $derived($paneCount > 1);
 
+	// Whether this pane kind carries an instanceId
+	const hasInstanceId = $derived(
+		pane.content.kind === 'terminal' ||
+		pane.content.kind === 'conversation' ||
+		pane.content.kind === 'file-explorer' ||
+		pane.content.kind === 'tasks' ||
+		pane.content.kind === 'git'
+	);
+
+	const paneInstanceId = $derived(getPaneInstanceId(pane.content));
+
 	// Instance status indicator for terminal/conversation panes
 	const instanceStatus = $derived.by((): 'thinking' | 'responding' | 'tool' | 'idle' | null => {
-		const id = pane.content.instanceId;
-		if (!id) return null;
+		if (!paneInstanceId) return null;
 		const kind = pane.content.kind;
 		if (kind !== 'terminal' && kind !== 'conversation') return null;
-		const inst = $instances.get(id);
+		const inst = $instances.get(paneInstanceId);
 		if (!inst) return null;
 		const cs = inst.claude_state;
 		if (!cs) return 'idle';
@@ -34,6 +44,21 @@
 		return null;
 	});
 
+	// File name for file-viewer chrome
+	const fileViewerLabel = $derived.by(() => {
+		if (pane.content.kind !== 'file-viewer') return null;
+		const fp = pane.content.filePath;
+		if (!fp) return 'No file';
+		const name = fp.split('/').pop() ?? fp;
+		return name.length > 20 ? name.slice(0, 20) + '\u2026' : name;
+	});
+
+	// Scope label for chat chrome
+	const chatScopeLabel = $derived.by(() => {
+		if (pane.content.kind !== 'chat') return null;
+		return pane.content.scope === 'global' ? 'Global' : 'Instance';
+	});
+
 	function handleSplitVertical() {
 		splitPane(pane.id, 'vertical');
 	}
@@ -47,8 +72,16 @@
 	}
 
 	function handleContentChange(e: Event) {
-		const kind = (e.target as HTMLSelectElement).value as PaneContentKind;
-		setPaneContent(pane.id, { ...pane.content, kind });
+		const newKind = (e.target as HTMLSelectElement).value as PaneContentKind;
+		const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
+		setPaneContent(pane.id, defaultContentForKind(newKind, instanceId));
+	}
+
+	function handleInstanceChange(e: Event) {
+		const newId = (e.target as HTMLSelectElement).value || null;
+		if ('instanceId' in pane.content) {
+			setPaneContent(pane.id, { ...pane.content, instanceId: newId });
+		}
 	}
 </script>
 
@@ -78,6 +111,26 @@
 		<option value="file-viewer">File Viewer</option>
 		<option value="git">Git</option>
 	</select>
+	{#if hasInstanceId}
+		<span class="chrome-sep">/</span>
+		<select
+			class="instance-select"
+			value={paneInstanceId ?? ''}
+			onchange={handleInstanceChange}
+			aria-label="Instance"
+		>
+			<option value="">None</option>
+			{#each $instanceList as inst}
+				<option value={inst.id}>{inst.custom_name ?? inst.name}</option>
+			{/each}
+		</select>
+	{:else if pane.content.kind === 'file-viewer'}
+		<span class="chrome-sep">/</span>
+		<span class="chrome-label">{fileViewerLabel}</span>
+	{:else if pane.content.kind === 'chat'}
+		<span class="chrome-sep">/</span>
+		<span class="chrome-label">{chatScopeLabel}</span>
+	{/if}
 	<div class="pane-spacer"></div>
 	<div class="pane-actions">
 		<button
@@ -185,6 +238,53 @@
 		color: var(--text-primary);
 		text-transform: none;
 		letter-spacing: normal;
+	}
+
+	.chrome-sep {
+		color: var(--text-muted);
+		opacity: 0.3;
+		font-size: 10px;
+		flex-shrink: 0;
+	}
+
+	.instance-select {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		color: var(--text-secondary);
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		font-family: inherit;
+		padding: 0;
+		outline: none;
+		appearance: none;
+		-webkit-appearance: none;
+		max-width: 120px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.instance-select:hover {
+		color: var(--amber-400);
+	}
+
+	.instance-select option {
+		background: var(--surface-600);
+		color: var(--text-primary);
+		letter-spacing: normal;
+	}
+
+	.chrome-label {
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--text-muted);
+		letter-spacing: 0.05em;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 120px;
 	}
 
 	.pane-spacer {

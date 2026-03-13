@@ -1,7 +1,7 @@
 /**
  * UI State Store
  *
- * Manages responsive UI state like sidebar visibility on mobile
+ * Manages responsive UI state
  */
 
 import { writable, derived } from 'svelte/store';
@@ -25,33 +25,8 @@ export const isTablet = derived(viewportWidth, $w => $w >= BREAKPOINTS.mobile &&
 /** Whether we're on desktop */
 export const isDesktop = derived(viewportWidth, $w => $w >= BREAKPOINTS.tablet);
 
-/** Mobile sidebar open state */
-export const sidebarOpen = writable<boolean>(false);
-
-/** Toggle mobile sidebar */
-export function toggleSidebar(): void {
-	sidebarOpen.update(v => !v);
-}
-
-/** Close mobile sidebar */
-export function closeSidebar(): void {
-	sidebarOpen.set(false);
-}
-
-/** Open mobile sidebar */
-export function openSidebar(): void {
-	sidebarOpen.set(true);
-}
-
 // Initialize viewport listener
 if (browser) {
 	const updateWidth = () => viewportWidth.set(window.innerWidth);
 	window.addEventListener('resize', updateWidth);
-
-	// Close sidebar on resize to desktop
-	viewportWidth.subscribe(w => {
-		if (w >= BREAKPOINTS.tablet) {
-			closeSidebar();
-		}
-	});
 }
