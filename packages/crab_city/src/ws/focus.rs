@@ -728,7 +728,7 @@ mod tests {
     /// Helper: create a state manager with conversation turns pre-loaded.
     async fn setup_state_with_turns(turns: Vec<serde_json::Value>) -> Arc<GlobalStateManager> {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         mgr.set_test_conversation_turns("inst-1", turns).await;
         mgr
@@ -824,7 +824,7 @@ mod tests {
     #[tokio::test]
     async fn send_nothing_when_store_empty() {
         let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
         mgr.insert_test_tracker("inst-1", handle).await;
         let (tx, mut rx) = mpsc::channel(16);
 
@@ -839,8 +839,8 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_sent_when_buffer_nonempty() {
-        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
+        let (handle, output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        InstanceHandle::inject_output(&output_tx, b"Hello from test\r\nLine 2").await;
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, 24, &tx)
@@ -862,7 +862,7 @@ mod tests {
         // Even a fresh VT produces a screen-dump keyframe, so OutputHistory
         // is always sent. This is correct — the client gets a blank screen
         // rather than stale content.
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, 24, &tx)
@@ -879,7 +879,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_err_on_closed_channel() {
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, rx) = mpsc::channel(16);
         drop(rx); // close the receiver

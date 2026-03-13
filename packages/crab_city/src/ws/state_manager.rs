@@ -19,6 +19,22 @@ use crate::repository::ConversationRepository;
 use super::conversation_watcher::run_server_conversation_watcher;
 use super::protocol::{PresenceUser, ServerMessage, WsUser};
 
+/// Everything a transport layer knows about an input event.
+/// Both WS handlers build this and call `handle_input()`. Nothing else.
+pub struct InputContext {
+    pub instance_id: String,
+    pub data: String,
+    pub connection_id: String,
+    /// Optional — TUI has no authenticated user
+    pub user: Option<InputUser>,
+    pub task_id: Option<i64>,
+}
+
+pub struct InputUser {
+    pub user_id: String,
+    pub display_name: String,
+}
+
 /// Entry in the presence map: one per WebSocket connection.
 #[derive(Debug, Clone)]
 struct PresenceEntry {
@@ -407,13 +423,20 @@ impl GlobalStateManager {
             }
         } else {
             // Individual keystroke — accumulate in the line buffer.
-            // Skip control characters and escape sequences that won't
-            // appear in the JSONL user entry text.
+            // Handle backspace/DEL by removing the last character, and
+            // skip other control characters and escape sequences that
+            // won't appear in the JSONL user entry text.
             let first_byte = content.as_bytes().first().copied().unwrap_or(0);
-            let is_control = first_byte < 0x20 || first_byte == 0x7f;
-            if !is_control {
+            if first_byte == 0x7f || first_byte == 0x08 {
+                // Backspace (0x7f DEL or 0x08 BS): remove last char to
+                // mirror what the PTY line discipline delivers to Claude.
+                data.pending_line.pop();
+            } else if first_byte >= 0x20 {
                 data.pending_line.push_str(content);
             }
+            // Other control chars (0x00-0x1f except 0x08) and escape
+            // sequences (0x1b...) are silently dropped — they don't
+            // appear in JSONL user entry text.
         }
 
         is_first
@@ -734,38 +757,87 @@ impl GlobalStateManager {
         }
     }
 
-    /// Process terminal input for an instance: send state signal, record for
-    /// session discovery, and write to PTY.
+    /// Unified input handler — the single entry point for all terminal input.
     ///
-    /// This is the single entry point for input handling — both the
-    /// multiplexed WebSocket handler and the TUI proxy call this instead of
-    /// duplicating the state-signal + mark_first_input + PTY-write ceremony.
+    /// Both the multiplexed WebSocket handler (web) and the TUI proxy call
+    /// this instead of duplicating the input ceremony. Performs:
     ///
-    /// Returns `Err` if the PTY write fails or the instance handle is gone.
-    pub async fn write_input(&self, instance_id: &str, data: &str) -> Result<(), String> {
-        // Send state signal for idle→thinking detection
+    /// 1. State signal (`TerminalInput`) for idle→thinking detection
+    /// 2. Session discovery content tracking (`mark_first_input`)
+    /// 3. Terminal lock keepalive (`touch_terminal_lock`)
+    /// 4. Real-time attribution tracking (`push_pending_attribution`)
+    /// 5. DB attribution persistence (`record_input_attribution`)
+    /// 6. PTY write (`handle.write_input`)
+    ///
+    /// Steps 3–5 are skipped when `ctx.user` is `None` (TUI path).
+    pub async fn handle_input(
+        &self,
+        ctx: InputContext,
+        repository: Option<&Arc<ConversationRepository>>,
+    ) -> Result<(), String> {
+        // 1. State signal for idle→thinking detection
         self.send_signal(
-            instance_id,
+            &ctx.instance_id,
             StateSignal::TerminalInput {
-                data: data.to_string(),
+                data: ctx.data.clone(),
             },
         )
         .await;
 
         let handle = self
-            .get_handle(instance_id)
+            .get_handle(&ctx.instance_id)
             .await
             .ok_or_else(|| "Instance handle not found".to_string())?;
 
-        // Record for session discovery (with line accumulation).
-        // Only relevant while the session hasn't been claimed yet.
+        // 2. Session discovery content tracking
         if handle.get_session_id().await.is_none() {
-            self.mark_first_input(instance_id, data).await;
+            self.mark_first_input(&ctx.instance_id, &ctx.data).await;
         }
 
-        // Write to PTY
+        // 3. Terminal lock keepalive
+        self.touch_terminal_lock(&ctx.instance_id, &ctx.connection_id)
+            .await;
+
+        // 4–5. Attribution (only when user is authenticated)
+        if let Some(ref user) = ctx.user {
+            let trimmed = ctx.data.trim();
+            if !trimmed.is_empty() && trimmed != "\r" && trimmed != "\n" {
+                // 4. Push in-process pending attribution for real-time content matching
+                self.push_pending_attribution(
+                    &ctx.instance_id,
+                    user.user_id.clone(),
+                    user.display_name.clone(),
+                    trimmed,
+                    ctx.task_id,
+                )
+                .await;
+
+                // 5. Persist to DB for historical audit
+                if let Some(repo) = repository {
+                    let attr = crate::models::InputAttribution {
+                        id: None,
+                        instance_id: ctx.instance_id.clone(),
+                        user_id: user.user_id.clone(),
+                        display_name: user.display_name.clone(),
+                        timestamp: chrono::Utc::now().timestamp(),
+                        entry_uuid: None,
+                        content_preview: Some(trimmed.chars().take(100).collect()),
+                        task_id: ctx.task_id,
+                    };
+                    let repo = repo.clone();
+                    let inst_id = ctx.instance_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = repo.record_input_attribution(&attr).await {
+                            warn!(instance = %inst_id, "Failed to record input attribution: {}", e);
+                        }
+                    });
+                }
+            }
+        }
+
+        // 6. PTY write
         handle
-            .write_input(data)
+            .write_input(&ctx.data)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -1008,6 +1080,45 @@ mod tests {
         let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
         assert_eq!(prefixes.len(), 1);
         assert_eq!(prefixes[0], "Hi");
+    }
+
+    #[tokio::test]
+    async fn test_mark_first_input_backspace_corrects_pending_line() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Type "helo", backspace (DEL), "lo" → should produce "hello"
+        for ch in ["h", "e", "l", "o"] {
+            state_mgr.mark_first_input("inst-1", ch).await;
+        }
+        state_mgr.mark_first_input("inst-1", "\x7f").await; // DEL
+        state_mgr.mark_first_input("inst-1", "l").await;
+        state_mgr.mark_first_input("inst-1", "o").await;
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_mark_first_input_backspace_bs_char() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Same test but with BS (0x08) instead of DEL (0x7f)
+        for ch in ["a", "b", "c"] {
+            state_mgr.mark_first_input("inst-1", ch).await;
+        }
+        state_mgr.mark_first_input("inst-1", "\x08").await; // BS
+        state_mgr.mark_first_input("inst-1", "\x08").await; // BS
+        state_mgr.mark_first_input("inst-1", "x").await;
+        state_mgr.mark_first_input("inst-1", "y").await;
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "axy");
     }
 
     #[tokio::test]
@@ -1799,7 +1910,7 @@ mod tests {
     #[tokio::test]
     async fn test_conversation_snapshot_roundtrip() {
         let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
         state_mgr.insert_test_tracker("inst-1", handle).await;
 
         // Initially empty
@@ -1829,7 +1940,7 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_conversation_receives_events() {
         let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
         state_mgr.insert_test_tracker("inst-1", handle).await;
 
         // Subscribe BEFORE sending
@@ -1912,6 +2023,227 @@ mod tests {
     // =========================================================================
     // Unregister instance cleanup tests
     // =========================================================================
+
+    // =========================================================================
+    // Unified handle_input pipeline (TUI + web parity)
+    // =========================================================================
+
+    /// Simulate TUI-style per-keystroke input through handle_input
+    /// (requires a registered instance with InstanceHandle).
+    async fn handle_input_keystrokes(
+        state_mgr: &GlobalStateManager,
+        instance_id: &str,
+        chars: &str,
+    ) {
+        for ch in chars.chars() {
+            let ctx = InputContext {
+                instance_id: instance_id.to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+    }
+
+    /// Simulate web-style composed input through handle_input
+    /// (text first, then \r).
+    async fn handle_input_composed(
+        state_mgr: &GlobalStateManager,
+        instance_id: &str,
+        text: &str,
+        user: Option<InputUser>,
+        task_id: Option<i64>,
+    ) {
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: text.to_string(),
+            connection_id: "test-conn".to_string(),
+            user,
+            task_id,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_tui_keystrokes_produce_prefix() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_keystrokes(&state_mgr, "inst-1", "hello").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_web_composed_produce_prefix() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_tui_and_web_produce_same_prefixes() {
+        // TUI path (per-keystroke through handle_input)
+        let state_mgr_tui = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr_tui.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_keystrokes(&state_mgr_tui, "inst-1", "fix the login bug").await;
+
+        let tui_prefixes = state_mgr_tui.get_discovery_content_prefixes("inst-1").await;
+
+        // Web path (composed through handle_input)
+        let state_mgr_web = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr_web.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr_web, "inst-1", "fix the login bug", None, None).await;
+
+        let web_prefixes = state_mgr_web.get_discovery_content_prefixes("inst-1").await;
+
+        assert_eq!(tui_prefixes, web_prefixes);
+        assert_eq!(tui_prefixes[0], "fix the login bug");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_stops_recording_after_session_claimed() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // First message goes through
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        let prefixes_before = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes_before.len(), 1);
+
+        // Simulate session being claimed (set session_id on the handle)
+        let handle = state_mgr.get_handle("inst-1").await.unwrap();
+        handle
+            .set_session_id("sess-123".to_string())
+            .await
+            .expect("set_session_id should succeed in test actor");
+
+        // Second message should NOT be recorded (session already claimed)
+        handle_input_composed(&state_mgr, "inst-1", "second message", None, None).await;
+
+        let prefixes_after = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(
+            prefixes_after.len(),
+            1,
+            "should not record after session claimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_with_user_records_attribution() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        let user = InputUser {
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+        };
+        handle_input_composed(&state_mgr, "inst-1", "fix the bug", Some(user), None).await;
+
+        // Should have a pending attribution
+        let attr = state_mgr
+            .consume_pending_attribution("inst-1", "fix the bug")
+            .await;
+        assert!(
+            attr.is_some(),
+            "attribution should be recorded for web user"
+        );
+        let attr = attr.unwrap();
+        assert_eq!(attr.user_id, "u-1");
+        assert_eq!(attr.display_name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_without_user_skips_attribution() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // TUI path: no user
+        handle_input_composed(&state_mgr, "inst-1", "fix the bug", None, None).await;
+
+        // Should NOT have a pending attribution
+        let attr = state_mgr
+            .consume_pending_attribution("inst-1", "fix the bug")
+            .await;
+        assert!(
+            attr.is_none(),
+            "attribution should NOT be recorded for TUI (no user)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_touches_terminal_lock() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // Acquire a terminal lock for "test-conn"
+        let user = make_ws_user("u-1", "Alice");
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "test-conn", &user)
+            .await;
+
+        let before = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // handle_input uses connection_id "test-conn" which matches the lock holder
+        let ctx = InputContext {
+            instance_id: "inst-1".to_string(),
+            data: "x".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+
+        let after = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        assert!(after > before, "terminal lock should be refreshed by input");
+    }
 
     #[tokio::test]
     async fn test_unregister_cleans_up_all_state() {
