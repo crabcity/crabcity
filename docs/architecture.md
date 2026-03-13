@@ -163,7 +163,7 @@ For remote connections, auth uses JWT sessions with a configurable TTL. The firs
 
 Multiple clients share a single PTY per instance:
 
-- `virtual_terminal` maintains the screen buffer and negotiates dimensions as `min(all active viewports)`. On resize, pre-resize scrollback is trimmed to prevent duplication from SIGWINCH-triggered PTY redraws. The `recorder` submodule captures PTY output/input/resize events with microsecond timestamps for golden-test replay (enabled via `CRAB_CITY_VT_RECORD` env var)
+- `virtual_terminal` maintains the screen buffer and negotiates dimensions as `min(all active viewports)`. On resize, the visible screen is saved, a fresh `vt100::Parser` is created at the new dimensions (clearing scrollback), and the visible content is restored. The PTY program's SIGWINCH redraw then rebuilds scrollback at the correct width — no duplicates, no virtual trim tracking. Both the server-side `VirtualTerminal::resize()` and the TUI client use this approach. The `recorder` submodule captures PTY output/input/resize events with microsecond timestamps for golden-test replay (enabled via `CRAB_CITY_VT_RECORD` env var)
 - `compositor` overlays UI elements (chat badges, status indicators) on the terminal output
 - `websocket_proxy.rs` manages the fan-out from one PTY to N WebSocket clients
 
