@@ -177,6 +177,21 @@ export const currentTerminalHasOutput = derived(
 	}
 );
 
+/**
+ * Create a derived store that signals when a specific instance has pending output.
+ * Used by pane-bound terminals that target a specific instanceId (not currentInstanceId).
+ */
+export function terminalHasOutputForInstance(instanceId: string) {
+	return derived(terminalBuffers, ($buffers) => {
+		const buffer = $buffers.get(instanceId);
+		if (!buffer) return false;
+		if (buffer.awaitingReplay && buffer.chunks.length === 0 && !buffer.shouldClear) {
+			return false;
+		}
+		return buffer.chunks.length > 0 || buffer.shouldClear;
+	});
+}
+
 // =============================================================================
 // Cleanup
 // =============================================================================

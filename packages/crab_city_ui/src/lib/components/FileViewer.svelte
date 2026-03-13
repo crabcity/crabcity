@@ -26,6 +26,14 @@
 	import DiffView from './file-viewer/DiffView.svelte';
 	import SourceView from './file-viewer/SourceView.svelte';
 
+	interface Props {
+		embedded?: boolean;
+	}
+
+	let { embedded = false }: Props = $props();
+
+	const isVisible = $derived(embedded || $isFileViewerOpen);
+
 	// Panel width state with resize support
 	let panelWidth = $state(Math.min(800, window.innerWidth * 0.5));
 	let isResizing = $state(false);
@@ -280,11 +288,15 @@
 
 <svelte:window onmousemove={handleMouseMove} onmouseup={stopResize} />
 
-{#if $isFileViewerOpen}
-	<button class="backdrop" onclick={closeFileViewer} aria-label="Close file viewer"></button>
+{#if isVisible}
+	{#if !embedded}
+		<button class="backdrop" onclick={closeFileViewer} aria-label="Close file viewer"></button>
+	{/if}
 
-	<aside class="file-viewer-panel" style="width: {panelWidth}px">
-		<button class="resize-handle" onmousedown={startResize} aria-label="Resize panel"></button>
+	<aside class="file-viewer-panel" class:embedded style="width: {!embedded ? panelWidth : undefined}px">
+		{#if !embedded}
+			<button class="resize-handle" onmousedown={startResize} aria-label="Resize panel"></button>
+		{/if}
 
 		<!-- Header -->
 		<header class="panel-header">
@@ -347,12 +359,14 @@
 						<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
 					</svg>
 				</button>
-				<button class="close-btn" onclick={closeFileViewer} aria-label="Close file viewer">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<line x1="18" y1="6" x2="6" y2="18"></line>
-						<line x1="6" y1="6" x2="18" y2="18"></line>
-					</svg>
-				</button>
+				{#if !embedded}
+					<button class="close-btn" onclick={closeFileViewer} aria-label="Close file viewer">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="18" y1="6" x2="6" y2="18"></line>
+							<line x1="6" y1="6" x2="18" y2="18"></line>
+						</svg>
+					</button>
+				{/if}
 			</div>
 		</header>
 
@@ -446,6 +460,21 @@
 		max-width: 85vw;
 		box-shadow: var(--shadow-panel);
 		animation: slideIn 0.2s ease-out;
+	}
+
+	.file-viewer-panel.embedded {
+		position: relative;
+		top: auto;
+		right: auto;
+		bottom: auto;
+		width: 100% !important;
+		height: 100%;
+		min-width: 0;
+		max-width: none;
+		z-index: auto;
+		box-shadow: none;
+		animation: none;
+		border-left: none;
 	}
 
 	@media (min-width: 1400px) {

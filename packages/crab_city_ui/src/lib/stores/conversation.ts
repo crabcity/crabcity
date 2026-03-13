@@ -5,11 +5,12 @@
  * Each instance maintains its own conversation history.
  */
 
-import { derived } from 'svelte/store';
+import { derived, get } from 'svelte/store';
 import type { ConversationTurn, NotebookCell, ToolCell } from '$lib/types';
 import {
 	currentInstanceId,
 	currentInstanceState,
+	instanceStates,
 	setInstanceConversation,
 	appendInstanceTurns,
 	setInstanceWaiting
@@ -47,8 +48,8 @@ function roleToCellType(role: string): NotebookCell['type'] {
 	}
 }
 
-/** Transform turns into Observable-style notebook cells, aggregating consecutive progress entries */
-export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[] => {
+/** Transform turns into notebook cells — extracted so both derived stores and per-instance helpers can use it */
+function turnsToNotebookCells($turns: ConversationTurn[]): NotebookCell[] {
 	const t0 = performance.now();
 	const cells: NotebookCell[] = [];
 
@@ -202,7 +203,10 @@ export const notebookCells = derived(conversationTurns, ($turns): NotebookCell[]
 		console.warn(`[Conversation] notebookCells derivation (${cells.length} cells) took ${ms.toFixed(1)}ms`);
 	}
 	return cells;
-});
+}
+
+/** Transform turns into Observable-style notebook cells, aggregating consecutive progress entries */
+export const notebookCells = derived(conversationTurns, turnsToNotebookCells);
 
 /** Just the tool cells for quick access */
 export const allToolCells = derived(notebookCells, ($cells): ToolCell[] => {
@@ -260,3 +264,35 @@ export function setWaiting(instanceId: string, waiting: boolean): void {
 // Note: clearConversation is removed - no longer needed.
 // Switching instances automatically shows that instance's preserved conversation.
 // To clear an instance's conversation, call setConversation(instanceId, []).
+
+// =============================================================================
+// Per-Instance Derived Stores (for pane-bound components)
+// =============================================================================
+
+/**
+ * Create a derived store of conversation turns for a specific instance.
+ * Unlike `conversationTurns` which follows `currentInstanceId`, this is
+ * bound to a fixed instance.
+ */
+export function conversationTurnsForInstance(instanceId: string) {
+	return derived(instanceStates, ($states): ConversationTurn[] => {
+		return $states.get(instanceId)?.conversation ?? [];
+	});
+}
+
+/**
+ * Create a derived store of notebook cells for a specific instance.
+ */
+export function notebookCellsForInstance(instanceId: string) {
+	const turns = conversationTurnsForInstance(instanceId);
+	return derived(turns, turnsToNotebookCells);
+}
+
+/**
+ * Create a derived store of waiting state for a specific instance.
+ */
+export function isWaitingForInstance(instanceId: string) {
+	return derived(instanceStates, ($states): boolean => {
+		return $states.get(instanceId)?.isWaiting ?? true;
+	});
+}

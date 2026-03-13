@@ -32,6 +32,14 @@
 	import { currentInstanceId, currentInstance, instances } from '$lib/stores/instances';
 	import { isDesktop } from '$lib/stores/ui';
 
+	interface Props {
+		embedded?: boolean;
+	}
+
+	let { embedded = false }: Props = $props();
+
+	const isVisible = $derived(embedded || $isChatOpen);
+
 	let messageListRef: ChatMessageList | undefined = $state();
 	let inputValue = $state('');
 	let inputEl: HTMLTextAreaElement | undefined = $state();
@@ -44,7 +52,7 @@
 	// Load initial history when scope changes
 	$effect(() => {
 		const scope = $chatScope;
-		if ($isChatOpen && !historyLoaded.has(scope)) {
+		if (isVisible && !historyLoaded.has(scope)) {
 			historyLoaded.add(scope);
 			requestChatHistory(scope);
 			requestChatTopics(scope);
@@ -53,7 +61,7 @@
 
 	// Also load when panel opens
 	$effect(() => {
-		if ($isChatOpen) {
+		if (isVisible) {
 			const scope = $chatScope;
 			if (!historyLoaded.has(scope)) {
 				historyLoaded.add(scope);
@@ -176,10 +184,10 @@
 	const selectionCount = $derived($selectedMessageIds.size);
 </script>
 
-{#if $isChatOpen}
+{#if isVisible}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	{#if !$isDesktop}
+	{#if !embedded && !$isDesktop}
 		<div class="chat-backdrop" onclick={closeChat}></div>
 	{/if}
 
@@ -187,7 +195,8 @@
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<aside
 		class="chat-panel"
-		style="width: {$isDesktop ? panelWidth : undefined}px"
+		class:embedded
+		style="width: {!embedded && $isDesktop ? panelWidth : undefined}px"
 		onclick={dismissContextMenu}
 	>
 		<!-- Header -->
@@ -207,11 +216,13 @@
 						</svg>
 					</button>
 				{/if}
-				<button class="close-btn" onclick={closeChat} aria-label="Close chat">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="M18 6L6 18M6 6l12 12" />
-					</svg>
-				</button>
+				{#if !embedded}
+					<button class="close-btn" onclick={closeChat} aria-label="Close chat">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M18 6L6 18M6 6l12 12" />
+						</svg>
+					</button>
+				{/if}
 			</div>
 		</header>
 
@@ -376,6 +387,19 @@
 			var(--shadow-panel),
 			-1px 0 0 var(--tint-active);
 		animation: chat-slide-in 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+	}
+
+	.chat-panel.embedded {
+		position: relative;
+		top: auto;
+		right: auto;
+		bottom: auto;
+		width: 100% !important;
+		height: 100%;
+		z-index: auto;
+		box-shadow: none;
+		animation: none;
+		border-left: none;
 	}
 
 	@keyframes chat-slide-in {

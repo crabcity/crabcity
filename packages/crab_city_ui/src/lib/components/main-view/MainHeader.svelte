@@ -8,6 +8,8 @@
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
+	import { paneCount, splitPane, layoutState, applyPreset, resetLayout } from '$lib/stores/layout';
+	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
 
 	let editingName = $state(false);
 	let editNameValue = $state('');
@@ -77,6 +79,54 @@
 
 	function toggleTerminal() {
 		setTerminalMode(!$showTerminal);
+	}
+
+	const isMultiPane = $derived($paneCount > 1);
+
+	/** In multi-pane mode, open a panel type as a new split pane instead of an overlay */
+	function openAsSplit(kind: PaneContentKind) {
+		const focusedId = $layoutState.focusedPaneId;
+		splitPane(focusedId, 'vertical', { kind });
+	}
+
+	function handleFilesClick() {
+		if (isMultiPane) {
+			openAsSplit('file-explorer');
+		} else {
+			toggleExplorer();
+		}
+	}
+
+	function handleTasksClick() {
+		if (isMultiPane) {
+			openAsSplit('tasks');
+		} else {
+			toggleTaskPanel();
+		}
+	}
+
+	function handleChatClick() {
+		if (isMultiPane) {
+			openAsSplit('chat');
+		} else {
+			toggleChat();
+		}
+	}
+
+	let showPresetMenu = $state(false);
+
+	function handlePresetSelect(preset: LayoutPreset) {
+		applyPreset(preset);
+		showPresetMenu = false;
+	}
+
+	function togglePresetMenu() {
+		showPresetMenu = !showPresetMenu;
+	}
+
+	function handlePresetMenuBlur() {
+		// Delay to allow click on menu items
+		setTimeout(() => { showPresetMenu = false; }, 150);
 	}
 </script>
 
@@ -162,13 +212,60 @@
 	{/if}
 
 	<div class="header-actions">
+		<div class="preset-wrapper">
+			<button
+				class="action-btn icon-only-mobile"
+				class:active={showPresetMenu}
+				onclick={togglePresetMenu}
+				onblur={handlePresetMenuBlur}
+				title="Layout presets"
+				aria-label="Layout presets"
+				aria-expanded={showPresetMenu}
+			>
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<rect x="3" y="3" width="7" height="7" />
+					<rect x="14" y="3" width="7" height="7" />
+					<rect x="3" y="14" width="7" height="7" />
+					<rect x="14" y="14" width="7" height="7" />
+				</svg>
+				<span class="btn-label">Layout</span>
+			</button>
+			{#if showPresetMenu}
+				<div class="preset-menu">
+					<button class="preset-item" onclick={() => handlePresetSelect('single')}>
+						<span class="preset-icon">
+							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /></svg>
+						</span>
+						Single
+					</button>
+					<button class="preset-item" onclick={() => handlePresetSelect('dev-split')}>
+						<span class="preset-icon">
+							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /><line x1="10" y1="1" x2="10" y2="15" /></svg>
+						</span>
+						Dev Split
+					</button>
+					<button class="preset-item" onclick={() => handlePresetSelect('side-by-side')}>
+						<span class="preset-icon">
+							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /><line x1="8" y1="1" x2="8" y2="15" /></svg>
+						</span>
+						Side by Side
+					</button>
+					{#if isMultiPane}
+						<div class="preset-divider"></div>
+						<button class="preset-item reset" onclick={() => { resetLayout(); showPresetMenu = false; }}>
+							Reset
+						</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
 		<button
 			class="action-btn icon-only-mobile"
-			class:active={$isExplorerOpen}
-			onclick={toggleExplorer}
+			class:active={!isMultiPane && $isExplorerOpen}
+			onclick={handleFilesClick}
 			title="Files (⌘E)"
 			aria-label="Toggle file explorer"
-			aria-pressed={$isExplorerOpen}
+			aria-pressed={!isMultiPane && $isExplorerOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
@@ -195,11 +292,11 @@
 		</button>
 		<button
 			class="action-btn icon-only-mobile tasks-btn"
-			class:active={$isTaskPanelOpen}
-			onclick={toggleTaskPanel}
+			class:active={!isMultiPane && $isTaskPanelOpen}
+			onclick={handleTasksClick}
 			title="Tasks (Q)"
 			aria-label="Toggle task panel"
-			aria-pressed={$isTaskPanelOpen}
+			aria-pressed={!isMultiPane && $isTaskPanelOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
@@ -211,11 +308,11 @@
 		</button>
 		<button
 			class="action-btn icon-only-mobile chat-btn"
-			class:active={$isChatOpen}
-			onclick={toggleChat}
+			class:active={!isMultiPane && $isChatOpen}
+			onclick={handleChatClick}
 			title="Chat (C)"
 			aria-label="Toggle chat panel"
-			aria-pressed={$isChatOpen}
+			aria-pressed={!isMultiPane && $isChatOpen}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -787,5 +884,81 @@
 	:global([data-theme="analog"]) .chat-badge {
 		animation: none;
 		box-shadow: 0 0 2px rgba(42, 31, 24, 0.2);
+	}
+
+	/* Layout preset menu */
+	.preset-wrapper {
+		position: relative;
+	}
+
+	.preset-menu {
+		position: absolute;
+		top: 100%;
+		right: 0;
+		margin-top: 4px;
+		min-width: 150px;
+		background: var(--surface-600);
+		border: 1px solid var(--surface-border);
+		border-radius: 4px;
+		box-shadow: var(--shadow-dropdown);
+		padding: 4px 0;
+		z-index: 60;
+		animation: preset-pop 0.12s ease-out;
+	}
+
+	@keyframes preset-pop {
+		from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+		to { opacity: 1; transform: scale(1) translateY(0); }
+	}
+
+	.preset-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		padding: 6px 12px;
+		background: transparent;
+		border: none;
+		color: var(--text-secondary);
+		font-size: 11px;
+		font-weight: 600;
+		font-family: inherit;
+		letter-spacing: 0.03em;
+		cursor: pointer;
+		transition: all 0.1s ease;
+		text-align: left;
+	}
+
+	.preset-item:hover {
+		background: var(--tint-active-strong);
+		color: var(--amber-400);
+	}
+
+	.preset-item.reset {
+		color: var(--text-muted);
+	}
+
+	.preset-item.reset:hover {
+		color: var(--text-primary);
+	}
+
+	.preset-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 16px;
+		height: 16px;
+		flex-shrink: 0;
+	}
+
+	.preset-icon svg {
+		width: 14px;
+		height: 14px;
+	}
+
+	.preset-divider {
+		height: 1px;
+		margin: 4px 0;
+		background: var(--surface-border);
 	}
 </style>

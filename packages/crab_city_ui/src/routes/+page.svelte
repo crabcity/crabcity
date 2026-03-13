@@ -8,6 +8,7 @@
 	import BootSequence from '$lib/components/BootSequence.svelte';
 	import ChannelChange from '$lib/components/ChannelChange.svelte';
 	import ServerShutdownModal from '$lib/components/ServerShutdownModal.svelte';
+	import ToastStack from '$lib/components/ToastStack.svelte';
 	import { sidebarOpen, closeSidebar, isDesktop } from '$lib/stores/ui';
 	import { toggleExplorer, isExplorerOpen, closeExplorer } from '$lib/stores/files';
 	import { isChatOpen, closeChat, toggleChat, composeOpen, closeCompose, selectionMode, exitSelectionMode } from '$lib/stores/chat';
@@ -17,8 +18,12 @@
 	import { connectionStatus } from '$lib/stores/websocket';
 	import { instanceList, selectInstance, showTerminal, setTerminalMode } from '$lib/stores/instances';
 	import { toggleTheme } from '$lib/stores/settings';
+	import { layoutState, splitPane, closePane, paneCount, moveFocus } from '$lib/stores/layout';
+	import type { PaneContentKind } from '$lib/stores/layout';
 
 	let showBoot = $state(true);
+
+	const isSinglePane = $derived($paneCount <= 1);
 
 	// Map Claude state to data attribute for ambient CSS
 	const claudeStateAttr = $derived(
@@ -70,10 +75,41 @@
 				closeSidebar();
 			}
 		}
+		// Ctrl+Arrow moves focus between panes
+		if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+			if (e.key === 'ArrowLeft') { e.preventDefault(); moveFocus('left'); return; }
+			if (e.key === 'ArrowRight') { e.preventDefault(); moveFocus('right'); return; }
+			if (e.key === 'ArrowUp') { e.preventDefault(); moveFocus('up'); return; }
+			if (e.key === 'ArrowDown') { e.preventDefault(); moveFocus('down'); return; }
+		}
+
 		// Cmd/Ctrl+E toggles file explorer
 		if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
 			e.preventDefault();
 			toggleExplorer();
+		}
+
+		// Cmd/Ctrl+\ — split focused pane vertically
+		if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+			e.preventDefault();
+			const focusedId = $layoutState.focusedPaneId;
+			splitPane(focusedId, 'vertical');
+			return;
+		}
+		// Cmd/Ctrl+- — split focused pane horizontally
+		if ((e.metaKey || e.ctrlKey) && e.key === '-') {
+			e.preventDefault();
+			const focusedId = $layoutState.focusedPaneId;
+			splitPane(focusedId, 'horizontal');
+			return;
+		}
+		// Cmd/Ctrl+W — close focused pane
+		if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+			if ($paneCount > 1) {
+				e.preventDefault();
+				closePane($layoutState.focusedPaneId);
+				return;
+			}
 		}
 
 		// --- Non-input shortcuts (disabled when typing or with modifiers) ---
@@ -136,21 +172,25 @@
 
 	<MainView />
 
-	<!-- File explorer panel -->
-	<FileExplorer />
+	<!-- Overlay panels: only in single-pane mode (multi-pane uses embedded pane types) -->
+	{#if isSinglePane}
+		<!-- File explorer panel -->
+		<FileExplorer />
 
-	<!-- Chat panel -->
-	<ChatPanel />
+		<!-- Chat panel -->
+		<ChatPanel />
 
-	<!-- Task panel (left slide-out) -->
-	<TaskPanel />
+		<!-- Task panel (left slide-out) -->
+		<TaskPanel />
 
-	<!-- Global file viewer overlay -->
-	<FileViewer />
+		<!-- Global file viewer overlay -->
+		<FileViewer />
+	{/if}
 </div>
 
 <ChannelChange />
 <ServerShutdownModal />
+<ToastStack />
 
 {#if showBoot}
 	<BootSequence onComplete={() => showBoot = false} wsConnected={$connectionStatus === 'connected'} />

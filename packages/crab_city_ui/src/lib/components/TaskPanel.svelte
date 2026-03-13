@@ -17,6 +17,14 @@
 	import TaskCard from './task-panel/TaskCard.svelte';
 	import InProgressCard from './task-panel/InProgressCard.svelte';
 
+	interface Props {
+		embedded?: boolean;
+	}
+
+	let { embedded = false }: Props = $props();
+
+	const isVisible = $derived(embedded || $isTaskPanelOpen);
+
 	// --- Sent task expand ---
 	let expandedSentId = $state<number | null>(null);
 
@@ -178,16 +186,16 @@
 	}
 </script>
 
-{#if $isTaskPanelOpen}
+{#if isVisible}
 	<!-- Mobile backdrop -->
-	{#if !$isDesktop}
+	{#if !embedded && !$isDesktop}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="task-backdrop" onclick={closeTaskPanel}></div>
 	{/if}
 
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-	<aside class="task-panel" onkeydown={(e) => e.key === 'Escape' && closeTaskPanel()}>
+	<aside class="task-panel" class:embedded onkeydown={(e) => !embedded && e.key === 'Escape' && closeTaskPanel()}>
 		<!-- Header -->
 		<header class="panel-header">
 			<h2>Tasks</h2>
@@ -220,11 +228,13 @@
 						Free
 					</button>
 				</div>
-				<button class="close-btn" onclick={closeTaskPanel} aria-label="Close task panel">
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="M6 18L18 6M6 6l12 12" />
-					</svg>
-				</button>
+				{#if !embedded}
+					<button class="close-btn" onclick={closeTaskPanel} aria-label="Close task panel">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+				{/if}
 			</div>
 		</header>
 
@@ -358,6 +368,19 @@
 			4px 0 20px rgba(0, 0, 0, 0.4),
 			1px 0 0 var(--tint-active);
 		animation: task-slide-in 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+	}
+
+	.task-panel.embedded {
+		position: relative;
+		top: auto;
+		left: auto;
+		bottom: auto;
+		width: 100%;
+		height: 100%;
+		z-index: auto;
+		box-shadow: none;
+		animation: none;
+		border-right: none;
 	}
 
 	@keyframes task-slide-in {

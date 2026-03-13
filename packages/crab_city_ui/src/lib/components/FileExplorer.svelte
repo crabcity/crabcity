@@ -24,6 +24,14 @@
 	import GitStatus from './file-explorer/GitStatus.svelte';
 	import FileBrowser from './file-explorer/FileBrowser.svelte';
 
+	interface Props {
+		embedded?: boolean;
+	}
+
+	let { embedded = false }: Props = $props();
+
+	const isVisible = $derived(embedded || $isExplorerOpen);
+
 	// Panel width with resize support
 	let panelWidth = $state(320);
 	let isResizing = $state(false);
@@ -41,7 +49,7 @@
 		const instance = $currentInstance;
 		const tab = $gitTab;
 		const branchFilter = $logBranchFilter;
-		if (open && instance) {
+		if (open && instance && isVisible) {
 			if (tab === 'log') { logOffset = 0; fetchGitLog(instance.id, branchFilter ? { branch: branchFilter } : undefined); }
 			else if (tab === 'branches') fetchGitBranches(instance.id);
 			else if (tab === 'status') fetchGitStatus(instance.id);
@@ -64,9 +72,8 @@
 
 	// Always fetch git status for file badges (even in Files mode)
 	$effect(() => {
-		const open = $isExplorerOpen;
 		const instance = $currentInstance;
-		if (open && instance) {
+		if (isVisible && instance) {
 			fetchGitStatus(instance.id);
 		}
 	});
@@ -173,30 +180,32 @@
 
 <svelte:window onmousemove={handleMouseMove} onmouseup={stopResize} />
 
-{#if $isExplorerOpen}
+{#if isVisible}
 	<!-- Mobile backdrop -->
-	{#if !$isDesktop}
+	{#if !embedded && !$isDesktop}
 		<button class="explorer-backdrop" onclick={closeExplorer} aria-label="Close file explorer"></button>
 	{/if}
 
 	<!-- Panel -->
-	<aside class="file-explorer-panel" style="width: {$isDesktop ? panelWidth : undefined}px">
+	<aside class="file-explorer-panel" class:embedded style="width: {!embedded && $isDesktop ? panelWidth : undefined}px">
 		<!-- Header -->
 		<header class="panel-header">
 			<div class="header-title">
 				<span class="folder-icon">{$isGitOpen ? '' : ''}</span>
 				<span class="title-text">{$isGitOpen ? 'Git' : 'Files'}</span>
 			</div>
-			<button
-				class="close-btn"
-				onclick={closeExplorer}
-				aria-label="Close file explorer"
-			>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<line x1="18" y1="6" x2="6" y2="18"></line>
-					<line x1="6" y1="6" x2="18" y2="18"></line>
-				</svg>
-			</button>
+			{#if !embedded}
+				<button
+					class="close-btn"
+					onclick={closeExplorer}
+					aria-label="Close file explorer"
+				>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<line x1="18" y1="6" x2="6" y2="18"></line>
+						<line x1="6" y1="6" x2="18" y2="18"></line>
+					</svg>
+				</button>
+			{/if}
 		</header>
 
 		<!-- Mode tabs: Files | Git -->
@@ -245,11 +254,13 @@
 		{/if}
 
 		<!-- Resize handle -->
-		<button
-			class="resize-handle"
-			onmousedown={startResize}
-			aria-label="Resize panel"
-		></button>
+		{#if !embedded}
+			<button
+				class="resize-handle"
+				onmousedown={startResize}
+				aria-label="Resize panel"
+			></button>
+		{/if}
 	</aside>
 {/if}
 
@@ -286,6 +297,21 @@
 
 		/* Slide-in animation */
 		animation: slideInLeft 0.2s ease-out;
+	}
+
+	.file-explorer-panel.embedded {
+		position: relative;
+		top: auto;
+		left: auto;
+		bottom: auto;
+		width: 100% !important;
+		height: 100%;
+		min-width: 0;
+		max-width: none;
+		z-index: auto;
+		box-shadow: none;
+		animation: none;
+		border-right: none;
 	}
 
 	@keyframes slideInLeft {

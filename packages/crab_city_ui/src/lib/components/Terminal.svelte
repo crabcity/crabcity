@@ -2,10 +2,17 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence, reconnect, shutdownReason } from '$lib/stores/websocket';
-	import { currentTerminalHasOutput, consumeTerminalOutput, markAwaitingReplay } from '$lib/stores/terminal';
+	import { currentTerminalHasOutput, consumeTerminalOutput, markAwaitingReplay, terminalHasOutputForInstance } from '$lib/stores/terminal';
 	import { currentInstanceId, consumeTerminalFocus } from '$lib/stores/instances';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
 	import { theme } from '$lib/stores/settings';
+
+	/** Optional: bind to a specific instance instead of following currentInstanceId */
+	interface Props {
+		instanceId?: string;
+	}
+
+	let { instanceId: propInstanceId }: Props = $props();
 
 	const phosphorTheme = {
 		background: '#0a0806',
@@ -51,6 +58,9 @@
 	// (currentInstanceId store may have already changed by the time onDestroy fires)
 	let mountedInstanceId: string | null = null;
 
+	// Resolve which instanceId to use: prop or global
+	const resolvedInstanceId = $derived(propInstanceId ?? $currentInstanceId);
+
 	// Derived state for showing status banner
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
@@ -58,7 +68,7 @@
 	let showStatusBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
 
 	// Multi-user lock state
-	let presence = $derived($currentInstanceId ? $instancePresence.get($currentInstanceId) ?? [] : []);
+	let presence = $derived(resolvedInstanceId ? $instancePresence.get(resolvedInstanceId) ?? [] : []);
 	let isMultiUser = $derived(presence.length > 1);
 	let showLockBanner = $derived($isLockedByOther || $iHoldLock);
 
@@ -73,11 +83,16 @@
 	function setupOutputSubscription() {
 		if (outputUnsubscribe) return;
 
+		// Use prop-bound or global output signal
+		const outputStore = mountedInstanceId
+			? terminalHasOutputForInstance(mountedInstanceId)
+			: currentTerminalHasOutput;
+
 		// Subscribe to the derived store that signals when output is available
-		outputUnsubscribe = currentTerminalHasOutput.subscribe((hasOutput) => {
+		outputUnsubscribe = outputStore.subscribe((hasOutput) => {
 			if (!hasOutput || !terminal) return;
 
-			const instanceId = get(currentInstanceId);
+			const instanceId = mountedInstanceId ?? get(currentInstanceId);
 			if (!instanceId) return;
 
 			const buffer = consumeTerminalOutput(instanceId);
@@ -124,7 +139,7 @@
 			// Capture the instance ID NOW — before any async work — so that
 			// onDestroy always targets the correct instance even if the user
 			// switches instances while this component is still alive.
-			mountedInstanceId = get(currentInstanceId);
+			mountedInstanceId = propInstanceId ?? get(currentInstanceId);
 
 			// Wait for DOM to be ready - retry a few times as bind:this is async in Svelte 5
 			let attempts = 0;

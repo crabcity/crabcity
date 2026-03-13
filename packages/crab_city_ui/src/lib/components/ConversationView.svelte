@@ -1,18 +1,95 @@
 <script lang="ts">
-	import { notebookCells, isWaiting, toolStats } from '$lib/stores/conversation';
-	import { isActive, isStarting, isThinking, isToolExecuting, currentTool, claudeState } from '$lib/stores/claude';
+	import { onDestroy } from 'svelte';
+	import { derived, get } from 'svelte/store';
+	import { notebookCells, isWaiting, toolStats, notebookCellsForInstance, isWaitingForInstance } from '$lib/stores/conversation';
+	import { isActive, isStarting, isThinking, isToolExecuting, currentTool, claudeState, claudeStateForInstance, isActiveForInstance, isStartingForInstance } from '$lib/stores/claude';
 	import { currentVerb } from '$lib/stores/activity';
 	import { isDesktop } from '$lib/stores/ui';
-	import { currentInstanceId, currentInstance } from '$lib/stores/instances';
+	import { currentInstanceId, currentInstance, instances } from '$lib/stores/instances';
 	import NotebookCell from './NotebookCell.svelte';
 	import MessageInput from './MessageInput.svelte';
 	import TodoQueue from './TodoQueue.svelte';
 	import TopoAvatar from './TopoAvatar.svelte';
 	import ConversationMinimap from './ConversationMinimap.svelte';
 	import VirtualList from './VirtualList.svelte';
+	import type { NotebookCell as NotebookCellType, ToolCell, Instance, ClaudeState } from '$lib/types';
+
+	/** Optional: bind to a specific instance instead of following currentInstanceId */
+	interface Props {
+		instanceId?: string;
+	}
+
+	let { instanceId: propInstanceId }: Props = $props();
+
+	// Resolve stores: use per-instance variants when prop is provided
+	const resolvedInstanceId = $derived(propInstanceId ?? $currentInstanceId);
+
+	// Per-instance store variants (only created when propInstanceId is set)
+	const _instanceCells = propInstanceId ? notebookCellsForInstance(propInstanceId) : null;
+	const _instanceWaiting = propInstanceId ? isWaitingForInstance(propInstanceId) : null;
+	const _instanceActive = propInstanceId ? isActiveForInstance(propInstanceId) : null;
+	const _instanceStarting = propInstanceId ? isStartingForInstance(propInstanceId) : null;
+	const _instanceClaudeState = propInstanceId ? claudeStateForInstance(propInstanceId) : null;
+	const _instanceInstance = propInstanceId
+		? derived(instances, ($i) => $i.get(propInstanceId!) ?? null)
+		: null;
+	const _instanceToolStats = _instanceCells
+		? derived(_instanceCells, ($cells): Map<string, number> => {
+			const tools = $cells.flatMap((cell: NotebookCellType) => cell.toolCells ?? []);
+			const counts = new Map<string, number>();
+			tools.forEach((tool: ToolCell) => {
+				counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+			});
+			return counts;
+		})
+		: null;
+
+	// Bridge per-instance stores into $state for Svelte 5 reactivity.
+	// In runes mode, `$storeName` auto-subscription doesn't work on local variables.
+	// We subscribe manually via $effect and write into $state.
+	let cellsVal = $state<NotebookCellType[]>([]);
+	let waitingVal = $state(true);
+	let activeVal = $state(false);
+	let startingVal = $state(false);
+	let stateVal = $state<ClaudeState>({ type: 'Idle' });
+	let instVal = $state<Instance | null>(null);
+	let statsVal = $state<Map<string, number>>(new Map());
+	let thinkingVal = $state(false);
+	let toolExecutingVal = $state(false);
+	let toolVal = $state<string | null>(null);
+
+	// Choose which stores to subscribe to based on whether propInstanceId is set
+	const _cells = _instanceCells ?? notebookCells;
+	const _waiting = _instanceWaiting ?? isWaiting;
+	const _active = _instanceActive ?? isActive;
+	const _starting = _instanceStarting ?? isStarting;
+	const _state = _instanceClaudeState ?? claudeState;
+	const _inst = _instanceInstance ?? currentInstance;
+	const _stats = _instanceToolStats ?? toolStats;
+
+	// Subscribe to all stores and pipe values into $state
+	const _unsubs: (() => void)[] = [];
+	_unsubs.push(_cells.subscribe(v => { cellsVal = v; }));
+	_unsubs.push(_waiting.subscribe(v => { waitingVal = v; }));
+	_unsubs.push(_active.subscribe(v => { activeVal = v; }));
+	_unsubs.push(_starting.subscribe(v => { startingVal = v; }));
+	_unsubs.push(_state.subscribe(v => { stateVal = v; }));
+	_unsubs.push(_inst.subscribe(v => { instVal = v; }));
+	_unsubs.push(_stats.subscribe(v => { statsVal = v; }));
+
+	// Derived from stateVal
+	$effect(() => {
+		thinkingVal = stateVal.type === 'Thinking';
+		toolExecutingVal = stateVal.type === 'ToolExecuting';
+		toolVal = stateVal.type === 'ToolExecuting' ? stateVal.tool : null;
+	});
+
+	onDestroy(() => {
+		for (const unsub of _unsubs) unsub();
+	});
 
 	// Reference to VirtualList for scroll control
-	let virtualList = $state<VirtualList<(typeof $notebookCells)[0]> | undefined>();
+	let virtualList = $state<VirtualList<NotebookCellType> | undefined>();
 	let scrollInfo = $state({ scrollTop: 0, scrollHeight: 0, clientHeight: 0, visibleStart: 0, visibleEnd: 0 });
 
 	// Boot panel transition: Starting → brief "READY" hold → fade out
@@ -20,7 +97,7 @@
 	let wasStarting = $state(false);
 
 	$effect(() => {
-		if ($isStarting) {
+		if (startingVal) {
 			wasStarting = true;
 			bootCompleting = false;
 		} else if (wasStarting) {
@@ -32,19 +109,18 @@
 	});
 
 	// Use server state for activity, fall back to heuristic isWaiting for empty state detection
-	const showEmptyState = $derived(!$isStarting && !bootCompleting && $isWaiting && $notebookCells.length === 0);
-	const showBootPanel = $derived(($isStarting || bootCompleting) && $notebookCells.length === 0);
+	const showEmptyState = $derived(!startingVal && !bootCompleting && waitingVal && cellsVal.length === 0);
+	const showBootPanel = $derived((startingVal || bootCompleting) && cellsVal.length === 0);
 
 	// Time-aware startup messaging
 	let startupElapsed = $state(0);
 	let startupInterval: ReturnType<typeof setInterval> | null = null;
 
 	$effect(() => {
-		if ($isStarting) {
+		if (startingVal) {
 			// Compute initial elapsed from instance created_at
-			const inst = $currentInstance;
-			if (inst?.created_at) {
-				const created = new Date(inst.created_at).getTime();
+			if (instVal?.created_at) {
+				const created = new Date(instVal.created_at).getTime();
 				startupElapsed = Math.floor((Date.now() - created) / 1000);
 			}
 			startupInterval = setInterval(() => {
@@ -65,10 +141,10 @@
 	// Boot phase milestones (driven by actual ClaudeState enum)
 	// Initializing = PTY spawned, no output yet
 	// Starting = first output received, waiting for Claude Code banner
-	const stateType = $derived($claudeState.type);
-	const bootPhaseProcess = $derived($currentInstance?.running ?? false);
-	const bootPhaseClaude = $derived(stateType === 'Starting' || (!$isStarting && !bootCompleting));
-	const bootPhaseSession = $derived(!!$currentInstance?.session_id);
+	const curStateType = $derived(stateVal.type);
+	const bootPhaseProcess = $derived(instVal?.running ?? false);
+	const bootPhaseClaude = $derived(curStateType === 'Starting' || (!startingVal && !bootCompleting));
+	const bootPhaseSession = $derived(!!instVal?.session_id);
 
 	function startupMessage(elapsed: number): string {
 		if (elapsed < 5) return 'Waiting for Claude to start...';
@@ -76,8 +152,6 @@
 		if (elapsed < 30) return 'Startup is slower than usual \u2014 this may be due to network latency or API load';
 		return 'Claude is taking unusually long. You can switch to another instance or keep waiting.';
 	}
-
-	// Debug logging removed - was firing on every state change and causing jank with DevTools open
 
 	// Handle scroll updates from VirtualList (for minimap)
 	function handleScroll(scrollTop: number, scrollHeight: number, clientHeight: number, visibleStart: number, visibleEnd: number) {
@@ -91,7 +165,7 @@
 
 	// Format tool stats for display
 	const topTools = $derived(
-		Array.from($toolStats.entries())
+		Array.from(statsVal.entries())
 			.sort((a, b) => b[1] - a[1])
 			.slice(0, 6)
 	);
@@ -101,16 +175,15 @@
 	let latestAnnouncement = $state('');
 
 	$effect(() => {
-		const cells = $notebookCells;
-		if (cells.length > prevCellCount && cells.length > 0) {
-			const latest = cells[cells.length - 1];
+		if (cellsVal.length > prevCellCount && cellsVal.length > 0) {
+			const latest = cellsVal[cellsVal.length - 1];
 			if (latest) {
 				const role = latest.type === 'user' ? 'User' : 'Claude';
 				const preview = latest.content?.slice(0, 100) ?? '';
 				latestAnnouncement = `New message from ${role}: ${preview}`;
 			}
 		}
-		prevCellCount = cells.length;
+		prevCellCount = cellsVal.length;
 	});
 
 	// --- Keyboard navigation (j/k between messages, Enter to toggle thinking) ---
@@ -120,7 +193,7 @@
 		const tag = (document.activeElement?.tagName ?? '').toLowerCase();
 		if (tag === 'input' || tag === 'textarea') return;
 
-		const cellCount = $notebookCells.length;
+		const cellCount = cellsVal.length;
 		if (cellCount === 0) return;
 
 		if (e.key === 'j') {
@@ -137,7 +210,7 @@
 			virtualList?.scrollToIndex(focusedIndex);
 		} else if (e.key === 'Enter' && focusedIndex !== null) {
 			e.preventDefault();
-			const cell = $notebookCells[focusedIndex];
+			const cell = cellsVal[focusedIndex];
 			if (cell) {
 				const el = document.querySelector(`[data-cell-id="${cell.id}"]`);
 				const toggle = el?.querySelector('.thinking-toggle, .tools-collapsed-toggle') as HTMLElement;
@@ -153,7 +226,7 @@
 	let newMessageCount = $state(0);
 
 	$effect(() => {
-		const count = $notebookCells.length;
+		const count = cellsVal.length;
 		const atBottom = scrollInfo.scrollHeight - scrollInfo.scrollTop - scrollInfo.clientHeight < 200;
 
 		if (atBottom) {
@@ -167,8 +240,8 @@
 	// --- Timestamp dividers (show when messages span different hours) ---
 	function getTimeDivider(index: number): string | null {
 		if (index === 0) return null;
-		const current = $notebookCells[index];
-		const prev = $notebookCells[index - 1];
+		const current = cellsVal[index];
+		const prev = cellsVal[index - 1];
 		if (!current?.timestamp || !prev?.timestamp) return null;
 
 		const currentDate = new Date(current.timestamp);
@@ -192,7 +265,7 @@
 	{latestAnnouncement}
 </div>
 
-<div class="conversation-view" class:with-minimap={$isDesktop && $notebookCells.length > 0}>
+<div class="conversation-view" class:with-minimap={$isDesktop && cellsVal.length > 0}>
 	<!-- Stats bar -->
 	{#if topTools.length > 0}
 		<div class="stats-bar">
@@ -252,7 +325,7 @@
 			<!-- Always use VirtualList for consistent scroll tracking and minimap support -->
 			<VirtualList
 				bind:this={virtualList}
-				items={$notebookCells}
+				items={cellsVal}
 				estimatedHeight={120}
 				buffer={3}
 				autoScroll={true}
@@ -266,23 +339,23 @@
 								<span class="time-divider-label">{timeDivider}</span>
 							</div>
 						{/if}
-						<NotebookCell {cell} instanceId={$currentInstanceId} age={$notebookCells.length - 1 - index} focused={focusedIndex === index} />
+						<NotebookCell {cell} instanceId={resolvedInstanceId} age={cellsVal.length - 1 - index} focused={focusedIndex === index} />
 					</div>
 				{/snippet}
 				{#snippet footer()}
-					{#if $isActive}
-						<div class="activity-indicator" class:thinking={$isThinking}>
+					{#if activeVal}
+						<div class="activity-indicator" class:thinking={thinkingVal}>
 							<TopoAvatar
-								identity={$currentInstanceId ?? 'claude'}
+								identity={resolvedInstanceId ?? 'claude'}
 								type="agent"
-								variant={$isThinking ? 'thinking' : 'assistant'}
+								variant={thinkingVal ? 'thinking' : 'assistant'}
 								size={24}
 								animated={true}
 							/>
-							{#key $isToolExecuting ? $currentTool : $currentVerb}
+							{#key toolExecutingVal ? toolVal : $currentVerb}
 							<span class="activity-text">
-								{#if $isToolExecuting && $currentTool}
-									Running {$currentTool}...
+								{#if toolExecutingVal && toolVal}
+									Running {toolVal}...
 								{:else}
 									{$currentVerb}...
 								{/if}
@@ -302,9 +375,9 @@
 		{/if}
 
 		<!-- Minimap (desktop only, when there are messages) -->
-		{#if $isDesktop && $notebookCells.length > 0}
+		{#if $isDesktop && cellsVal.length > 0}
 			<ConversationMinimap
-				cells={$notebookCells}
+				cells={cellsVal}
 				scrollTop={scrollInfo.scrollTop}
 				scrollHeight={scrollInfo.scrollHeight}
 				clientHeight={scrollInfo.clientHeight}
