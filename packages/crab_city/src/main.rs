@@ -16,6 +16,7 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 mod auth;
+mod claude_driver;
 mod cli;
 mod config;
 mod db;
@@ -33,6 +34,7 @@ mod models;
 mod notes;
 mod onboarding;
 mod persistence;
+mod process_driver;
 mod repository;
 mod virtual_terminal;
 pub mod websocket_proxy;

@@ -13,7 +13,7 @@ use crate::inference::{
     ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
 };
 use crate::instance_actor::InstanceHandle;
-use crate::models::{attribution_content_matches, normalize_attribution_content};
+use crate::models::normalize_attribution_content;
 use crate::repository::ConversationRepository;
 
 use super::conversation_watcher::run_server_conversation_watcher;
@@ -302,18 +302,18 @@ pub struct GlobalStateManager {
     lifecycle_tx: LifecycleBroadcast,
     /// Sessions that have been claimed by instances (session_id -> instance_id)
     /// Prevents multiple instances from claiming the same Claude session
-    claimed_sessions: RwLock<HashMap<String, String>>,
+    claimed_sessions: Arc<RwLock<HashMap<String, String>>>,
     /// First input data per instance (instance_id -> FirstInputData).
     /// Used for causation-based session discovery: the timestamp gates when
     /// discovery starts, and content prefixes verify the candidate session
     /// actually contains input sent to *this* instance.
-    first_input_at: RwLock<HashMap<String, FirstInputData>>,
+    first_input_at: Arc<RwLock<HashMap<String, FirstInputData>>>,
     /// Presence tracking: instance_id -> (connection_id -> PresenceEntry)
     presence: RwLock<HashMap<String, HashMap<String, PresenceEntry>>>,
     /// Pending attributions: instance_id -> queue of (user, content_prefix).
     /// Pushed by the WebSocket input handler, consumed by the conversation watcher.
     /// Content-matched to conversation entries for reliable attribution.
-    pending_attributions: RwLock<HashMap<String, VecDeque<PendingAttribution>>>,
+    pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
     /// Terminal locks: instance_id -> lock holder info
     terminal_locks: RwLock<HashMap<String, TerminalLock>>,
 }
@@ -325,12 +325,22 @@ impl GlobalStateManager {
             trackers: RwLock::new(HashMap::new()),
             broadcast_tx,
             lifecycle_tx,
-            claimed_sessions: RwLock::new(HashMap::new()),
-            first_input_at: RwLock::new(HashMap::new()),
+            claimed_sessions: Arc::new(RwLock::new(HashMap::new())),
+            first_input_at: Arc::new(RwLock::new(HashMap::new())),
             presence: RwLock::new(HashMap::new()),
-            pending_attributions: RwLock::new(HashMap::new()),
+            pending_attributions: Arc::new(RwLock::new(HashMap::new())),
             terminal_locks: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Expose the state broadcast sender (for passing to drivers via SpawnOptions).
+    pub fn broadcast_tx(&self) -> &StateBroadcast {
+        &self.broadcast_tx
+    }
+
+    /// Expose the lifecycle broadcast sender (for passing to drivers via SpawnOptions).
+    pub fn lifecycle_tx(&self) -> &LifecycleBroadcast {
+        &self.lifecycle_tx
     }
 
     /// Try to claim a session for an instance. Returns true if successful.
@@ -360,6 +370,23 @@ impl GlobalStateManager {
     /// Get all sessions claimed by other instances (for filtering candidates)
     pub async fn get_claimed_sessions(&self) -> HashSet<String> {
         self.claimed_sessions.read().await.keys().cloned().collect()
+    }
+
+    /// Get a cloned Arc to the claimed_sessions map for use by DriverContext.
+    pub fn claimed_sessions_arc(&self) -> Arc<RwLock<HashMap<String, String>>> {
+        Arc::clone(&self.claimed_sessions)
+    }
+
+    /// Get a cloned Arc to the first_input_data map for use by DriverContext.
+    pub fn first_input_data_arc(&self) -> Arc<RwLock<HashMap<String, FirstInputData>>> {
+        Arc::clone(&self.first_input_at)
+    }
+
+    /// Get a cloned Arc to the pending_attributions map for use by DriverContext.
+    pub fn pending_attributions_arc(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>> {
+        Arc::clone(&self.pending_attributions)
     }
 
     /// Record input for an instance before session discovery.
@@ -499,35 +526,25 @@ impl GlobalStateManager {
     }
 
     /// Try to consume a pending attribution that matches a conversation entry's content.
-    /// Returns the attribution if found, or None if this was external/terminal input.
-    ///
-    /// Matching strategy: compare the first N chars of the conversation entry content
-    /// against pending attribution prefixes. The first match is consumed (FIFO order
-    /// handles the case where the same user sends multiple messages).
+    /// Delegates to the free function in handlers::conversations::format.
     pub async fn consume_pending_attribution(
         &self,
         instance_id: &str,
         entry_content: &str,
     ) -> Option<PendingAttribution> {
-        if normalize_attribution_content(entry_content).is_empty() {
-            return None;
-        }
+        crate::handlers::conversations::format::consume_pending_attribution(
+            &self.pending_attributions,
+            instance_id,
+            entry_content,
+        )
+        .await
+    }
 
-        let mut map = self.pending_attributions.write().await;
-        let queue = map.get_mut(instance_id)?;
-
-        // Find the first pending attribution whose content matches
-        if let Some(idx) = queue
-            .iter()
-            .position(|attr| attribution_content_matches(&attr.content_prefix, entry_content))
-        {
-            Some(queue.remove(idx).unwrap())
-        } else {
-            // Prune stale entries (older than 60 seconds) while we're here
-            let cutoff = Utc::now() - chrono::Duration::seconds(60);
-            queue.retain(|attr| attr.timestamp > cutoff);
-            None
-        }
+    /// Expose pending_attributions for direct use by format_turn_with_attribution.
+    pub fn pending_attributions_lock(
+        &self,
+    ) -> &RwLock<HashMap<String, VecDeque<PendingAttribution>>> {
+        &*self.pending_attributions
     }
 
     // =========================================================================
@@ -678,7 +695,11 @@ impl GlobalStateManager {
         false
     }
 
-    /// Register a new instance for state tracking
+    /// Register a new instance for state tracking.
+    ///
+    /// When `has_driver` is true, the instance actor owns a ProcessDriver that
+    /// handles state management and conversation tracking. The GSM only needs
+    /// the tracker for presence, session claiming, and lifecycle.
     pub async fn register_instance(
         self: &Arc<Self>,
         instance_id: String,
@@ -686,6 +707,7 @@ impl GlobalStateManager {
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
+        has_driver: bool,
         repository: Option<Arc<ConversationRepository>>,
     ) {
         let mut tracker = InstanceTracker::new(
@@ -695,7 +717,11 @@ impl GlobalStateManager {
             created_at,
             is_claude,
         );
-        tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
+        // Only start GSM-owned state manager if the actor doesn't have its own driver.
+        // ProcessDriver-equipped actors handle state detection and conversation watching internally.
+        if !has_driver {
+            tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
+        }
 
         self.trackers.write().await.insert(instance_id, tracker);
     }

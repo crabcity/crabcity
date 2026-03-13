@@ -6,10 +6,10 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, warn};
 
-use crate::inference::{ClaudeState, StateSignal};
+use crate::inference::ClaudeState;
 use crate::instance_actor::InstanceHandle;
 use crate::virtual_terminal::ClientType;
-use crate::ws::{ConversationEvent, GlobalStateManager};
+use crate::ws::{ConversationEvent, GlobalStateManager, InputContext};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -93,9 +93,13 @@ pub async fn handle_proxy(
     let mut state_rx: Option<broadcast::Receiver<(String, ClaudeState, bool)>> =
         global_state_manager.as_ref().map(|gsm| gsm.subscribe());
 
-    // Subscribe to conversation broadcast from the server-owned watcher
+    // Subscribe to conversation events — try the actor's driver first (new path),
+    // fall back to GSM's server-owned watcher (legacy path).
     let mut convo_rx: Option<broadcast::Receiver<ConversationEvent>> = if is_claude {
-        if let Some(ref gsm) = global_state_manager {
+        let driver_rx = handle.subscribe_conversation().await;
+        if driver_rx.is_some() {
+            driver_rx
+        } else if let Some(ref gsm) = global_state_manager {
             gsm.subscribe_conversation(&instance_id).await
         } else {
             None
@@ -104,11 +108,16 @@ pub async fn handle_proxy(
         None
     };
 
-    // Send current conversation snapshot from server store
-    if is_claude && let Some(ref gsm) = global_state_manager {
-        let turns = gsm.get_conversation_snapshot(&instance_id).await;
+    // Send current conversation snapshot — try actor's driver first, fall back to GSM.
+    if is_claude {
+        let turns = handle.get_conversation_snapshot().await;
         if !turns.is_empty() {
             let _ = tx.send(WsMessage::ConversationFull { turns }).await;
+        } else if let Some(ref gsm) = global_state_manager {
+            let turns = gsm.get_conversation_snapshot(&instance_id).await;
+            if !turns.is_empty() {
+                let _ = tx.send(WsMessage::ConversationFull { turns }).await;
+            }
         }
     }
 
@@ -209,6 +218,7 @@ pub async fn handle_proxy(
     // Task to forward state changes and conversation events to WebSocket
     let tx_events = tx.clone();
     let instance_id_events = instance_id.clone();
+    let handle_for_events = handle.clone();
     let gsm_for_events = global_state_manager.clone();
     let events_task = async move {
         loop {
@@ -256,8 +266,11 @@ pub async fn handle_proxy(
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            // Re-sync from server store
-                            if let Some(ref gsm) = gsm_for_events {
+                            // Re-sync: try actor's driver first, fall back to GSM
+                            let turns = handle_for_events.get_conversation_snapshot().await;
+                            if !turns.is_empty() {
+                                let _ = tx_events.send(WsMessage::ConversationFull { turns }).await;
+                            } else if let Some(ref gsm) = gsm_for_events {
                                 let turns = gsm.get_conversation_snapshot(&instance_id_events).await;
                                 if !turns.is_empty() {
                                     let _ = tx_events.send(WsMessage::ConversationFull { turns }).await;
@@ -301,21 +314,18 @@ pub async fn handle_proxy(
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text) {
                         match ws_msg {
                             WsMessage::Input { data } => {
-                                // Signal + session discovery through GSM, but
-                                // always write to PTY via the direct handle to
-                                // avoid startup races where the instance isn't
-                                // registered with the GlobalStateManager yet.
                                 if let Some(ref gsm) = gsm_for_input {
-                                    gsm.send_signal(
-                                        &instance_id_input,
-                                        StateSignal::TerminalInput { data: data.clone() },
-                                    )
-                                    .await;
-                                    if handle_clone.get_session_id().await.is_none() {
-                                        gsm.mark_first_input(&instance_id_input, &data).await;
+                                    let ctx = InputContext {
+                                        instance_id: instance_id_input.clone(),
+                                        data,
+                                        connection_id: connection_id_input.clone(),
+                                        user: None, // TUI has no authenticated user
+                                        task_id: None,
+                                    };
+                                    if let Err(e) = gsm.handle_input(ctx, None).await {
+                                        error!("Failed to write to PTY: {}", e);
                                     }
-                                }
-                                if let Err(e) = handle_clone.write_input(&data).await {
+                                } else if let Err(e) = handle_clone.write_input(&data).await {
                                     error!("Failed to write to PTY: {}", e);
                                 }
                             }

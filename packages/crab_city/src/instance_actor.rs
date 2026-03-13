@@ -1,15 +1,20 @@
 use anyhow::Result;
 use pty_manager::PtyOutput;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
+use crate::process_driver::{DriverContext, DriverSignal, ProcessDriver, ProcessState};
+use crate::repository::ConversationRepository;
 use crate::virtual_terminal::{ClientType, VirtualTerminal, VtRecorder};
+use crate::ws::ConversationEvent;
+use crate::ws::{FirstInputData, PendingAttribution, StateBroadcast};
 
 /// PTY output enriched with cursor position from the VirtualTerminal.
 /// Produced by the VT processing task after feeding output to the parser.
@@ -58,9 +63,11 @@ pub enum InstanceCommand {
     GetPid {
         respond_to: oneshot::Sender<Option<u32>>,
     },
-    SetClaudeState {
-        state: ClaudeState,
-        respond_to: oneshot::Sender<()>,
+    GetConversationSnapshot {
+        respond_to: oneshot::Sender<Vec<serde_json::Value>>,
+    },
+    SubscribeConversation {
+        respond_to: oneshot::Sender<Option<broadcast::Receiver<ConversationEvent>>>,
     },
     SetCustomName {
         name: Option<String>,
@@ -240,18 +247,28 @@ impl InstanceHandle {
         Ok(())
     }
 
+    /// Set the claude state directly on the shared info (used by legacy GSM state manager).
     pub async fn set_claude_state(&self, state: ClaudeState) -> Result<()> {
+        self.info.write().await.claude_state = Some(state);
+        Ok(())
+    }
+
+    pub async fn get_conversation_snapshot(&self) -> Vec<serde_json::Value> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .sender
+            .send(InstanceCommand::GetConversationSnapshot { respond_to: tx })
+            .await;
+        rx.await.unwrap_or_default()
+    }
+
+    pub async fn subscribe_conversation(&self) -> Option<broadcast::Receiver<ConversationEvent>> {
         let (tx, rx) = oneshot::channel();
         self.sender
-            .send(InstanceCommand::SetClaudeState {
-                state,
-                respond_to: tx,
-            })
+            .send(InstanceCommand::SubscribeConversation { respond_to: tx })
             .await
-            .map_err(|_| anyhow::anyhow!("Instance actor is gone"))?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("Instance actor didn't respond"))?;
-        Ok(())
+            .ok()?;
+        rx.await.ok().flatten()
     }
 
     /// Update a client's viewport in the VirtualTerminal.
@@ -361,6 +378,20 @@ pub struct SpawnOptions {
     pub scrollback_lines: usize,
     /// Directory to write VT session recordings. None = recording disabled.
     pub vt_record_dir: Option<std::path::PathBuf>,
+    /// Process-type-specific driver. Handles state detection and conversation tracking.
+    pub driver: Box<dyn ProcessDriver>,
+    /// Channel for broadcasting state changes to WebSocket clients.
+    pub state_broadcast_tx: Option<StateBroadcast>,
+    /// Channel for broadcasting lifecycle events (SessionRotated, etc.).
+    pub lifecycle_tx: Option<broadcast::Sender<crate::ws::ServerMessage>>,
+    /// Shared session-claiming map (for driver conversation watcher).
+    pub claimed_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Shared first-input data (for session discovery).
+    pub first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>>,
+    /// Shared pending attributions (for conversation formatting).
+    pub pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
+    /// Repository for conversation persistence.
+    pub repository: Option<Arc<ConversationRepository>>,
 }
 
 /// Handle VT commands.
@@ -428,6 +459,14 @@ struct InstanceActor {
     enriched_tx: broadcast::Sender<EnrichedOutput>,
     recorder: Option<VtRecorder<std::fs::File>>,
     pty_output_rx: broadcast::Receiver<PtyOutput>,
+    driver: Box<dyn ProcessDriver>,
+    driver_rx: Option<mpsc::Receiver<DriverSignal>>,
+    state_broadcast_tx: Option<StateBroadcast>,
+    lifecycle_tx: Option<broadcast::Sender<crate::ws::ServerMessage>>,
+    claimed_sessions: Arc<RwLock<HashMap<String, String>>>,
+    first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>>,
+    pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
+    repository: Option<Arc<ConversationRepository>>,
 }
 
 impl InstanceActor {
@@ -514,6 +553,14 @@ impl InstanceActor {
             enriched_tx,
             recorder,
             pty_output_rx,
+            driver: opts.driver,
+            driver_rx: None,
+            state_broadcast_tx: opts.state_broadcast_tx,
+            lifecycle_tx: opts.lifecycle_tx,
+            claimed_sessions: opts.claimed_sessions,
+            first_input_data: opts.first_input_data,
+            pending_attributions: opts.pending_attributions,
+            repository: opts.repository,
         };
 
         // Spawn the actor task
@@ -524,13 +571,19 @@ impl InstanceActor {
         Ok(InstanceHandle { sender, info })
     }
 
-    /// Process PTY output: feed VT, record, and broadcast enriched output.
-    fn process_pty_output(&mut self, event: PtyOutput) {
+    /// Process PTY output: feed VT, feed driver, record, and broadcast enriched output.
+    async fn process_pty_output(&mut self, event: PtyOutput) {
         if let Some(ref mut rec) = self.recorder {
             rec.output(&event.data);
         }
         self.virtual_terminal.process_output(&event.data);
         let cursor = self.virtual_terminal.cursor_position();
+
+        // Feed driver for state detection
+        if let Some(new_state) = self.driver.on_output(&event.data) {
+            self.broadcast_state(&new_state).await;
+        }
+
         let _ = self.enriched_tx.send(EnrichedOutput {
             data: event.data,
             cursor,
@@ -538,9 +591,71 @@ impl InstanceActor {
         });
     }
 
+    /// Broadcast a state change: update InstanceInfo and send through state_broadcast_tx.
+    async fn broadcast_state(&mut self, _process_state: &ProcessState) {
+        // Map to ClaudeState for backward compatibility
+        let claude_state = if let Some(cs) = self.driver.claude_state() {
+            cs.clone()
+        } else {
+            // Best-effort mapping for non-Claude drivers
+            ClaudeState::Idle
+        };
+
+        let instance_id = self.info.read().await.id.clone();
+        self.info.write().await.claude_state = Some(claude_state.clone());
+
+        if let Some(ref tx) = self.state_broadcast_tx {
+            let terminal_stale = self.driver.is_terminal_stale();
+            let _ = tx.send((instance_id, claude_state, terminal_stale));
+        }
+    }
+
+    /// Apply a DriverEffect returned by the driver's on_signal method.
+    async fn apply_effect(&mut self, effect: crate::process_driver::DriverEffect) {
+        if let Some(ref state) = effect.state_change {
+            self.broadcast_state(state).await;
+        }
+
+        if let Some(ref session_id) = effect.session_id {
+            let instance_id = self.info.read().await.id.clone();
+            let old_session = self.info.read().await.session_id.clone();
+            self.info.write().await.session_id = Some(session_id.clone());
+            info!("Instance '{}' session set to {}", instance_id, session_id);
+
+            // If there was a previous session, broadcast rotation
+            if let Some(old) = old_session {
+                if let Some(ref ltx) = self.lifecycle_tx {
+                    let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
+                        instance_id,
+                        from_session: old,
+                        to_session: session_id.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     async fn run(mut self) {
         let name = self.info.read().await.name.clone();
         debug!("Instance actor '{}' started", name);
+
+        // Start the driver — this may spawn background tasks and return a signal receiver.
+        let driver_ctx = DriverContext {
+            working_dir: self.info.read().await.working_dir.clone(),
+            instance_id: self.info.read().await.id.clone(),
+            instance_created_at: chrono::DateTime::parse_from_rfc3339(
+                &self.info.read().await.created_at,
+            )
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+            claimed_sessions: Arc::clone(&self.claimed_sessions),
+            first_input_data: Arc::clone(&self.first_input_data),
+            pending_attributions: Arc::clone(&self.pending_attributions),
+            repository: self.repository.clone(),
+        };
+        self.driver_rx = self.driver.start(driver_ctx);
+
+        let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(500));
 
         loop {
             tokio::select! {
@@ -558,6 +673,10 @@ impl InstanceActor {
                             debug!("Writing {} bytes to PTY", text.len());
                             if let Some(ref mut rec) = self.recorder {
                                 rec.input(text.as_bytes());
+                            }
+                            // Feed driver for input-based state detection
+                            if let Some(new_state) = self.driver.on_input(&text) {
+                                self.broadcast_state(&new_state).await;
                             }
                             let result = self
                                 .pty
@@ -610,10 +729,14 @@ impl InstanceActor {
                             let _ = respond_to.send(pid);
                         }
 
-                        InstanceCommand::SetClaudeState { state, respond_to } => {
-                            debug!("Setting claude_state for instance '{}': {:?}", name, state);
-                            self.info.write().await.claude_state = Some(state);
-                            let _ = respond_to.send(());
+                        InstanceCommand::GetConversationSnapshot { respond_to } => {
+                            let snapshot = self.driver.conversation_snapshot().to_vec();
+                            let _ = respond_to.send(snapshot);
+                        }
+
+                        InstanceCommand::SubscribeConversation { respond_to } => {
+                            let rx = self.driver.subscribe_conversation();
+                            let _ = respond_to.send(rx);
                         }
 
                         InstanceCommand::SetCustomName {
@@ -644,11 +767,34 @@ impl InstanceActor {
                 }
                 result = self.pty_output_rx.recv() => {
                     match result {
-                        Ok(event) => self.process_pty_output(event),
+                        Ok(event) => self.process_pty_output(event).await,
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!("PTY output lagged by {n} messages");
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                signal = async {
+                    match self.driver_rx {
+                        Some(ref mut rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match signal {
+                        Some(signal) => {
+                            let effect = self.driver.on_signal(signal);
+                            self.apply_effect(effect).await;
+                        }
+                        None => {
+                            // Driver signal channel closed — driver background task ended
+                            debug!("Driver signal channel closed for instance '{}'", name);
+                            self.driver_rx = None;
+                        }
+                    }
+                }
+                _ = tick_interval.tick() => {
+                    if let Some(new_state) = self.driver.tick() {
+                        self.broadcast_state(&new_state).await;
                     }
                 }
             }
@@ -682,6 +828,8 @@ impl InstanceHandle {
         max_delta_bytes: usize,
         scrollback_lines: usize,
     ) -> (Self, mpsc::Sender<Vec<u8>>) {
+        use crate::process_driver::ShellDriver;
+        let driver: Box<dyn ProcessDriver> = Box::new(ShellDriver);
         let info = Arc::new(RwLock::new(InstanceInfo {
             id: "test-instance".to_string(),
             name: "test".to_string(),

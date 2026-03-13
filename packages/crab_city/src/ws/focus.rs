@@ -268,11 +268,27 @@ pub async fn handle_focus(
     // Subscribe to conversation broadcast BEFORE reading the snapshot.
     // This prevents a race where the server watcher broadcasts between
     // our snapshot read and subscription, causing us to miss the data.
-    let mut convo_rx = state_manager.subscribe_conversation(&instance_id).await;
+    // Try the driver-owned subscription first, fall back to GSM for legacy instances.
+    let mut convo_rx = {
+        let driver_rx = handle.subscribe_conversation().await;
+        if driver_rx.is_some() {
+            driver_rx
+        } else {
+            state_manager.subscribe_conversation(&instance_id).await
+        }
+    };
 
     // Send current conversation snapshot from server store.
+    // Try the driver-owned snapshot first, fall back to GSM for legacy instances.
     if is_claude {
-        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+        let turns = {
+            let driver_turns = handle.get_conversation_snapshot().await;
+            if !driver_turns.is_empty() {
+                driver_turns
+            } else {
+                state_manager.get_conversation_snapshot(&instance_id).await
+            }
+        };
         if !turns.is_empty() {
             info!(
                 "[FOCUS {}] Sending ConversationFull with {} turns from server store",
@@ -399,8 +415,15 @@ pub async fn handle_focus(
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(instance = %instance_id, "Conversation broadcast lagged by {} messages, sending full sync", n);
-                        // Re-sync from server store
-                        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+                        // Re-sync: try driver first, fall back to GSM
+                        let turns = {
+                            let driver_turns = handle.get_conversation_snapshot().await;
+                            if !driver_turns.is_empty() {
+                                driver_turns
+                            } else {
+                                state_manager.get_conversation_snapshot(&instance_id).await
+                            }
+                        };
                         if !turns.is_empty() {
                             let _ = tx.send(ServerMessage::ConversationFull {
                                 instance_id: instance_id.clone(),

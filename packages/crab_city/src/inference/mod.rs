@@ -22,5 +22,5 @@ mod engine;
 mod manager;
 mod state;
 
-pub use manager::{StateManagerConfig, spawn_state_manager};
+pub use manager::{StateManager, StateManagerConfig, spawn_state_manager};
 pub use state::{ClaudeState, StateSignal, StateUpdate};

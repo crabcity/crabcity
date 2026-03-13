@@ -14,7 +14,11 @@ mod session_discovery;
 mod state_manager;
 
 // Re-export the main types and functions
+pub(crate) use conversation_watcher::run_driver_conversation_watcher;
 pub(crate) use focus::Utf8StreamDecoder;
 pub use handler::handle_multiplexed_ws;
 pub use protocol::{ServerMessage, WsUser};
-pub use state_manager::{ConversationEvent, GlobalStateManager, create_state_broadcast};
+pub use state_manager::{
+    ConversationEvent, FirstInputData, GlobalStateManager, InputContext, PendingAttribution,
+    StateBroadcast, create_state_broadcast,
+};

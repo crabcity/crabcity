@@ -180,15 +180,14 @@ mod tests {
         std::fs::write(project_dir.join("main.rs"), "fn main() {}").unwrap();
         std::fs::create_dir(project_dir.join("src")).unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("browser-test".to_string()),
-                Some(project_dir.to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("browser-test".to_string()),
+            Some(project_dir.to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route("/instances/{id}/files", get(list_instance_files))
@@ -230,15 +229,14 @@ mod tests {
         std::fs::write(project_dir.join("visible.txt"), "hello").unwrap();
         std::fs::write(project_dir.join(".hidden"), "secret").unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("hidden-test".to_string()),
-                Some(project_dir.to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("hidden-test".to_string()),
+            Some(project_dir.to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route("/instances/{id}/files", get(list_instance_files))
@@ -277,15 +275,14 @@ mod tests {
         std::fs::write(project_dir.join("alpha.txt"), "a").unwrap();
         std::fs::create_dir(project_dir.join("beta_dir")).unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("sort-test".to_string()),
-                Some(project_dir.to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("sort-test".to_string()),
+            Some(project_dir.to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route("/instances/{id}/files", get(list_instance_files))
@@ -318,15 +315,14 @@ mod tests {
     async fn test_list_files_nonexistent_path() {
         let (state, tmp) = crate::test_helpers::test_app_state().await;
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("nopath-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("nopath-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route("/instances/{id}/files", get(list_instance_files))
@@ -365,15 +361,14 @@ mod tests {
         let content = "Hello, world!";
         std::fs::write(project_dir.join("test.txt"), content).unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("meta-test".to_string()),
-                Some(project_dir.to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("meta-test".to_string()),
+            Some(project_dir.to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route("/instances/{id}/files", get(list_instance_files))

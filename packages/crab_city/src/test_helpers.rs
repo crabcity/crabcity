@@ -1,13 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::AppState;
 use crate::config::{AuthConfig, CrabCityConfig, RuntimeOverrides, ServerConfig, ServerFileConfig};
 use crate::db::Database;
-use crate::instance_manager::InstanceManager;
+use crate::instance_manager::{ClaudeInstance, InstanceManager};
 use crate::metrics::ServerMetrics;
 use crate::persistence::PersistenceService;
+use crate::process_driver::ShellDriver;
 use crate::repository::ConversationRepository;
 
 /// Build a fully-wired `AppState` backed by an in-memory SQLite database.
@@ -139,4 +140,28 @@ pub async fn create_test_user(
         session_token: format!("session-{}", user_id),
         csrf_token: format!("csrf-{}", user_id),
     }
+}
+
+/// Create a test instance with default driver/shared-state parameters.
+/// Convenience wrapper around `InstanceManager::create()` for tests.
+pub async fn create_test_instance(
+    manager: &InstanceManager,
+    name: Option<String>,
+    working_dir: Option<String>,
+    command: Option<String>,
+) -> anyhow::Result<ClaudeInstance> {
+    manager
+        .create(
+            name,
+            working_dir,
+            command,
+            Box::new(ShellDriver),
+            None,
+            None,
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            None,
+        )
+        .await
 }

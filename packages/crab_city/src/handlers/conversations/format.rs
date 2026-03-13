@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
 use toolpath_convo::{Role, ToolCategory, Turn};
 use tracing::warn;
 
+use crate::models::{attribution_content_matches, normalize_attribution_content};
 use crate::repository;
-use crate::ws;
+use crate::ws::PendingAttribution;
 
 /// Normalize whitespace: collapse consecutive blank lines to one, strip trailing blanks,
 /// preserve indentation within lines.
@@ -141,6 +143,35 @@ pub fn format_turn(turn: &Turn) -> serde_json::Value {
     json
 }
 
+/// Consume a matching pending attribution from the shared map.
+///
+/// Searches the queue for the given instance for an entry whose content prefix
+/// matches the entry content. The first match is consumed (FIFO). Stale entries
+/// (older than 60 seconds) are pruned if no match is found.
+pub async fn consume_pending_attribution(
+    pending_attributions: &RwLock<HashMap<String, VecDeque<PendingAttribution>>>,
+    instance_id: &str,
+    entry_content: &str,
+) -> Option<PendingAttribution> {
+    if normalize_attribution_content(entry_content).is_empty() {
+        return None;
+    }
+
+    let mut map = pending_attributions.write().await;
+    let queue = map.get_mut(instance_id)?;
+
+    if let Some(idx) = queue
+        .iter()
+        .position(|attr| attribution_content_matches(&attr.content_prefix, entry_content))
+    {
+        Some(queue.remove(idx).unwrap())
+    } else {
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(60);
+        queue.retain(|attr| attr.timestamp > cutoff);
+        None
+    }
+}
+
 /// Format a Turn with user attribution.
 ///
 /// Attribution sources (checked in order):
@@ -153,7 +184,7 @@ pub async fn format_turn_with_attribution(
     turn: &Turn,
     instance_id: &str,
     repo: Option<&Arc<repository::ConversationRepository>>,
-    state_manager: Option<&Arc<ws::GlobalStateManager>>,
+    pending_attributions: Option<&RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
 ) -> serde_json::Value {
     let mut json = format_turn(turn);
 
@@ -168,8 +199,8 @@ pub async fn format_turn_with_attribution(
     };
 
     // 1. Try in-process content-matched attribution (fast path, no DB)
-    if let (Some(content), Some(sm)) = (content_text, state_manager)
-        && let Some(attr) = sm.consume_pending_attribution(instance_id, content).await
+    if let (Some(content), Some(attrs)) = (content_text, pending_attributions)
+        && let Some(attr) = consume_pending_attribution(attrs, instance_id, content).await
     {
         if let Some(obj) = json.as_object_mut() {
             obj.insert(
@@ -821,7 +852,9 @@ mod turn_format_tests {
             .await;
 
         let turn = make_turn("e1", Role::User, "fix the bug");
-        let result = format_turn_with_attribution(&turn, "i1", None, Some(&sm)).await;
+        let result =
+            format_turn_with_attribution(&turn, "i1", None, Some(sm.pending_attributions_lock()))
+                .await;
 
         assert_eq!(result["attributed_to"]["user_id"], "u1");
         assert_eq!(result["attributed_to"]["display_name"], "Alice");
@@ -836,7 +869,9 @@ mod turn_format_tests {
             .await;
 
         let turn = make_turn("a1", Role::Assistant, "Sure, I can help");
-        let result = format_turn_with_attribution(&turn, "i1", None, Some(&sm)).await;
+        let result =
+            format_turn_with_attribution(&turn, "i1", None, Some(sm.pending_attributions_lock()))
+                .await;
 
         assert!(result.get("attributed_to").is_none());
     }
@@ -860,7 +895,9 @@ mod turn_format_tests {
             .await;
 
         let turn = make_turn("e1", Role::User, "do the thing");
-        let result = format_turn_with_attribution(&turn, "i1", None, Some(&sm)).await;
+        let result =
+            format_turn_with_attribution(&turn, "i1", None, Some(sm.pending_attributions_lock()))
+                .await;
 
         assert_eq!(result["attributed_to"]["user_id"], "u1");
         assert_eq!(result["task_id"], 42);

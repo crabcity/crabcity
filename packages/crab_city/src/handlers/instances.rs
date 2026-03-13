@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use crate::AppState;
 use crate::auth::MaybeAuthUser;
+use crate::claude_driver::ClaudeDriver;
 use crate::persistence::InstancePersistor;
+use crate::process_driver::{ProcessDriver, ShellDriver};
 use crate::ws;
 
 #[derive(Serialize)]
@@ -60,9 +62,33 @@ pub async fn create_instance(
     maybe_user: MaybeAuthUser,
     Json(req): Json<CreateInstanceRequest>,
 ) -> Result<Json<CreateInstanceResponse>, (StatusCode, String)> {
+    // Determine if the command will be Claude and create the appropriate driver.
+    let command_str = req
+        .command
+        .as_deref()
+        .unwrap_or(&state.instance_manager.default_command());
+    let is_claude = command_str.contains("claude");
+    let driver: Box<dyn ProcessDriver> = if is_claude {
+        Box::new(ClaudeDriver::new())
+    } else {
+        Box::new(ShellDriver)
+    };
+
+    let gsm = &state.global_state_manager;
     match state
         .instance_manager
-        .create(req.name, req.working_dir, req.command)
+        .create(
+            req.name,
+            req.working_dir,
+            req.command,
+            driver,
+            Some(gsm.broadcast_tx().clone()),
+            Some(gsm.lifecycle_tx().clone()),
+            gsm.claimed_sessions_arc(),
+            gsm.first_input_data_arc(),
+            gsm.pending_attributions_arc(),
+            Some(state.repository.clone()),
+        )
         .await
     {
         Ok(instance) => {
@@ -81,6 +107,7 @@ pub async fn create_instance(
                         instance.working_dir.clone(),
                         created_at,
                         is_claude,
+                        true, // has_driver — the actor owns its ProcessDriver
                         Some(state.repository.clone()),
                     )
                     .await;
