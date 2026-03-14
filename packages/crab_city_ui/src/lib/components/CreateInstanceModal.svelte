@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { createInstance, selectInstance } from '$lib/stores/instances';
 	import { defaultCommand } from '$lib/stores/settings';
-	import { currentProject, projects } from '$lib/stores/projects';
+	import { currentProject } from '$lib/stores/projects';
 	import DirectoryPicker from './DirectoryPicker.svelte';
 
 	interface Props {
@@ -37,10 +37,6 @@
 			const trimmed = workingDir.trim();
 			if (!trimmed) {
 				error = 'Working directory is required for a new project';
-				return;
-			}
-			if ($projects.some(p => p.workingDir === trimmed)) {
-				error = 'A project already exists at this path';
 				return;
 			}
 		}
@@ -375,7 +371,8 @@
 	}
 
 	.fullscreen-panel .title {
-		padding: 1.25rem 1.5rem 0.5rem;
+		padding: 0.5rem 1.5rem 0;
+		margin-bottom: 0.5rem;
 		flex-shrink: 0;
 	}
 
@@ -418,4 +415,5 @@
 	.field.compact {
 		flex: 1;
 	}
+
 </style>

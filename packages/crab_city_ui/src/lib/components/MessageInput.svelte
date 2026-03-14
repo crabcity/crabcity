@@ -1,23 +1,51 @@
 <script lang="ts">
 	import { sendMessage, connectionStatus, hasPendingInput, reconnect, shutdownReason } from '$lib/stores/websocket';
-	import { isActive, isStarting } from '$lib/stores/claude';
+	import { isActive, isStarting, isActiveForInstance, isStartingForInstance } from '$lib/stores/claude';
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
 	import { getDraft, setDraft } from '$lib/stores/drafts';
 	import { voiceBackendOverride } from '$lib/stores/metrics';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
 	import VoiceVisualizer from './VoiceVisualizer.svelte';
 
+	interface Props {
+		instanceId?: string;
+	}
+
+	let { instanceId: propInstanceId }: Props = $props();
+
+	// Snapshot outside reactive tracking — component lifetime is tied to one instance
+	const boundInstanceId = untrack(() => propInstanceId);
+
+	// Per-instance stores when bound to a specific instance
+	const _isStarting = boundInstanceId ? isStartingForInstance(boundInstanceId) : null;
+	const _isActive = boundInstanceId ? isActiveForInstance(boundInstanceId) : null;
+
+	// Bridge per-instance stores into $state
+	let startingVal = $state(false);
+	let activeVal = $state(false);
+	const _unsubs: (() => void)[] = [];
+	if (_isStarting) _unsubs.push(_isStarting.subscribe(v => { startingVal = v; }));
+	if (_isActive) _unsubs.push(_isActive.subscribe(v => { activeVal = v; }));
+	onDestroy(() => { for (const unsub of _unsubs) unsub(); });
+
+	// Use per-instance values when bound, otherwise fall back to global
+	let isInstanceStarting = $derived(_isStarting ? startingVal : $isStarting);
+	let isInstanceActive = $derived(_isActive ? activeVal : $isActive);
+
+	const effectiveInstanceId = $derived(boundInstanceId ?? $currentInstanceId);
+
 	// Restore draft from the persisted store (survives instance switches & reloads)
-	let message = $state($currentInstanceId ? getDraft($currentInstanceId) : '');
+	const initialInstanceId = untrack(() => effectiveInstanceId);
+	let message = $state(initialInstanceId ? getDraft(initialInstanceId) : '');
 	let inputEl: HTMLTextAreaElement;
 
 	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
 	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
 	let isServerGone = $derived($connectionStatus === 'server_gone');
 	let showBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
-	let showStartupBanner = $derived($isStarting);
+	let showStartupBanner = $derived(isInstanceStarting);
 
 	// Queue flash confirmation
 	let queueFlash = $state(false);
@@ -131,8 +159,8 @@
 		}
 
 		// During startup, queue message as a task instead of sending
-		if ($isStarting && $currentInstanceId) {
-			quickAddTask($currentInstanceId, message.trim());
+		if (isInstanceStarting && effectiveInstanceId) {
+			quickAddTask(effectiveInstanceId, message.trim());
 			message = '';
 			messageBeforeVoice = '';
 			queueFlash = true;
@@ -159,13 +187,13 @@
 	}
 
 	function handleAddToQueue() {
-		if (!message.trim() || !$currentInstanceId) return;
+		if (!message.trim() || !effectiveInstanceId) return;
 
 		if (isListening && voiceSession) {
 			voiceSession.stop();
 		}
 
-		quickAddTask($currentInstanceId, message.trim());
+		quickAddTask(effectiveInstanceId, message.trim());
 		message = '';
 		messageBeforeVoice = '';
 
@@ -208,7 +236,7 @@
 
 	// Persist draft to store on every change (survives instance switches & reloads)
 	$effect(() => {
-		const id = $currentInstanceId;
+		const id = effectiveInstanceId;
 		if (id) {
 			setDraft(id, message);
 		}
@@ -290,7 +318,7 @@
 			bind:value={message}
 			onkeydown={handleKeydown}
 			oninput={() => inputEl && autoResize(inputEl)}
-			placeholder={isServerGone ? "Server is offline — message will send when it restarts..." : isDisconnected ? "Type here — will send when reconnected..." : $isStarting ? "Type here — will queue as task while Claude starts..." : "Message Claude..."}
+			placeholder={isServerGone ? "Server is offline — message will send when it restarts..." : isDisconnected ? "Type here — will send when reconnected..." : isInstanceStarting ? "Type here — will queue as task while Claude starts..." : "Message Claude..."}
 			rows="1"
 			class:voice-draft={showDraftBanner}
 			class:voice-correcting={showCorrectingBanner}
@@ -324,7 +352,7 @@
 				</button>
 			</div>
 		{/if}
-		{#if $isActive || $isStarting}
+		{#if isInstanceActive || isInstanceStarting}
 			<button
 				class="queue-btn"
 				class:flash={queueFlash}
