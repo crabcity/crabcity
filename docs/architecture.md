@@ -143,6 +143,7 @@ SQLite via sqlx with embedded migrations (`db.rs`).
 | `conversations`, `messages` | Imported Claude conversation history with full-text search |
 | `tasks`, `task_tags` | Task board with tagging |
 | `users`, `sessions` | Authentication and session management |
+| `user_settings` | Per-user key-value preferences (synced via WebSocket) |
 | `chat_messages` | Broadcast chat history |
 | `instance_snapshots` | Periodic instance state persistence |
 

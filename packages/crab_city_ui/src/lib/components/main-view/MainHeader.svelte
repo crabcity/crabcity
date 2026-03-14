@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { currentInstanceId, instanceList, createInstance, selectInstance } from '$lib/stores/instances';
+	import { currentInstanceId, instanceList, selectInstance } from '$lib/stores/instances';
 	import { connectionStatus } from '$lib/stores/websocket';
 	import { currentProject, projects } from '$lib/stores/projects';
 	import { getStateInfo } from '$lib/utils/instance-state';
@@ -7,12 +7,12 @@
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
-	import { defaultCommand } from '$lib/stores/settings';
 	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
 	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
 	import { sendRefresh } from '$lib/stores/websocket';
 	import { activityLevel } from '$lib/stores/activity';
 	import InstanceChip from './InstanceChip.svelte';
+	import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
 	const isMultiPane = $derived($paneCount > 1);
 
@@ -69,20 +69,7 @@
 		selectInstance(instanceId, false);
 	}
 
-	let isCreating = $state(false);
-
-	async function handleCreateInstance() {
-		if (isCreating) return;
-		isCreating = true;
-		const result = await createInstance({
-			command: $defaultCommand,
-			working_dir: $currentProject?.workingDir
-		});
-		if (result) {
-			selectInstance(result.id);
-		}
-		isCreating = false;
-	}
+	let showCreateModal = $state(false);
 
 	/** In multi-pane mode, open a panel type as a new split pane */
 	function openAsSplit(kind: PaneContentKind) {
@@ -159,16 +146,11 @@
 			{/each}
 			<button
 				class="fleet-add"
-				onclick={handleCreateInstance}
-				disabled={isCreating}
+				onclick={() => showCreateModal = true}
 				title="New instance"
 				aria-label="Create new instance"
 			>
-				{#if isCreating}
-					<span class="mini-spinner"></span>
-				{:else}
-					+
-				{/if}
+				+
 			</button>
 		</div>
 	{:else}
@@ -274,6 +256,10 @@
 	</div>
 </header>
 
+{#if showCreateModal}
+	<CreateInstanceModal onclose={() => showCreateModal = false} />
+{/if}
+
 <style>
 	.main-header {
 		display: flex;
@@ -349,12 +335,6 @@
 
 	.header-fleet::-webkit-scrollbar { height: 0; }
 
-	.fleet-empty {
-		font-size: 10px;
-		color: var(--text-muted);
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-	}
 
 	.fleet-add {
 		display: flex;
@@ -378,19 +358,6 @@
 		color: var(--amber-400);
 		background: var(--tint-active);
 	}
-
-	.fleet-add:disabled { opacity: 0.5; cursor: not-allowed; }
-
-	.mini-spinner {
-		width: 10px;
-		height: 10px;
-		border: 1.5px solid var(--surface-border);
-		border-top-color: var(--amber-500);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
-	@keyframes spin { to { transform: rotate(360deg); } }
 
 	/* Right: Actions */
 	.header-actions {

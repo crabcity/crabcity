@@ -659,6 +659,12 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/tasks/{id}/tags/{tag_id}",
                 delete(handlers::remove_task_tag_handler),
             )
+            // User settings
+            .route(
+                "/api/user/settings",
+                get(handlers::get_user_settings_handler)
+                    .patch(handlers::update_user_settings_handler),
+            )
             // Admin endpoints
             .route("/api/admin/stats", get(handlers::get_database_stats))
             .route("/api/admin/import", post(handlers::trigger_import))
@@ -676,6 +682,11 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/admin/invites/{token}",
                 delete(handlers::revoke_server_invite_handler),
             )
+            // Browse endpoints (not instance-scoped — for project creation)
+            .route("/api/browse", get(handlers::browse_directory))
+            .route("/api/browse/worktree", post(handlers::create_worktree))
+            .route("/api/browse/mkdir", post(handlers::create_directory))
+            .route("/api/browse/git-info", get(handlers::git_detailed_info))
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))

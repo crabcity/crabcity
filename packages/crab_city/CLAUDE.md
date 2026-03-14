@@ -13,7 +13,7 @@ src/
 ├── auth.rs              JWT/session auth, registration, middleware (loopback bypass)
 │
 ├── cli/                 CLI subcommands (attach, list, kill, auth, daemon, picker)
-├── handlers/            HTTP route handlers (instances, tasks, conversations, admin, notes)
+├── handlers/            HTTP route handlers (instances, tasks, conversations, admin, notes, browse)
 ├── repository/          Database query layer (conversations, tasks, auth, chat, search)
 ├── ws/                  WebSocket subsystem
 │   ├── protocol.rs      ServerMessage enum — the wire format

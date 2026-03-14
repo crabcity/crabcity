@@ -1,9 +1,8 @@
 <script lang="ts">
 	import type { PaneContentKind, PaneContent } from '$lib/stores/layout';
 	import { setPaneContent } from '$lib/stores/layout';
-	import { instanceList, createInstance, selectInstance } from '$lib/stores/instances';
-	import { defaultCommand } from '$lib/stores/settings';
-	import { currentProject } from '$lib/stores/projects';
+	import { instanceList, selectInstance } from '$lib/stores/instances';
+	import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
 	interface Props {
 		paneId: string;
@@ -12,7 +11,7 @@
 
 	let { paneId, kind }: Props = $props();
 
-	let isCreating = $state(false);
+	let showCreateModal = $state(false);
 
 	const isTerminal = $derived(kind === 'terminal');
 
@@ -39,19 +38,9 @@
 		setPaneContent(paneId, { kind, instanceId } as PaneContent);
 	}
 
-	async function handleNew() {
-		if (isCreating) return;
-		isCreating = true;
-		const command = isTerminal ? '/bin/bash' : $defaultCommand;
-		const result = await createInstance({
-			command,
-			working_dir: $currentProject?.workingDir
-		});
-		if (result) {
-			setPaneContent(paneId, { kind, instanceId: result.id } as PaneContent);
-			selectInstance(result.id);
-		}
-		isCreating = false;
+	function handleCreated(instanceId: string) {
+		setPaneContent(paneId, { kind, instanceId } as PaneContent);
+		selectInstance(instanceId);
 	}
 </script>
 
@@ -71,15 +60,18 @@
 			</div>
 		{/if}
 
-		<button class="new-btn" onclick={handleNew} disabled={isCreating}>
-			{#if isCreating}
-				Creating…
-			{:else}
-				+ New {isTerminal ? 'Shell' : 'Instance'}
-			{/if}
+		<button class="new-btn" onclick={() => showCreateModal = true}>
+			+ New {isTerminal ? 'Shell' : 'Instance'}
 		</button>
 	</div>
 </div>
+
+{#if showCreateModal}
+	<CreateInstanceModal
+		onclose={() => showCreateModal = false}
+		oncreated={handleCreated}
+	/>
+{/if}
 
 <style>
 	.picker {
@@ -183,14 +175,9 @@
 		transition: all 0.1s ease;
 	}
 
-	.new-btn:hover:not(:disabled) {
+	.new-btn:hover {
 		background: var(--surface-700);
 		border-color: var(--amber-400);
 		color: var(--amber-400);
-	}
-
-	.new-btn:disabled {
-		opacity: 0.5;
-		cursor: default;
 	}
 </style>

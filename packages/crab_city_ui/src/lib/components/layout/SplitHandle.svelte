@@ -74,6 +74,8 @@
 	const ratioPercent = $derived(Math.round(splitNode.ratio * 100));
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
 	bind:this={containerEl}
 	class="split-handle"

@@ -21,6 +21,7 @@ import {
 	type ChatTopicSummary
 } from './chat';
 import { handleTaskUpdate, handleTaskDeleted } from './tasks';
+import { handleUserSettingsUpdate } from './settings';
 
 // =============================================================================
 // Multiplexed Message Types
@@ -76,6 +77,7 @@ export type MuxServerMessage =
 	| { type: 'ChatTopicsResponse'; scope: string; topics: ChatTopicSummary[] }
 	| { type: 'TaskUpdate'; task: Task }
 	| { type: 'TaskDeleted'; task_id: number }
+	| { type: 'UserSettingsUpdate'; user_id: string; settings: Record<string, string> }
 	| { type: 'Shutdown'; reason: string };
 
 // =============================================================================
@@ -292,6 +294,10 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 
 			case 'TaskDeleted':
 				handleTaskDeleted(msg.task_id);
+				break;
+
+			case 'UserSettingsUpdate':
+				handleUserSettingsUpdate(msg.settings);
 				break;
 
 			case 'Shutdown':

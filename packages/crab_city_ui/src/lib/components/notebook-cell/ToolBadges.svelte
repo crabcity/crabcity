@@ -51,7 +51,7 @@
 	{#each cardEntries as { tool }}
 		{@const Widget = CARD_WIDGETS[tool.name]}
 		{#if Widget}
-			<svelte:component this={Widget} {tool} {agentLog} />
+			<Widget {tool} {agentLog} />
 		{/if}
 	{/each}
 
