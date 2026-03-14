@@ -396,7 +396,7 @@
 	<TodoQueue />
 
 	<!-- Input -->
-	<MessageInput />
+	<MessageInput instanceId={resolvedInstanceId ?? undefined} />
 </div>
 
 <style>
