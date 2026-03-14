@@ -1,5 +1,8 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { onMount } from 'svelte';
+
+	let { children }: { children: Snippet } = $props();
 	import { goto } from '$app/navigation';
 	import { base } from '$app/paths';
 	import { page } from '$app/stores';
@@ -166,7 +169,7 @@
 	});
 </script>
 
-<slot />
+{@render children()}
 <DebugPanel />
 
 <style>

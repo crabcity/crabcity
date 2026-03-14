@@ -15,6 +15,7 @@ import { currentInstanceId, addPendingInput, flushPendingInput, getLastConversat
 import { recordWebSocketMessage, recordWebSocketReconnect } from './metrics';
 import { setLoadingHistory } from './chat';
 import { createMessageHandler, type MuxClientMessage, type MuxServerMessage } from './ws-handlers';
+import { fetchServerSettings } from './settings';
 
 // =============================================================================
 // Connection State (formerly connection.ts)
@@ -398,6 +399,9 @@ function connectMultiplexed(onConnected?: () => void): void {
 		if (pendingFocus) {
 			sendFocus(pendingFocus);
 		}
+
+		// Fetch server settings on connect (server wins on conflict)
+		fetchServerSettings();
 
 		onConnected?.();
 	};
