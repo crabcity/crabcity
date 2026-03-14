@@ -80,6 +80,9 @@
 	let gitDetailLoading = $state(false);
 	let lastGitRepoRoot = $state<string | null>(null);
 
+	let hoveredPath = $state<string | null>(null);
+	let hoveredIsPrefix = $state(false); // true when hover source is project/worktree (prefix match)
+
 	let columnsEl: HTMLDivElement | undefined = $state();
 	let pathInputEl: HTMLInputElement | undefined = $state();
 
@@ -422,6 +425,28 @@
 </script>
 
 <div class="directory-picker">
+	<!-- Quick links: existing projects -->
+	{#if $projects.length > 0}
+		<div class="quick-links">
+			<span class="section-label">PROJECTS</span>
+			<div class="project-chips">
+				{#each $projects as project}
+					<button
+						class="project-chip"
+						class:active={value === project.workingDir}
+						class:chip-hover={hoveredPath !== null && (hoveredPath === project.workingDir || hoveredPath.startsWith(project.workingDir + '/'))}
+						onclick={() => expandToPath(project.workingDir)}
+						onmouseenter={() => { hoveredPath = project.workingDir; hoveredIsPrefix = true; }}
+						onmouseleave={() => { if (hoveredPath === project.workingDir) hoveredPath = null; }}
+						title={project.workingDir}
+					>
+						{project.name}
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
 	<!-- Path bar -->
 	<div class="path-bar">
 		{#if editingPath}
@@ -437,9 +462,9 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div class="breadcrumbs" ondblclick={startEditingPath}>
 				<button class="crumb" onclick={() => navigateToPath('/')}>/</button>
-				{#each pathSegments() as seg}
+				{#each pathSegments() as seg, i}
 					<span class="crumb-sep">/</span>
-					<button class="crumb" onclick={() => navigateToPath(seg.path)}>{seg.name}</button>
+					<button class="crumb" class:crumb-hover={hoveredPath !== null && (seg.path === hoveredPath || (hoveredIsPrefix && seg.path.startsWith(hoveredPath + '/')))} onmouseenter={() => { hoveredPath = seg.path; hoveredIsPrefix = false; }} onmouseleave={() => { if (hoveredPath === seg.path) hoveredPath = null; }} onclick={() => navigateToPath(seg.path)}>{seg.name}</button>
 				{/each}
 			</div>
 			<button class="edit-path-btn" onclick={startEditingPath} title="Type path directly">
@@ -449,25 +474,6 @@
 			</button>
 		{/if}
 	</div>
-
-	<!-- Quick links: existing projects -->
-	{#if $projects.length > 0}
-		<div class="quick-links">
-			<span class="section-label">PROJECTS</span>
-			<div class="project-chips">
-				{#each $projects as project}
-					<button
-						class="project-chip"
-						class:active={value === project.workingDir}
-						onclick={() => expandToPath(project.workingDir)}
-						title={project.workingDir}
-					>
-						{project.name}
-					</button>
-				{/each}
-			</div>
-		</div>
-	{/if}
 
 	<!-- Miller columns -->
 	<div class="miller-columns" bind:this={columnsEl}>
@@ -493,12 +499,16 @@
 				<div
 					class="miller-column"
 					class:last={colIndex === columns.length - 1}
+					class:col-hover={hoveredPath !== null && (col.path === hoveredPath || (hoveredIsPrefix && col.path.startsWith(hoveredPath + '/')))}
 					style:width="{columnWidths[colIndex] ?? DEFAULT_COL_WIDTH}px"
 					style:flex="none"
 					onkeydown={(e) => handleColumnKeydown(e, colIndex)}
+					onmouseenter={() => { hoveredPath = col.path; hoveredIsPrefix = false; }}
+					onmouseleave={() => { if (hoveredPath === col.path) hoveredPath = null; }}
 					tabindex="0"
 					role="listbox"
 				>
+					<div class="col-header">{col.path.split('/').pop() || '/'}</div>
 					{#if col.loading}
 						<div class="col-status">Loading…</div>
 					{:else if col.error}
@@ -512,7 +522,10 @@
 									class="entry"
 									class:selected={col.selectedName === entry.name}
 									class:leaf={!entry.hasChildren}
+									class:entry-hover={hoveredPath !== null && entry.path === hoveredPath}
 									onclick={() => selectEntry(colIndex, entry)}
+									onmouseenter={() => { hoveredPath = entry.path; hoveredIsPrefix = false; }}
+									onmouseleave={() => { if (hoveredPath === entry.path) { hoveredPath = col.path; hoveredIsPrefix = false; } }}
 									role="option"
 									aria-selected={col.selectedName === entry.name}
 								>
@@ -633,7 +646,10 @@
 						<button
 							class="worktree-entry"
 							class:active={value === wt.path}
+							class:wt-hover={hoveredPath !== null && (hoveredPath === wt.path || hoveredPath.startsWith(wt.path + '/'))}
 							onclick={() => expandToPath(wt.path)}
+							onmouseenter={() => { hoveredPath = wt.path; hoveredIsPrefix = true; }}
+							onmouseleave={() => { if (hoveredPath === wt.path) hoveredPath = null; }}
 						>
 							<span class="wt-branch">{wt.branch || '(detached)'}</span>
 							{#if wt.isMain}
@@ -738,7 +754,7 @@
 		border-radius: 2px;
 	}
 
-	.crumb:hover {
+	.crumb:hover, .crumb.crumb-hover {
 		color: var(--text-primary);
 		background: var(--surface-600);
 	}
@@ -818,6 +834,12 @@
 		color: var(--amber-400);
 	}
 
+	.project-chip.chip-hover {
+		border-color: var(--surface-border-light);
+		color: var(--text-primary);
+		background: var(--surface-600);
+	}
+
 	/* Miller columns */
 	.miller-columns {
 		display: flex;
@@ -853,8 +875,30 @@
 		outline: none;
 	}
 
-	.miller-column:focus-within {
+	.col-header {
+		position: sticky;
+		top: 0;
+		z-index: 1;
+		padding: 2px 8px;
+		font-size: 0.55rem;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		color: var(--text-muted);
+		background: var(--surface-700);
+		border-bottom: 1px solid var(--surface-border);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.miller-column:focus-within,
+	.miller-column.col-hover {
 		background: var(--surface-800);
+	}
+
+	.miller-column.col-hover .col-header {
+		color: var(--text-primary);
+		background: var(--surface-600);
 	}
 
 	.col-status {
@@ -888,7 +932,8 @@
 		transition: background 0.05s;
 	}
 
-	.entry:hover {
+	.entry:hover,
+	.entry.entry-hover {
 		background: var(--surface-700);
 		color: var(--text-primary);
 	}
@@ -1074,6 +1119,11 @@
 
 	.worktree-entry.active {
 		color: var(--amber-400);
+	}
+
+	.worktree-entry.wt-hover {
+		background: var(--surface-700);
+		color: var(--text-primary);
 	}
 
 	.wt-branch { font-weight: 600; }
