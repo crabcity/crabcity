@@ -10,7 +10,7 @@ use uuid::Uuid;
 use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
-use crate::process_driver::{DriverContext, DriverSignal, ProcessDriver, ProcessState};
+use crate::process_driver::{DriverContext, DriverSignal, ProcessDriver};
 use crate::repository::ConversationRepository;
 use crate::virtual_terminal::{ClientType, VirtualTerminal, VtRecorder};
 use crate::ws::ConversationEvent;
@@ -574,8 +574,8 @@ impl InstanceActor {
         let cursor = self.virtual_terminal.cursor_position();
 
         // Feed driver for state detection
-        if let Some(new_state) = self.driver.on_output(&event.data) {
-            self.broadcast_state(&new_state).await;
+        if self.driver.on_output(&event.data).is_some() {
+            self.broadcast_state().await;
         }
 
         let _ = self.enriched_tx.send(EnrichedOutput {
@@ -586,7 +586,7 @@ impl InstanceActor {
     }
 
     /// Broadcast a state change: update InstanceInfo and send through state_broadcast_tx.
-    async fn broadcast_state(&mut self, _process_state: &ProcessState) {
+    async fn broadcast_state(&mut self) {
         // Map to ClaudeState for backward compatibility
         let claude_state = if let Some(cs) = self.driver.claude_state() {
             cs.clone()
@@ -606,8 +606,8 @@ impl InstanceActor {
 
     /// Apply a DriverEffect returned by the driver's on_signal method.
     async fn apply_effect(&mut self, effect: crate::process_driver::DriverEffect) {
-        if let Some(ref state) = effect.state_change {
-            self.broadcast_state(state).await;
+        if effect.state_change.is_some() {
+            self.broadcast_state().await;
         }
 
         if let Some(ref session_id) = effect.session_id {
@@ -669,8 +669,8 @@ impl InstanceActor {
                                 rec.input(text.as_bytes());
                             }
                             // Feed driver for input-based state detection
-                            if let Some(new_state) = self.driver.on_input(&text) {
-                                self.broadcast_state(&new_state).await;
+                            if self.driver.on_input(&text).is_some() {
+                                self.broadcast_state().await;
                             }
                             let result = self
                                 .pty
@@ -787,8 +787,8 @@ impl InstanceActor {
                     }
                 }
                 _ = tick_interval.tick() => {
-                    if let Some(new_state) = self.driver.tick() {
-                        self.broadcast_state(&new_state).await;
+                    if self.driver.tick().is_some() {
+                        self.broadcast_state().await;
                     }
                 }
             }
@@ -829,7 +829,7 @@ impl InstanceHandle {
         Arc<RwLock<Vec<serde_json::Value>>>,
     ) {
         use crate::process_driver::ShellDriver;
-        let driver: Box<dyn ProcessDriver> = Box::new(ShellDriver);
+        let _driver: Box<dyn ProcessDriver> = Box::new(ShellDriver);
         let info = Arc::new(RwLock::new(InstanceInfo {
             id: "test-instance".to_string(),
             name: "test".to_string(),
@@ -921,6 +921,189 @@ impl InstanceHandle {
         let _ = output_tx.send(data.to_vec()).await;
         // Yield to let the actor task process the injected output
         tokio::task::yield_now().await;
+    }
+
+    /// Spawn a test actor with a custom driver.
+    ///
+    /// Unlike `spawn_test`/`spawn_test_with_scrollback` (which use ShellDriver),
+    /// this routes all operations through the provided driver:
+    /// - `on_output()` on injected bytes
+    /// - `on_input()` on WriteInput
+    /// - `conversation_snapshot()` for GetConversationSnapshot
+    /// - `subscribe_conversation()` for SubscribeConversation
+    /// - `on_signal()` for signals from `signal_rx`
+    /// - `tick()` on a 500ms interval
+    /// - `broadcast_state()` on driver state changes
+    pub(crate) fn spawn_test_with_driver(
+        driver: Box<dyn ProcessDriver>,
+        signal_rx: Option<mpsc::Receiver<DriverSignal>>,
+        state_broadcast_tx: Option<StateBroadcast>,
+        lifecycle_tx: Option<broadcast::Sender<crate::ws::ServerMessage>>,
+    ) -> (Self, mpsc::Sender<Vec<u8>>) {
+        let info = Arc::new(RwLock::new(InstanceInfo {
+            id: "test-instance".to_string(),
+            name: "test".to_string(),
+            custom_name: None,
+            command: "echo test".to_string(),
+            working_dir: "/tmp".to_string(),
+            running: true,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            session_id: None,
+            claude_state: Some(ClaudeState::Initializing),
+        }));
+        let (sender, mut receiver) = mpsc::channel(32);
+        let mut vt = VirtualTerminal::new(24, 80, 4096, 0);
+        let (enriched_tx, _) = broadcast::channel::<EnrichedOutput>(64);
+        let enriched_tx_actor = enriched_tx.clone();
+        let info_actor = info.clone();
+        let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(64);
+        let mut driver = driver;
+        let mut signal_rx = signal_rx;
+        let state_broadcast_tx = state_broadcast_tx;
+        let lifecycle_tx = lifecycle_tx;
+
+        tokio::spawn(async move {
+            let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+
+            loop {
+                tokio::select! {
+                    Some(cmd) = receiver.recv() => {
+                        let cmd = match handle_vt_command(&mut vt, cmd) {
+                            Some(cmd) => cmd,
+                            None => continue,
+                        };
+                        match cmd {
+                            InstanceCommand::WriteInput { text, respond_to } => {
+                                if let Some(new_state) = driver.on_input(&text) {
+                                    let _ = new_state; // consumed
+                                    // Broadcast state
+                                    let claude_state = driver.claude_state()
+                                        .cloned()
+                                        .unwrap_or(ClaudeState::Idle);
+                                    let instance_id = info_actor.read().await.id.clone();
+                                    info_actor.write().await.claude_state = Some(claude_state.clone());
+                                    if let Some(ref tx) = state_broadcast_tx {
+                                        let terminal_stale = driver.is_terminal_stale();
+                                        let _ = tx.send((instance_id, claude_state, terminal_stale));
+                                    }
+                                }
+                                let _ = respond_to.send(Ok(text.len()));
+                            }
+                            InstanceCommand::GetConversationSnapshot { respond_to } => {
+                                let snapshot = driver.conversation_snapshot().to_vec();
+                                let _ = respond_to.send(snapshot);
+                            }
+                            InstanceCommand::SubscribeConversation { respond_to } => {
+                                let rx = driver.subscribe_conversation();
+                                let _ = respond_to.send(rx);
+                            }
+                            InstanceCommand::GetInfo { respond_to } => {
+                                let _ = respond_to.send(info_actor.read().await.clone());
+                            }
+                            InstanceCommand::Stop { respond_to } => {
+                                let _ = respond_to.send(Ok(()));
+                                break;
+                            }
+                            InstanceCommand::Resize { respond_to, .. } => {
+                                let _ = respond_to.send(Ok(()));
+                            }
+                            InstanceCommand::SubscribeOutput { respond_to } => {
+                                let rx = enriched_tx_actor.subscribe();
+                                let _ = respond_to.send(rx);
+                            }
+                            InstanceCommand::SetSessionId { session_id, respond_to } => {
+                                info_actor.write().await.session_id = Some(session_id);
+                                let _ = respond_to.send(());
+                            }
+                            InstanceCommand::GetSessionId { respond_to } => {
+                                let sid = info_actor.read().await.session_id.clone();
+                                let _ = respond_to.send(sid);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(data) = output_rx.recv() => {
+                        vt.process_output(&data);
+                        let cursor = vt.cursor_position();
+                        // Feed driver
+                        if let Some(_new_state) = driver.on_output(&data) {
+                            let claude_state = driver.claude_state()
+                                .cloned()
+                                .unwrap_or(ClaudeState::Idle);
+                            let instance_id = info_actor.read().await.id.clone();
+                            info_actor.write().await.claude_state = Some(claude_state.clone());
+                            if let Some(ref tx) = state_broadcast_tx {
+                                let terminal_stale = driver.is_terminal_stale();
+                                let _ = tx.send((instance_id, claude_state, terminal_stale));
+                            }
+                        }
+                        let _ = enriched_tx_actor.send(EnrichedOutput {
+                            data,
+                            cursor,
+                            timestamp: 0,
+                        });
+                    }
+                    signal = async {
+                        match signal_rx {
+                            Some(ref mut rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        match signal {
+                            Some(signal) => {
+                                let effect = driver.on_signal(signal);
+                                // Apply effect: state broadcast
+                                if effect.state_change.is_some() {
+                                    let claude_state = driver.claude_state()
+                                        .cloned()
+                                        .unwrap_or(ClaudeState::Idle);
+                                    let instance_id = info_actor.read().await.id.clone();
+                                    info_actor.write().await.claude_state = Some(claude_state.clone());
+                                    if let Some(ref tx) = state_broadcast_tx {
+                                        let terminal_stale = driver.is_terminal_stale();
+                                        let _ = tx.send((instance_id, claude_state, terminal_stale));
+                                    }
+                                }
+                                // Apply effect: session_id
+                                if let Some(ref session_id) = effect.session_id {
+                                    let instance_id = info_actor.read().await.id.clone();
+                                    let old_session = info_actor.read().await.session_id.clone();
+                                    info_actor.write().await.session_id = Some(session_id.clone());
+                                    if let Some(old) = old_session {
+                                        if let Some(ref ltx) = lifecycle_tx {
+                                            let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
+                                                instance_id,
+                                                from_session: old,
+                                                to_session: session_id.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                signal_rx = None;
+                            }
+                        }
+                    }
+                    _ = tick_interval.tick() => {
+                        if let Some(_new_state) = driver.tick() {
+                            let claude_state = driver.claude_state()
+                                .cloned()
+                                .unwrap_or(ClaudeState::Idle);
+                            let instance_id = info_actor.read().await.id.clone();
+                            info_actor.write().await.claude_state = Some(claude_state.clone());
+                            if let Some(ref tx) = state_broadcast_tx {
+                                let terminal_stale = driver.is_terminal_stale();
+                                let _ = tx.send((instance_id, claude_state, terminal_stale));
+                            }
+                        }
+                    }
+                    else => break,
+                }
+            }
+        });
+
+        (InstanceHandle { sender, info }, output_tx)
     }
 }
 
@@ -1265,6 +1448,385 @@ mod tests {
 
         let count = count_occurrences(&mut client, 40, "Late 00");
         assert_eq!(count, 1, "'Late 00' should appear exactly once after drain");
+    }
+
+    // ── MockDriver + integration tests ───────────────────────────────
+
+    use crate::process_driver::{DriverEffect, ProcessState};
+    use std::sync::Mutex;
+
+    /// What the MockDriver was asked to do.
+    #[derive(Debug, Clone, PartialEq)]
+    enum MockCall {
+        OnOutput(Vec<u8>),
+        OnInput(String),
+        Tick,
+        OnSignal(DriverSignal),
+    }
+
+    /// A configurable mock driver that records calls and returns canned values.
+    struct MockDriver {
+        calls: Arc<Mutex<Vec<MockCall>>>,
+        /// If set, `on_output` returns this state.
+        on_output_state: Arc<Mutex<Option<ProcessState>>>,
+        /// If set, `on_input` returns this state.
+        on_input_state: Arc<Mutex<Option<ProcessState>>>,
+        /// If set, `on_signal` returns this effect.
+        on_signal_effect: Arc<Mutex<Option<DriverEffect>>>,
+        /// Conversation turns for `conversation_snapshot()`.
+        conversation_turns: Vec<serde_json::Value>,
+        /// Conversation broadcast sender.
+        conversation_tx: broadcast::Sender<ConversationEvent>,
+    }
+
+    impl MockDriver {
+        fn new() -> Self {
+            let (conversation_tx, _) = broadcast::channel(16);
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                on_output_state: Arc::new(Mutex::new(None)),
+                on_input_state: Arc::new(Mutex::new(None)),
+                on_signal_effect: Arc::new(Mutex::new(None)),
+                conversation_turns: vec![serde_json::json!({"role": "mock"})],
+                conversation_tx,
+            }
+        }
+
+        fn calls(&self) -> Arc<Mutex<Vec<MockCall>>> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    impl ProcessDriver for MockDriver {
+        fn on_output(&mut self, data: &[u8]) -> Option<ProcessState> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(MockCall::OnOutput(data.to_vec()));
+            self.on_output_state.lock().unwrap().clone()
+        }
+
+        fn on_input(&mut self, data: &str) -> Option<ProcessState> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(MockCall::OnInput(data.to_string()));
+            self.on_input_state.lock().unwrap().clone()
+        }
+
+        fn tick(&mut self) -> Option<ProcessState> {
+            self.calls.lock().unwrap().push(MockCall::Tick);
+            None
+        }
+
+        fn start(&mut self, _: DriverContext) -> Option<mpsc::Receiver<DriverSignal>> {
+            None // signal_rx is provided separately via spawn_test_with_driver
+        }
+
+        fn on_signal(&mut self, signal: DriverSignal) -> DriverEffect {
+            self.calls.lock().unwrap().push(MockCall::OnSignal(signal));
+            self.on_signal_effect
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(DriverEffect::none)
+        }
+
+        fn state(&self) -> ProcessState {
+            ProcessState::Idle
+        }
+
+        fn claude_state(&self) -> Option<&ClaudeState> {
+            // SAFETY: the Mutex is held briefly and we return a reference into it.
+            // This works because we never move the MockDriver while a reference is live.
+            // For tests only.
+            None
+        }
+
+        fn is_terminal_stale(&self) -> bool {
+            false
+        }
+
+        fn conversation_snapshot(&self) -> &[serde_json::Value] {
+            &self.conversation_turns
+        }
+
+        fn subscribe_conversation(&self) -> Option<broadcast::Receiver<ConversationEvent>> {
+            Some(self.conversation_tx.subscribe())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_driver_on_output_called() {
+        let mock = MockDriver::new();
+        let calls = mock.calls();
+        let (handle, output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, None, None);
+
+        InstanceHandle::inject_output(&output_tx, b"hello").await;
+        // Allow actor to process
+        tokio::task::yield_now().await;
+
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, MockCall::OnOutput(d) if d == b"hello")),
+            "on_output should have been called with 'hello', got: {:?}",
+            *calls
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_driver_on_input_called() {
+        let mock = MockDriver::new();
+        let calls = mock.calls();
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, None, None);
+
+        handle.write_input("world").await.unwrap();
+        tokio::task::yield_now().await;
+
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls
+                .iter()
+                .any(|c| matches!(c, MockCall::OnInput(s) if s == "world")),
+            "on_input should have been called with 'world', got: {:?}",
+            *calls
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_state_broadcast_on_output_change() {
+        let mock = MockDriver::new();
+        *mock.on_output_state.lock().unwrap() = Some(ProcessState::Starting);
+        let (state_tx, mut state_rx) = broadcast::channel(16);
+        let (handle, output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, Some(state_tx), None);
+
+        InstanceHandle::inject_output(&output_tx, b"boot").await;
+        tokio::task::yield_now().await;
+
+        // Should have received a state broadcast
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), state_rx.recv()).await;
+        assert!(result.is_ok(), "should receive state broadcast");
+        let (instance_id, _state, _stale) = result.unwrap().unwrap();
+        assert_eq!(instance_id, "test-instance");
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_driver_signal_dispatched() {
+        let mock = MockDriver::new();
+        let calls = mock.calls();
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), Some(signal_rx), None, None);
+
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-1".into()))
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        // Extra yields to ensure the actor processes the signal
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|c| matches!(c, MockCall::OnSignal(_))),
+            "on_signal should have been called, got: {:?}",
+            *calls
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_session_set_on_signal_effect() {
+        let mock = MockDriver::new();
+        *mock.on_signal_effect.lock().unwrap() = Some(DriverEffect {
+            state_change: None,
+            session_id: Some("sess-new".into()),
+        });
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), Some(signal_rx), None, None);
+
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-new".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let sid = handle.get_session_id().await;
+        assert_eq!(sid, Some("sess-new".into()));
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_session_rotation_lifecycle_broadcast() {
+        let mock = MockDriver::new();
+        // First signal sets session, second rotates.
+        *mock.on_signal_effect.lock().unwrap() = Some(DriverEffect {
+            state_change: None,
+            session_id: Some("sess-old".into()),
+        });
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (lifecycle_tx, mut lifecycle_rx) = broadcast::channel(16);
+        let on_signal_effect = Arc::clone(&mock.on_signal_effect);
+        let (handle, _output_tx) = InstanceHandle::spawn_test_with_driver(
+            Box::new(mock),
+            Some(signal_rx),
+            None,
+            Some(lifecycle_tx),
+        );
+
+        // First: set initial session
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-old".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Second: rotate to new session
+        *on_signal_effect.lock().unwrap() = Some(DriverEffect {
+            state_change: None,
+            session_id: Some("sess-new".into()),
+        });
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-new".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Should have received a SessionRotated lifecycle broadcast
+        let msg =
+            tokio::time::timeout(std::time::Duration::from_millis(100), lifecycle_rx.recv()).await;
+        assert!(msg.is_ok(), "should receive lifecycle broadcast");
+        match msg.unwrap().unwrap() {
+            crate::ws::ServerMessage::SessionRotated {
+                instance_id,
+                from_session,
+                to_session,
+            } => {
+                assert_eq!(instance_id, "test-instance");
+                assert_eq!(from_session, "sess-old");
+                assert_eq!(to_session, "sess-new");
+            }
+            other => panic!("expected SessionRotated, got: {:?}", other),
+        }
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_no_rotation_without_old_session() {
+        let mock = MockDriver::new();
+        *mock.on_signal_effect.lock().unwrap() = Some(DriverEffect {
+            state_change: None,
+            session_id: Some("sess-first".into()),
+        });
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (lifecycle_tx, mut lifecycle_rx) = broadcast::channel(16);
+        let (handle, _output_tx) = InstanceHandle::spawn_test_with_driver(
+            Box::new(mock),
+            Some(signal_rx),
+            None,
+            Some(lifecycle_tx),
+        );
+
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-first".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // No rotation should have been broadcast (this is the first session)
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), lifecycle_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "no lifecycle broadcast expected for first session"
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_get_conversation_snapshot_routes_through_driver() {
+        let mock = MockDriver::new();
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, None, None);
+
+        let snapshot = handle.get_conversation_snapshot().await;
+        assert_eq!(snapshot, vec![serde_json::json!({"role": "mock"})]);
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_conversation_routes_through_driver() {
+        let mock = MockDriver::new();
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, None, None);
+
+        let rx = handle.subscribe_conversation().await;
+        assert!(
+            rx.is_some(),
+            "MockDriver should return Some from subscribe_conversation"
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_tick_called_by_actor() {
+        let mock = MockDriver::new();
+        let calls = mock.calls();
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, None, None);
+
+        // Wait past the 500ms tick interval
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        tokio::task::yield_now().await;
+
+        let calls = calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|c| matches!(c, MockCall::Tick)),
+            "tick should have been called, got: {:?}",
+            *calls
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn test_state_change_on_input() {
+        let mock = MockDriver::new();
+        *mock.on_input_state.lock().unwrap() = Some(ProcessState::Working { detail: None });
+        let (state_tx, mut state_rx) = broadcast::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(mock), None, Some(state_tx), None);
+
+        handle.write_input("go").await.unwrap();
+        tokio::task::yield_now().await;
+
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), state_rx.recv()).await;
+        assert!(
+            result.is_ok(),
+            "should receive state broadcast from on_input"
+        );
+
+        drop(handle);
     }
 
     /// Count how many times `needle` appears across scrollback + visible screen.

@@ -15,7 +15,7 @@ use crate::ws::ConversationEvent;
 use crate::ws::{FirstInputData, PendingAttribution};
 
 /// Signals from a driver's background work (e.g. conversation watcher).
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DriverSignal {
     /// A conversation entry was observed in the JSONL log.
     ConversationEntry {
@@ -33,10 +33,10 @@ pub enum DriverSignal {
 }
 
 /// Effects returned by a driver after processing a signal.
+#[derive(Debug, PartialEq)]
 pub struct DriverEffect {
     pub state_change: Option<ProcessState>,
     pub session_id: Option<String>,
-    pub conversation: Option<ConversationEffect>,
 }
 
 impl DriverEffect {
@@ -44,15 +44,8 @@ impl DriverEffect {
         Self {
             state_change: None,
             session_id: None,
-            conversation: None,
         }
     }
-}
-
-/// How conversation data changed.
-pub enum ConversationEffect {
-    Full(Vec<serde_json::Value>),
-    Delta(Vec<serde_json::Value>),
 }
 
 /// Process state — generic across all process types.
