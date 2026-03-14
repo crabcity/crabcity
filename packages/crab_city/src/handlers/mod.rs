@@ -1,8 +1,10 @@
 pub mod admin;
+pub mod browse;
 pub mod conversations;
 pub mod health;
 pub mod instances;
 pub mod notes;
+pub mod settings;
 pub mod tasks;
 pub mod websocket;
 
@@ -12,6 +14,7 @@ pub use admin::{
     list_server_invites_handler, patch_config_handler, restart_handler,
     revoke_server_invite_handler, trigger_import,
 };
+pub use browse::{browse_directory, create_directory, create_worktree, git_detailed_info};
 pub use conversations::{
     add_comment, create_share, extract_title_from_turn, format_progress_event,
     format_turn_with_attribution, get_comments, get_conversation, get_conversation_by_id,
@@ -23,6 +26,7 @@ pub use instances::{
     get_instance_output, list_instances, remove_collaborator, set_custom_name,
 };
 pub use notes::{create_note, delete_note, get_notes, update_note};
+pub use settings::{get_user_settings_handler, update_user_settings_handler};
 pub use tasks::{
     add_task_tag_handler, create_dispatch_handler, create_task_handler, delete_task_handler,
     get_task_handler, list_tasks_handler, migrate_tasks_handler, remove_task_tag_handler,

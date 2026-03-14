@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { derived, get } from 'svelte/store';
 	import { notebookCells, isWaiting, toolStats, notebookCellsForInstance, isWaitingForInstance } from '$lib/stores/conversation';
 	import { isActive, isStarting, isThinking, isToolExecuting, currentTool, claudeState, claudeStateForInstance, isActiveForInstance, isStartingForInstance } from '$lib/stores/claude';
@@ -24,14 +24,18 @@
 	// Resolve stores: use per-instance variants when prop is provided
 	const resolvedInstanceId = $derived(propInstanceId ?? $currentInstanceId);
 
-	// Per-instance store variants (only created when propInstanceId is set)
-	const _instanceCells = propInstanceId ? notebookCellsForInstance(propInstanceId) : null;
-	const _instanceWaiting = propInstanceId ? isWaitingForInstance(propInstanceId) : null;
-	const _instanceActive = propInstanceId ? isActiveForInstance(propInstanceId) : null;
-	const _instanceStarting = propInstanceId ? isStartingForInstance(propInstanceId) : null;
-	const _instanceClaudeState = propInstanceId ? claudeStateForInstance(propInstanceId) : null;
-	const _instanceInstance = propInstanceId
-		? derived(instances, ($i) => $i.get(propInstanceId!) ?? null)
+	// Snapshot propInstanceId outside reactive tracking — this component's
+	// lifetime is tied to a single instance (pane lifecycle destroys/recreates).
+	const boundInstanceId = untrack(() => propInstanceId);
+
+	// Per-instance store variants (only created when boundInstanceId is set)
+	const _instanceCells = boundInstanceId ? notebookCellsForInstance(boundInstanceId) : null;
+	const _instanceWaiting = boundInstanceId ? isWaitingForInstance(boundInstanceId) : null;
+	const _instanceActive = boundInstanceId ? isActiveForInstance(boundInstanceId) : null;
+	const _instanceStarting = boundInstanceId ? isStartingForInstance(boundInstanceId) : null;
+	const _instanceClaudeState = boundInstanceId ? claudeStateForInstance(boundInstanceId) : null;
+	const _instanceInstance = boundInstanceId
+		? derived(instances, ($i) => $i.get(boundInstanceId!) ?? null)
 		: null;
 	const _instanceToolStats = _instanceCells
 		? derived(_instanceCells, ($cells): Map<string, number> => {

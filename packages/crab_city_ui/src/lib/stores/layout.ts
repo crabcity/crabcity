@@ -42,7 +42,8 @@ export type PaneContentKind =
 	| 'chat'
 	| 'tasks'
 	| 'file-viewer'
-	| 'git';
+	| 'git'
+	| 'settings';
 
 export type PaneContent =
 	| { kind: 'landing' }
@@ -52,7 +53,8 @@ export type PaneContent =
 	| { kind: 'file-explorer'; instanceId: string | null }
 	| { kind: 'chat'; scope: 'global' | string }
 	| { kind: 'tasks'; instanceId: string | null }
-	| { kind: 'git'; instanceId: string | null };
+	| { kind: 'git'; instanceId: string | null }
+	| { kind: 'settings' };
 
 /** Extract instanceId from a PaneContent if it has one */
 export function getPaneInstanceId(content: PaneContent): string | null {
@@ -75,6 +77,8 @@ export function defaultContentForKind(kind: PaneContentKind, instanceId: string 
 			return { kind: 'file-viewer', filePath: null };
 		case 'chat':
 			return { kind: 'chat', scope: instanceId ?? 'global' };
+		case 'settings':
+			return { kind: 'settings' };
 	}
 }
 
@@ -518,7 +522,7 @@ const STORAGE_KEY = 'crab_city_layout';
 const LAYOUT_SCHEMA_VERSION = 2;
 
 const VALID_CONTENT_KINDS: ReadonlySet<string> = new Set([
-	'landing', 'terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git'
+	'landing', 'terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings'
 ]);
 
 /** JSON-safe representation (Map → array of entries) */

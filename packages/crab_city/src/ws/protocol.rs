@@ -319,6 +319,13 @@ pub enum ServerMessage {
         expires_in_secs: Option<u64>,
     },
 
+    // === User settings ===
+    /// User settings changed — full snapshot for idempotent merge
+    UserSettingsUpdate {
+        user_id: String,
+        settings: serde_json::Value,
+    },
+
     // === Server lifecycle ===
     /// Server is shutting down — tells connected clients to show offline state immediately
     Shutdown { reason: String },

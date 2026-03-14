@@ -4,25 +4,25 @@
 	import {
 		instanceList,
 		currentInstanceId,
-		createInstance,
 		selectInstance
 	} from '$lib/stores/instances';
-	import { defaultCommand } from '$lib/stores/settings';
 	import { projects, currentProject } from '$lib/stores/projects';
 	import { clearInstanceVerbs } from '$lib/stores/activity';
 	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
-	import { theme, toggleTheme } from '$lib/stores/settings';
+	import QuickSettings from './settings/QuickSettings.svelte';
+	import CreateInstanceModal from './CreateInstanceModal.svelte';
 	import type { Instance } from '$lib/types';
+
+	let showQuickSettings = $state(false);
+	let showCreateModal = $state(false);
 
 	async function handleLogout() {
 		await logout();
 		window.location.href = `${base}/login`;
 	}
 
-	let isCreating = false;
-
 	// Track previous states for notifications
-	let previousStates = new Map<string, string>();
+	const previousStates = new Map<string, string>();
 
 	// Request notification permission on mount
 	onMount(() => {
@@ -45,7 +45,7 @@
 	}
 
 	// Check for state transitions and notify
-	$: {
+	$effect(() => {
 		for (const instance of $instanceList) {
 			const prevState = previousStates.get(instance.id);
 			const currentState = instance.claude_state?.type;
@@ -59,22 +59,7 @@
 				previousStates.set(instance.id, currentState);
 			}
 		}
-	}
-
-	async function handleCreate() {
-		if (isCreating) return;
-		isCreating = true;
-
-		const result = await createInstance({
-			command: $defaultCommand,
-			working_dir: $currentProject?.workingDir
-		});
-		if (result) {
-			selectInstance(result.id);
-		}
-
-		isCreating = false;
-	}
+	});
 
 	function handleSelectProject(workingDir: string) {
 		const project = $projects.find(p => p.workingDir === workingDir);
@@ -123,40 +108,32 @@
 	<div class="rail-bottom">
 		<button
 			class="rail-btn"
-			onclick={handleCreate}
-			disabled={isCreating}
-			title="New instance"
-			aria-label="Create new instance"
+			onclick={() => showCreateModal = true}
+			title="New project"
+			aria-label="Create new project"
 		>
-			{#if isCreating}
-				<span class="rail-spinner"></span>
-			{:else}
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<line x1="12" y1="5" x2="12" y2="19" />
-					<line x1="5" y1="12" x2="19" y2="12" />
-				</svg>
-			{/if}
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<line x1="12" y1="5" x2="12" y2="19" />
+				<line x1="5" y1="12" x2="19" y2="12" />
+			</svg>
 		</button>
 
 		<button
-			class="rail-btn theme-btn"
-			class:analog={$theme === 'analog'}
-			onclick={toggleTheme}
-			title={$theme === 'phosphor' ? 'Switch to analog' : 'Switch to phosphor'}
-			aria-label="Toggle theme"
+			class="rail-btn"
+			class:active={showQuickSettings}
+			onclick={() => showQuickSettings = !showQuickSettings}
+			title="Settings"
+			aria-label="Settings"
 		>
-			{#if $theme === 'phosphor'}
-				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-					<rect x="2" y="2" width="12" height="8" rx="1" />
-					<path d="M5 13h6M8 10v3" />
-				</svg>
-			{:else}
-				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-					<path d="M8 14 L6 8 Q8 3 8 1 Q8 3 10 8 Z" />
-					<circle cx="8" cy="13" r="0.5" fill="currentColor" stroke="none" />
-				</svg>
-			{/if}
+			<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+				<circle cx="8" cy="8" r="2.5" />
+				<path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" />
+			</svg>
 		</button>
+
+		{#if showQuickSettings}
+			<QuickSettings onclose={() => showQuickSettings = false} />
+		{/if}
 
 		{#if $isAuthenticated && $currentUser}
 			<button
@@ -170,6 +147,10 @@
 		{/if}
 	</div>
 </aside>
+
+{#if showCreateModal}
+	<CreateInstanceModal mode="project" onclose={() => showCreateModal = false} />
+{/if}
 
 <style>
 	.sidebar-rail {
@@ -272,20 +253,13 @@
 		color: var(--text-secondary);
 	}
 
-	.rail-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-	.rail-btn svg { width: 14px; height: 14px; }
-
-	.rail-spinner {
-		width: 10px;
-		height: 10px;
-		border: 1.5px solid var(--surface-border);
-		border-top-color: var(--amber-500);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
+	.rail-btn.active {
+		background: var(--tint-active);
+		border-color: var(--amber-600);
+		color: var(--amber-400);
 	}
 
-	@keyframes spin { to { transform: rotate(360deg); } }
+	.rail-btn svg { width: 14px; height: 14px; }
 
 	.user-btn {
 		border-radius: 50%;

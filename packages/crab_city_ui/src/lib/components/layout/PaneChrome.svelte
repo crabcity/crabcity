@@ -1,9 +1,8 @@
 <script lang="ts">
 	import type { PaneState, PaneContentKind, PaneContent } from '$lib/stores/layout';
 	import { paneCount, splitPane, closePane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
-	import { instances, instanceList, currentInstanceId, createInstance, selectInstance } from '$lib/stores/instances';
-	import { defaultCommand } from '$lib/stores/settings';
-	import { currentProject } from '$lib/stores/projects';
+	import { instances, instanceList, currentInstanceId, selectInstance } from '$lib/stores/instances';
+	import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
 	interface Props {
 		pane: PaneState;
@@ -92,32 +91,29 @@
 		setPaneContent(pane.id, defaultContentForKind(newKind, instanceId));
 	}
 
-	let isCreating = $state(false);
+	let showCreateModal = $state(false);
 
-	async function handleInstanceChange(e: Event) {
+	function handleInstanceChange(e: Event) {
 		const select = e.target as HTMLSelectElement;
 		const value = select.value;
 
 		if (value === '__new__') {
-			// Reset select to current value while creating
+			// Reset select to current value and open modal
 			select.value = paneInstanceId ?? '';
-			if (isCreating) return;
-			isCreating = true;
-			const result = await createInstance({
-				command: $defaultCommand,
-				working_dir: $currentProject?.workingDir
-			});
-			if (result && 'instanceId' in pane.content) {
-				setPaneContent(pane.id, { ...pane.content, instanceId: result.id });
-				selectInstance(result.id);
-			}
-			isCreating = false;
+			showCreateModal = true;
 			return;
 		}
 
 		const newId = value || null;
 		if ('instanceId' in pane.content) {
 			setPaneContent(pane.id, { ...pane.content, instanceId: newId });
+		}
+	}
+
+	function handleCreated(instanceId: string) {
+		if ('instanceId' in pane.content) {
+			setPaneContent(pane.id, { ...pane.content, instanceId });
+			selectInstance(instanceId);
 		}
 	}
 </script>
@@ -147,6 +143,7 @@
 		<option value="tasks">Tasks</option>
 		<option value="file-viewer">File Viewer</option>
 		<option value="git">Git</option>
+		<option value="settings">Settings</option>
 	</select>
 	{#if hasInstanceId}
 		<span class="chrome-sep">/</span>
@@ -155,7 +152,6 @@
 			value={paneInstanceId ?? ''}
 			onchange={handleInstanceChange}
 			aria-label="Instance"
-			disabled={isCreating}
 		>
 			<option value="">None</option>
 			{#each filteredInstances as inst}
@@ -209,6 +205,13 @@
 		{/if}
 	</div>
 </div>
+
+{#if showCreateModal}
+	<CreateInstanceModal
+		onclose={() => showCreateModal = false}
+		oncreated={handleCreated}
+	/>
+{/if}
 
 <style>
 	.pane-chrome {

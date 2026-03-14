@@ -20,6 +20,8 @@ Stores must handle WebSocket broadcasts **idempotently** (upsert by ID, not blin
 
 **localStorage-backed stores** (`settings.ts`, `drafts.ts`) persist client-only preferences and draft input across page reloads. Keep business logic in pure utility modules (`utils/draft-map.ts`) and limit the store to wiring reactivity + persistence. Debounce writes; flush synchronously on `beforeunload`.
 
+**Settings** (`settings.ts`): Layered persistence — localStorage for instant hydration, server (`/api/user/settings`) as source of truth for cross-device sync. On WebSocket connect, client fetches server settings and merges (server wins). Changes write to both localStorage and server (async PATCH), then broadcast to all clients via `UserSettingsUpdate`. UI-only keys (e.g. `drawerWidth`) skip server sync. Quick access via gear icon in sidebar; full settings via `settings` pane kind.
+
 ### Layout Architecture
 
 The UI uses a **binary split pane** layout (tmux-inspired). Core data lives in `stores/layout.ts`:
@@ -33,6 +35,7 @@ The UI uses a **binary split pane** layout (tmux-inspired). Core data lives in `
   - `{ kind: 'chat'; scope: 'global' | string }` — chat panel (global or instance-scoped)
   - `{ kind: 'tasks'; instanceId: string | null }` — task panel
   - `{ kind: 'git'; instanceId: string | null }` — git diff/log view
+  - `{ kind: 'settings' }` — settings panel (no instanceId)
 - Helpers: `getPaneInstanceId(content)` extracts instanceId from any variant; `defaultContentForKind(kind, instanceId)` constructs default config
 - Actions: `splitPane`, `closePane`, `focusPane`, `setSplitRatio`, `setPaneContent`
 
@@ -41,7 +44,7 @@ Components in `src/lib/components/layout/`:
 - **PaneHost.svelte** — dispatches to content component by `kind`, passes explicit props from the discriminated union (no global fallback). Each pane owns its own `instanceId`/`filePath`/`scope`.
 - **PaneChrome.svelte** — title bar with content type dropdown, instance selector (for instance-bound kinds), split/close buttons, status dot. File-viewer panes show filename; chat panes show scope label.
 - **SplitHandle.svelte** — drag-to-resize between split children, keyboard accessible (`role="separator"`, arrow keys ±5%/±15%, Home=50%)
-- **Pane\*.svelte** — thin wrappers (PaneTerminal, PaneConversation, PaneFileExplorer, PaneChat, PaneTasks, PaneFileViewer, PaneGit). Each accepts explicit props from its union variant.
+- **Pane\*.svelte** — thin wrappers (PaneTerminal, PaneConversation, PaneFileExplorer, PaneChat, PaneTasks, PaneFileViewer, PaneGit, PaneSettings). Each accepts explicit props from its union variant.
 
 **PaneFileViewer** is self-contained — it fetches file content independently via `apiGet`, has its own loading/error/empty states, and does not read global file viewer state. Two file-viewer panes can show different files simultaneously.
 
