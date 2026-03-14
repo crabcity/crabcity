@@ -53,9 +53,9 @@ export const projects = derived(instanceList, ($list) => {
 export const currentProject = derived(
 	[projects, currentInstanceId, instances],
 	([$projects, $currentId, $instances]) => {
-		if (!$currentId) return $projects[0] ?? null;
+		if (!$currentId) return null;
 		const inst = $instances.get($currentId);
-		if (!inst) return $projects[0] ?? null;
+		if (!inst) return null;
 		return $projects.find(p => p.workingDir === inst.working_dir) ?? null;
 	}
 );

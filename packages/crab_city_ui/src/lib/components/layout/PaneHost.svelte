@@ -21,12 +21,12 @@
 	const isFocused = $derived($layoutState.focusedPaneId === paneId);
 	const showChrome = $derived($paneCount > 1);
 
-	// Pane kinds that require an instanceId to render content
-	const INSTANCE_KINDS = new Set(['terminal', 'conversation', 'file-explorer', 'tasks', 'git']);
+	// Pane kinds that show the instance picker when instanceId is null.
+	const PICKER_KINDS = new Set(['terminal', 'conversation', 'file-explorer', 'tasks', 'git']);
 
 	const needsInstancePicker = $derived.by(() => {
 		if (!pane) return false;
-		if (!INSTANCE_KINDS.has(pane.content.kind)) return false;
+		if (!PICKER_KINDS.has(pane.content.kind)) return false;
 		return !getPaneInstanceId(pane.content);
 	});
 
@@ -49,7 +49,9 @@
 	<div class="pane-content">
 		{#if pane}
 			{@const content = pane.content}
-			{#if needsInstancePicker}
+			{#if content.kind === 'landing'}
+				<PaneLanding />
+			{:else if needsInstancePicker}
 				<PaneInstancePicker paneId={pane.id} kind={content.kind} />
 			{:else if content.kind === 'terminal' && content.instanceId}
 				<PaneTerminal instanceId={content.instanceId} />
