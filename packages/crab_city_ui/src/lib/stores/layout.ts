@@ -35,6 +35,7 @@ export interface LeafNode {
 export type LayoutNode = SplitNode | LeafNode;
 
 export type PaneContentKind =
+	| 'landing'
 	| 'terminal'
 	| 'conversation'
 	| 'file-explorer'
@@ -44,6 +45,7 @@ export type PaneContentKind =
 	| 'git';
 
 export type PaneContent =
+	| { kind: 'landing' }
 	| { kind: 'terminal'; instanceId: string | null }
 	| { kind: 'conversation'; instanceId: string | null }
 	| { kind: 'file-viewer'; filePath: string | null; lineNumber?: number }
@@ -61,6 +63,8 @@ export function getPaneInstanceId(content: PaneContent): string | null {
 /** Construct default PaneContent for a given kind, optionally inheriting instanceId */
 export function defaultContentForKind(kind: PaneContentKind, instanceId: string | null): PaneContent {
 	switch (kind) {
+		case 'landing':
+			return { kind: 'landing' };
 		case 'terminal':
 		case 'conversation':
 		case 'file-explorer':
@@ -107,19 +111,19 @@ function createInitialState(): LayoutState {
 	const paneId = genPaneId();
 	const instanceId = get(currentInstanceId);
 	const isTerminal = get(showTerminal);
-	const kind: 'terminal' | 'conversation' = isTerminal ? 'terminal' : 'conversation';
+
+	let content: PaneContent;
+	if (!instanceId) {
+		content = { kind: 'landing' };
+	} else if (isTerminal) {
+		content = { kind: 'terminal', instanceId };
+	} else {
+		content = { kind: 'conversation', instanceId };
+	}
 
 	return {
 		root: { type: 'pane', id: paneId },
-		panes: new Map([
-			[
-				paneId,
-				{
-					id: paneId,
-					content: { kind, instanceId }
-				}
-			]
-		]),
+		panes: new Map([[paneId, { id: paneId, content }]]),
 		focusedPaneId: paneId
 	};
 }
@@ -187,6 +191,8 @@ export function setupLayoutSync(): void {
 			const pane = Array.from(s.panes.values())[0];
 			const newKind: 'terminal' | 'conversation' = $show ? 'terminal' : 'conversation';
 			if (pane.content.kind === newKind) return s;
+			// Don't switch a landing page via showTerminal toggle
+			if (pane.content.kind === 'landing') return s;
 			const currentInstanceIdVal = getPaneInstanceId(pane.content);
 			const newPanes = new Map(s.panes);
 			newPanes.set(pane.id, {
@@ -201,6 +207,15 @@ export function setupLayoutSync(): void {
 		layoutState.update((s) => {
 			if (s.panes.size !== 1) return s;
 			const pane = Array.from(s.panes.values())[0];
+			// Landing → conversation when an instance is selected
+			if (pane.content.kind === 'landing' && $id) {
+				const newPanes = new Map(s.panes);
+				newPanes.set(pane.id, {
+					...pane,
+					content: { kind: 'conversation', instanceId: $id }
+				});
+				return { ...s, panes: newPanes };
+			}
 			const currentPaneInstanceId = getPaneInstanceId(pane.content);
 			if (currentPaneInstanceId === $id) return s;
 			// Only update panes that carry instanceId
@@ -257,7 +272,7 @@ export function splitPane(
 		const splitId = genSplitId();
 
 		const clonedContent = newContent ?? structuredClone(sourcePane.content);
-		if (clonedContent.kind === 'terminal' && !newContent) {
+		if (!newContent && 'instanceId' in clonedContent) {
 			clonedContent.instanceId = null;
 		}
 
@@ -503,7 +518,7 @@ const STORAGE_KEY = 'crab_city_layout';
 const LAYOUT_SCHEMA_VERSION = 2;
 
 const VALID_CONTENT_KINDS: ReadonlySet<string> = new Set([
-	'terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git'
+	'landing', 'terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git'
 ]);
 
 /** JSON-safe representation (Map → array of entries) */

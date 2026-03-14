@@ -121,8 +121,8 @@
 		setTimeout(() => { showPresetMenu = false; }, 150);
 	}
 
-	// Instance fleet for the current project
-	const fleetInstances = $derived($currentProject?.instances ?? $instanceList);
+	// Instance fleet for the current project (only shown when a project is selected)
+	const fleetInstances = $derived($currentProject?.instances ?? []);
 </script>
 
 <header class="main-header">
@@ -145,11 +145,9 @@
 		></span>
 	</div>
 
-	<!-- Center: Instance fleet chips -->
-	<div class="header-fleet">
-		{#if fleetInstances.length === 0}
-			<span class="fleet-empty">No instances</span>
-		{:else}
+	<!-- Center: Instance fleet chips (only when a project is selected) -->
+	{#if $currentProject}
+		<div class="header-fleet">
 			{#each fleetInstances as instance (instance.id)}
 				{@const stateInfo = getStateInfo(instance.id, instance.claude_state, instance.claude_state_stale)}
 				<InstanceChip
@@ -159,21 +157,23 @@
 					onclick={() => handleChipClick(instance.id)}
 				/>
 			{/each}
-		{/if}
-		<button
-			class="fleet-add"
-			onclick={handleCreateInstance}
-			disabled={isCreating}
-			title="New instance"
-			aria-label="Create new instance"
-		>
-			{#if isCreating}
-				<span class="mini-spinner"></span>
-			{:else}
-				+
-			{/if}
-		</button>
-	</div>
+			<button
+				class="fleet-add"
+				onclick={handleCreateInstance}
+				disabled={isCreating}
+				title="New instance"
+				aria-label="Create new instance"
+			>
+				{#if isCreating}
+					<span class="mini-spinner"></span>
+				{:else}
+					+
+				{/if}
+			</button>
+		</div>
+	{:else}
+		<div class="header-fleet"></div>
+	{/if}
 
 	<!-- Right: Actions -->
 	<div class="header-actions">

@@ -70,7 +70,7 @@
 	// Multi-user lock state
 	let presence = $derived(resolvedInstanceId ? $instancePresence.get(resolvedInstanceId) ?? [] : []);
 	let isMultiUser = $derived(presence.length > 1);
-	let showLockBanner = $derived($isLockedByOther || $iHoldLock);
+	let showLockBanner = $derived(isMultiUser && ($isLockedByOther || $iHoldLock));
 
 	// When the terminal becomes ready, consume any pending focus request
 	$effect(() => {
@@ -328,6 +328,8 @@
 		width: 100%;
 		height: 100%;
 		position: relative;
+		display: flex;
+		flex-direction: column;
 		background: var(--surface-900);
 	}
 
@@ -379,7 +381,8 @@
 
 	.terminal-container {
 		width: 100%;
-		height: 100%;
+		flex: 1;
+		min-height: 0;
 	}
 
 	.terminal-container.hidden {
@@ -387,10 +390,6 @@
 	}
 
 	.status-banner {
-		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -399,8 +398,7 @@
 		font-weight: 600;
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
-		z-index: 10;
-		backdrop-filter: blur(4px);
+		flex-shrink: 0;
 	}
 
 	.status-banner.warning {
@@ -458,10 +456,6 @@
 	}
 
 	.lock-banner {
-		position: absolute;
-		top: 0;
-		left: 0;
-		right: 0;
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -469,8 +463,7 @@
 		font-size: 11px;
 		font-weight: 600;
 		letter-spacing: 0.05em;
-		z-index: 10;
-		backdrop-filter: blur(4px);
+		flex-shrink: 0;
 	}
 
 	.lock-banner.locked-by-other {
