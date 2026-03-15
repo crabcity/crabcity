@@ -350,9 +350,9 @@ export function isConnected(): boolean {
 	return socket?.readyState === WebSocket.OPEN;
 }
 
-/** Refresh the current instance's output. */
-export async function sendRefresh(): Promise<void> {
-	const instanceId = get(currentInstanceId);
+/** Refresh an instance's output. Uses current instance if no ID given. */
+export async function sendRefresh(id?: string): Promise<void> {
+	const instanceId = id ?? get(currentInstanceId);
 	if (!instanceId) return;
 
 	if (socket?.readyState === WebSocket.OPEN) {

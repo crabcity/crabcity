@@ -89,13 +89,6 @@
 			splitPane(focusedId, 'vertical');
 			return;
 		}
-		// Cmd/Ctrl+- — split focused pane horizontally
-		if ((e.metaKey || e.ctrlKey) && e.key === '-') {
-			e.preventDefault();
-			const focusedId = $layoutState.focusedPaneId;
-			splitPane(focusedId, 'horizontal');
-			return;
-		}
 		// Cmd/Ctrl+W — close focused pane
 		if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
 			if ($paneCount > 1) {

@@ -23,6 +23,11 @@
 		updateSetting('defaultCommand', value);
 	}
 
+	function handleShellCommandChange(e: Event) {
+		const value = (e.target as HTMLInputElement).value;
+		updateSetting('shellCommand', value);
+	}
+
 	function handleFontSizeChange(e: Event) {
 		const value = Number((e.target as HTMLInputElement).value);
 		updateSetting('terminalFontSize', value);
@@ -114,7 +119,7 @@
 			<div class="setting-row">
 				<div class="setting-info">
 					<label class="setting-label" for="default-command">Default Command</label>
-					<span class="setting-desc">Command used for new instances</span>
+					<span class="setting-desc">Command used for new Claude instances</span>
 				</div>
 				<input
 					id="default-command"
@@ -123,6 +128,21 @@
 					value={$userSettings.defaultCommand}
 					onchange={handleDefaultCommandChange}
 					placeholder={DEFAULT_SETTINGS.defaultCommand}
+				/>
+			</div>
+
+			<div class="setting-row">
+				<div class="setting-info">
+					<label class="setting-label" for="shell-command">Shell Command</label>
+					<span class="setting-desc">Command used for new terminal panes</span>
+				</div>
+				<input
+					id="shell-command"
+					type="text"
+					class="setting-input"
+					value={$userSettings.shellCommand}
+					onchange={handleShellCommandChange}
+					placeholder={DEFAULT_SETTINGS.shellCommand}
 				/>
 			</div>
 

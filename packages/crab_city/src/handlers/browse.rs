@@ -249,28 +249,27 @@ pub async fn git_detailed_info(Query(query): Query<GitInfoQuery>) -> Response {
     let root_str = repo_root.to_string_lossy().to_string();
 
     // Run all git commands concurrently
-    let (log_result, remote_result, upstream_result, status_result, stash_result, branches_result) =
-        tokio::join!(
-            run_git(&root_str, &["log", "-1", "--format=%H%n%s%n%ai"]),
-            run_git(&root_str, &["remote", "-v"]),
-            run_git(
-                &root_str,
-                &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]
-            ),
-            run_git(
-                &root_str,
-                &["status", "--porcelain=v2", "--untracked-files=normal"]
-            ),
-            run_git(&root_str, &["stash", "list"]),
-            run_git(
-                &root_str,
-                &[
-                    "branch",
-                    "--sort=-committerdate",
-                    "--format=%(refname:short)"
-                ]
-            ),
-        );
+    let (log_result, remote_result, upstream_result, status_result, stash_result, branches_result) = tokio::join!(
+        run_git(&root_str, &["log", "-1", "--format=%H%n%s%n%ai"]),
+        run_git(&root_str, &["remote", "-v"]),
+        run_git(
+            &root_str,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]
+        ),
+        run_git(
+            &root_str,
+            &["status", "--porcelain=v2", "--untracked-files=normal"]
+        ),
+        run_git(&root_str, &["stash", "list"]),
+        run_git(
+            &root_str,
+            &[
+                "branch",
+                "--sort=-committerdate",
+                "--format=%(refname:short)"
+            ]
+        ),
+    );
 
     // Parse HEAD info
     let (head_sha, last_commit_subject, last_commit_date) = log_result
@@ -317,7 +316,7 @@ pub async fn git_detailed_info(Query(query): Query<GitInfoQuery>) -> Response {
 
     // Parse upstream ahead/behind
     let upstream = upstream_result.ok().and_then(|out| {
-        let parts: Vec<&str> = out.trim().split_whitespace().collect();
+        let parts: Vec<&str> = out.split_whitespace().collect();
         if parts.len() == 2 {
             Some((
                 parts[0].parse::<u32>().unwrap_or(0),
@@ -575,22 +574,20 @@ pub async fn create_directory(Json(req): Json<CreateDirectoryRequest>) -> Respon
     }
 
     // Parent must exist
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Parent directory does not exist: {}", parent.display()),
-            )
-                .into_response();
-        }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Parent directory does not exist: {}", parent.display()),
+        )
+            .into_response();
     }
 
     match std::fs::create_dir(&req.path) {
         Ok(()) => {
             // Canonicalize to return the resolved path
-            let canonical = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             Json(CreateDirectoryResponse {
                 path: canonical.to_string_lossy().to_string(),
             })

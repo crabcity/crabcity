@@ -11,6 +11,7 @@
 	import PaneChrome from './PaneChrome.svelte';
 	import PaneLanding from './PaneLanding.svelte';
 	import PaneInstancePicker from './PaneInstancePicker.svelte';
+	import PaneKindPicker from './PaneKindPicker.svelte';
 
 	interface Props {
 		paneId: string;
@@ -49,7 +50,9 @@
 	<div class="pane-content">
 		{#if pane}
 			{@const content = pane.content}
-			{#if content.kind === 'landing'}
+			{#if content.kind === 'picker'}
+				<PaneKindPicker paneId={pane.id} />
+			{:else if content.kind === 'landing'}
 				<PaneLanding />
 			{:else if needsInstancePicker}
 				<PaneInstancePicker paneId={pane.id} kind={content.kind} />

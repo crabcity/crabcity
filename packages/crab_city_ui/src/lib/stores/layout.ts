@@ -43,7 +43,8 @@ export type PaneContentKind =
 	| 'tasks'
 	| 'file-viewer'
 	| 'git'
-	| 'settings';
+	| 'settings'
+	| 'picker';
 
 export type PaneContent =
 	| { kind: 'landing' }
@@ -54,7 +55,8 @@ export type PaneContent =
 	| { kind: 'chat'; scope: 'global' | string }
 	| { kind: 'tasks'; instanceId: string | null }
 	| { kind: 'git'; instanceId: string | null }
-	| { kind: 'settings' };
+	| { kind: 'settings' }
+	| { kind: 'picker' };
 
 /** Extract instanceId from a PaneContent if it has one */
 export function getPaneInstanceId(content: PaneContent): string | null {
@@ -79,6 +81,8 @@ export function defaultContentForKind(kind: PaneContentKind, instanceId: string 
 			return { kind: 'chat', scope: instanceId ?? 'global' };
 		case 'settings':
 			return { kind: 'settings' };
+		case 'picker':
+			return { kind: 'picker' };
 	}
 }
 
@@ -195,8 +199,8 @@ export function setupLayoutSync(): void {
 			const pane = Array.from(s.panes.values())[0];
 			const newKind: 'terminal' | 'conversation' = $show ? 'terminal' : 'conversation';
 			if (pane.content.kind === newKind) return s;
-			// Don't switch a landing page via showTerminal toggle
-			if (pane.content.kind === 'landing') return s;
+			// Only sync between terminal ↔ conversation; leave other kinds alone
+			if (pane.content.kind !== 'terminal' && pane.content.kind !== 'conversation') return s;
 			const currentInstanceIdVal = getPaneInstanceId(pane.content);
 			const newPanes = new Map(s.panes);
 			newPanes.set(pane.id, {
@@ -259,9 +263,10 @@ export function splitPane(
 		const sourcePane = s.panes.get(paneId);
 		if (!sourcePane) return s;
 
+		const clonedContent: PaneContent = newContent ?? { kind: 'picker' as const };
+
 		// Check terminal pane cap
-		const resultKind = newContent?.kind ?? sourcePane.content.kind;
-		if (resultKind === 'terminal') {
+		if (clonedContent.kind === 'terminal') {
 			let termCount = 0;
 			for (const p of s.panes.values()) {
 				if (p.content.kind === 'terminal') termCount++;
@@ -274,11 +279,6 @@ export function splitPane(
 
 		const newPaneId = genPaneId();
 		const splitId = genSplitId();
-
-		const clonedContent = newContent ?? structuredClone(sourcePane.content);
-		if (!newContent && 'instanceId' in clonedContent) {
-			clonedContent.instanceId = null;
-		}
 
 		const newPane: PaneState = {
 			id: newPaneId,
