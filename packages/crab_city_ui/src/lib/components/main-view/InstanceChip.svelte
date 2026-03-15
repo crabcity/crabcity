@@ -11,9 +11,7 @@
 
 	let { instance, isFocused, stateInfo, onclick }: Props = $props();
 
-	const displayName = $derived(
-		(instance.custom_name ?? instance.name).slice(0, 14)
-	);
+	const displayName = $derived(instance.custom_name ?? instance.name);
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -49,7 +47,8 @@
 		cursor: pointer;
 		transition: all 0.15s ease;
 		white-space: nowrap;
-		flex-shrink: 0;
+		flex-shrink: 1;
+		min-width: 0;
 		font-family: inherit;
 		color: var(--text-secondary);
 	}

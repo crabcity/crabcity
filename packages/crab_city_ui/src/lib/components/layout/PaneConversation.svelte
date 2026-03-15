@@ -25,21 +25,20 @@
 
 <div class="pane-conversation">
 	{#if isClaudeInstance}
-		<div class="view-toggle" role="tablist" aria-label="View mode">
+		<div class="view-toggle-bar">
 			<button
-				class="toggle-tab"
-				class:active={viewMode === 'structured'}
-				role="tab"
-				aria-selected={viewMode === 'structured'}
-				onclick={() => viewMode = 'structured'}
-			>Structured</button>
-			<button
-				class="toggle-tab"
-				class:active={viewMode === 'terminal'}
-				role="tab"
-				aria-selected={viewMode === 'terminal'}
-				onclick={() => viewMode = 'terminal'}
-			>Raw</button>
+				class="view-toggle"
+				role="switch"
+				aria-checked={viewMode === 'terminal'}
+				aria-label="Toggle raw view"
+				onclick={() => viewMode = viewMode === 'structured' ? 'terminal' : 'structured'}
+			>
+				<span class="toggle-label" class:active={viewMode === 'structured'}>Structured</span>
+				<span class="toggle-track">
+					<span class="toggle-thumb" class:on={viewMode === 'terminal'}></span>
+				</span>
+				<span class="toggle-label" class:active={viewMode === 'terminal'}>Raw</span>
+			</button>
 		</div>
 	{/if}
 
@@ -70,39 +69,64 @@
 		min-height: 0;
 	}
 
-	.view-toggle {
+	.view-toggle-bar {
 		display: flex;
+		align-items: center;
+		justify-content: flex-start;
 		height: 24px;
-		padding: 0 8px;
+		padding-left: 8px;
 		background: var(--surface-800);
 		border-bottom: 1px solid var(--surface-border);
 		flex-shrink: 0;
-		gap: 0;
 	}
 
-	.toggle-tab {
-		font-size: 10px;
+	.view-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		padding: 0;
+		font-family: inherit;
+	}
+
+	.toggle-label {
+		font-size: 9px;
 		font-weight: 600;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--text-muted);
-		background: transparent;
-		border: none;
-		border-bottom: 2px solid transparent;
-		cursor: pointer;
-		font-family: inherit;
-		padding: 0 10px;
-		line-height: 22px;
-		transition: color 0.1s ease, border-color 0.1s ease;
+		transition: color 0.15s ease;
 	}
 
-	.toggle-tab:hover {
-		color: var(--text-secondary);
-	}
-
-	.toggle-tab.active {
+	.toggle-label.active {
 		color: var(--amber-400);
-		border-bottom-color: var(--amber-400);
+	}
+
+	.toggle-track {
+		position: relative;
+		width: 24px;
+		height: 12px;
+		background: var(--surface-600);
+		border: 1px solid var(--surface-border);
+		border-radius: 6px;
+	}
+
+	.toggle-thumb {
+		position: absolute;
+		top: 1px;
+		left: 1px;
+		width: 8px;
+		height: 8px;
+		background: var(--text-muted);
+		border-radius: 50%;
+		transition: transform 0.15s ease, background 0.15s ease;
+	}
+
+	.toggle-thumb.on {
+		transform: translateX(12px);
+		background: var(--amber-400);
 	}
 
 	.pane-content-inner {

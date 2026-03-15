@@ -1,11 +1,16 @@
 <script lang="ts">
 	import SnakeTeaser from '../SnakeTeaser.svelte';
 	import SnakeGame from '../SnakeGame.svelte';
+	import CreateInstanceModal from '../CreateInstanceModal.svelte';
+	import { projects } from '$lib/stores/projects';
 
 	// Easter egg: triple-click the monitor icon to launch snake
 	let clicks = $state(0);
 	let clickTimer: ReturnType<typeof setTimeout> | null = null;
 	let showSnake = $state(false);
+	let showCreateModal = $state(false);
+
+	let hasProjects = $derived($projects.length > 0);
 
 	function onIconClick() {
 		clicks++;
@@ -39,10 +44,26 @@
 					<SnakeTeaser />
 				</div>
 			</div>
-			<h2>No Instance Selected</h2>
-			<p>Select an instance from the header or sidebar</p>
+			{#if hasProjects}
+				<h2>No Project Selected</h2>
+				<p>Select a project from the sidebar to get started</p>
+			{:else}
+				<h2>No Projects</h2>
+				<p>Create a project to get started</p>
+			{/if}
+			<button class="new-project-btn" onclick={() => { showCreateModal = true; }}>
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<line x1="12" y1="5" x2="12" y2="19" />
+					<line x1="5" y1="12" x2="19" y2="12" />
+				</svg>
+				NEW PROJECT
+			</button>
 		</div>
 	</div>
+{/if}
+
+{#if showCreateModal}
+	<CreateInstanceModal mode="project" onclose={() => { showCreateModal = false; }} />
 {/if}
 
 <style>
@@ -97,5 +118,34 @@
 		margin: 0;
 		font-size: 12px;
 		letter-spacing: 0.05em;
+	}
+
+	.new-project-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin-top: 20px;
+		padding: 6px 16px;
+		font-size: 0.68rem;
+		font-weight: 700;
+		font-family: inherit;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--amber-400);
+		background: transparent;
+		border: 1px solid var(--amber-600);
+		border-radius: 3px;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.new-project-btn:hover {
+		background: var(--tint-hover);
+		border-color: var(--amber-400);
+	}
+
+	.new-project-btn svg {
+		width: 12px;
+		height: 12px;
 	}
 </style>
