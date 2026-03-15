@@ -11,10 +11,13 @@
 	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
 	import QuickSettings from './settings/QuickSettings.svelte';
 	import CreateInstanceModal from './CreateInstanceModal.svelte';
+	import CloseProjectModal from './CloseProjectModal.svelte';
 	import type { Instance } from '$lib/types';
+	import type { Project } from '$lib/stores/projects';
 
 	let showQuickSettings = $state(false);
 	let showCreateModal = $state(false);
+	let closeProjectTarget = $state<Project | null>(null);
 
 	async function handleLogout() {
 		await logout();
@@ -91,16 +94,26 @@
 	<nav class="rail-projects">
 		{#each $projects as project, i (project.id)}
 			{@const isActive = $currentProject?.id === project.id}
-			<button
-				class="rail-project"
-				class:active={isActive}
-				onclick={() => handleSelectProject(project.workingDir)}
-				title="{project.name} ({project.instances.length} instances)"
-				aria-label="{project.name} project"
-				style="--project-color: {projectColors[i % projectColors.length]}"
-			>
-				<span class="project-abbr">{getProjectAbbr(project.name)}</span>
-			</button>
+			<div class="rail-project-slot" class:active={isActive}>
+				<button
+					class="rail-project"
+					class:active={isActive}
+					onclick={() => handleSelectProject(project.workingDir)}
+					title="{project.name} ({project.instances.length} instances)"
+					aria-label="{project.name} project"
+					style="--project-color: {projectColors[i % projectColors.length]}"
+				>
+					<span class="project-abbr">{getProjectAbbr(project.name)}</span>
+				</button>
+				{#if isActive}
+					<button
+						class="rail-action"
+						onclick={() => { closeProjectTarget = project; }}
+						title="Close project"
+						aria-label="Close {project.name}"
+					>&times;</button>
+				{/if}
+			</div>
 		{/each}
 	</nav>
 
@@ -152,6 +165,10 @@
 	<CreateInstanceModal mode="project" onclose={() => showCreateModal = false} />
 {/if}
 
+{#if closeProjectTarget}
+	<CloseProjectModal project={closeProjectTarget} onclose={() => closeProjectTarget = null} />
+{/if}
+
 <style>
 	.sidebar-rail {
 		display: flex;
@@ -187,6 +204,60 @@
 
 	.rail-projects::-webkit-scrollbar { width: 0; }
 
+	.rail-project-slot {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		flex-shrink: 0;
+		border-radius: 50%;
+		transition: all 0.15s ease;
+	}
+
+	.rail-project-slot.active {
+		background: var(--tint-active);
+		border: 1px solid var(--amber-500);
+		border-radius: 10px;
+		padding: 3px 3px 2px;
+	}
+
+	.rail-project-slot.active .rail-project {
+		width: 28px;
+		height: 28px;
+		border: none;
+		background: transparent;
+	}
+
+	.rail-project-slot.active .rail-project:hover {
+		background: var(--tint-hover);
+	}
+
+	.rail-project-slot.active .project-abbr {
+		color: var(--amber-400);
+	}
+
+	.rail-action {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		height: 16px;
+		background: transparent;
+		border: none;
+		border-top: 1px solid var(--amber-700);
+		color: var(--text-muted);
+		font-size: 12px;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0;
+		transition: color 0.15s ease;
+		border-radius: 0 0 8px 8px;
+		margin-top: 1px;
+	}
+
+	.rail-action:hover {
+		color: var(--status-red);
+	}
+
 	.rail-project {
 		display: flex;
 		align-items: center;
@@ -206,20 +277,11 @@
 		border-color: var(--surface-border-light);
 	}
 
-	.rail-project.active {
-		border-color: var(--amber-500);
-		background: var(--tint-active);
-	}
-
 	.project-abbr {
 		font-size: 10px;
 		font-weight: 700;
 		letter-spacing: 0.05em;
 		color: var(--project-color, var(--text-secondary));
-	}
-
-	.rail-project.active .project-abbr {
-		color: var(--amber-400);
 	}
 
 	.rail-bottom {
