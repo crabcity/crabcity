@@ -9,6 +9,7 @@ import { api, apiGet } from '$lib/utils/api';
 export interface UserSettings {
 	theme: 'phosphor' | 'analog';
 	defaultCommand: string;
+	shellCommand: string;
 	diffEngine: 'standard' | 'patience' | 'structural';
 	terminalFontSize: number;
 	showNotifications: boolean;
@@ -18,6 +19,7 @@ export interface UserSettings {
 export const DEFAULT_SETTINGS: UserSettings = {
 	theme: 'phosphor',
 	defaultCommand: 'claude',
+	shellCommand: 'bash',
 	diffEngine: 'structural',
 	terminalFontSize: 14,
 	showNotifications: true,

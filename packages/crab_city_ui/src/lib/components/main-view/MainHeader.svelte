@@ -9,7 +9,7 @@
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
 	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
 	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
-	import { sendRefresh } from '$lib/stores/websocket';
+
 	import { activityLevel } from '$lib/stores/activity';
 	import InstanceChip from './InstanceChip.svelte';
 	import CreateInstanceModal from '../CreateInstanceModal.svelte';
@@ -217,11 +217,6 @@
 				<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
 			</svg>
 			<span class="btn-label">Files</span>
-		</button>
-		<button class="action-btn icon-only-mobile" onclick={sendRefresh} title="Refresh" aria-label="Refresh">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-			</svg>
 		</button>
 		<button
 			class="action-btn icon-only-mobile tasks-btn"
