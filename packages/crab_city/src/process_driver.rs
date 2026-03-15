@@ -54,8 +54,13 @@ pub enum ProcessState {
     Initializing,
     Starting,
     Idle,
-    Working { detail: Option<String> },
-    WaitingForInput { prompt: Option<String> },
+    Working {
+        detail: Option<String>,
+    },
+    WaitingForInput {
+        prompt: Option<String>,
+    },
+    #[allow(dead_code)]
     Exited,
 }
 
@@ -90,6 +95,7 @@ pub trait ProcessDriver: Send + 'static {
     fn on_signal(&mut self, signal: DriverSignal) -> DriverEffect;
 
     /// Current state.
+    #[allow(dead_code)]
     fn state(&self) -> ProcessState;
 
     /// Get the Claude-specific state if this is a Claude driver.

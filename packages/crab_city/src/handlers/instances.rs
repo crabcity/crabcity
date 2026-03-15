@@ -66,7 +66,7 @@ pub async fn create_instance(
     let command_str = req
         .command
         .as_deref()
-        .unwrap_or(&state.instance_manager.default_command());
+        .unwrap_or(state.instance_manager.default_command());
     let is_claude = command_str.contains("claude");
     let driver: Box<dyn ProcessDriver> = if is_claude {
         Box::new(ClaudeDriver::new())

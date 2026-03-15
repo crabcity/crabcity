@@ -73,6 +73,7 @@ pub enum StateSignal {
 
 impl ClaudeState {
     /// Returns true if Claude is actively working (not waiting for input)
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         matches!(
             self,
@@ -81,6 +82,7 @@ impl ClaudeState {
     }
 
     /// Returns the tool name if currently executing a tool
+    #[allow(dead_code)]
     pub fn current_tool(&self) -> Option<&str> {
         match self {
             ClaudeState::ToolExecuting { tool } => Some(tool),
