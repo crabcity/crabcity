@@ -106,6 +106,7 @@ impl InstanceManager {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         name: Option<String>,
@@ -193,7 +194,9 @@ impl InstanceManager {
         })
         .await?;
 
-        let id = handle.id_async().await;
+        let info = handle.get_info().await;
+        let id = info.id.clone();
+        let created_at = info.created_at.clone();
 
         // Store the handle
         let mut instances = self.instances.write().await;
@@ -209,7 +212,7 @@ impl InstanceManager {
             working_dir,
             command: command_line,
             running: true,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at,
             session_id: None, // Will be detected when conversation is accessed
             claude_state: None,
         })

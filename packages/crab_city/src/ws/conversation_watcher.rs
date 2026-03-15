@@ -468,14 +468,13 @@ pub async fn run_driver_conversation_watcher(
                             {
                                 return;
                             }
-                        } else if !new_turns.is_empty() {
-                            if driver_tx
+                        } else if !new_turns.is_empty()
+                            && driver_tx
                                 .send(DriverSignal::ConversationDelta(new_turns))
                                 .await
                                 .is_err()
-                            {
-                                return;
-                            }
+                        {
+                            return;
                         }
 
                         // Handle session rotations
@@ -505,10 +504,10 @@ pub async fn run_driver_conversation_watcher(
                     }
                     _ => {
                         // Empty poll — send held text-only if any
-                        if let Some(held) = held_text_only.take() {
-                            if driver_tx.send(held).await.is_err() {
-                                return;
-                            }
+                        if let Some(held) = held_text_only.take()
+                            && driver_tx.send(held).await.is_err()
+                        {
+                            return;
                         }
                     }
                 }
@@ -590,11 +589,33 @@ pub async fn run_session_discovery(
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }
             1 => {
-                // Single candidate — the server watcher will auto-claim it.
-                // Just wait for it to pick it up.
+                let session_id = &candidates[0].id;
+                // Claim directly — don't defer to the driver watcher, which may
+                // use a slightly different created_at and find a different candidate
+                // count (causing it to enter the ambiguous branch and stall).
+                if state_manager
+                    .try_claim_session(session_id, &instance_id)
+                    .await
+                {
+                    info!(
+                        "[SESSION-DISCOVERY {}] Claimed single candidate session {}",
+                        instance_id, session_id
+                    );
+                    if let Some(handle) = state_manager.get_handle(&instance_id).await
+                        && let Err(e) = handle.set_session_id(session_id.clone()).await
+                    {
+                        warn!(
+                            instance = %instance_id,
+                            session = %session_id,
+                            "Failed to set session ID: {}", e
+                        );
+                    }
+                    return;
+                }
+                // Another instance claimed it between our check and claim — retry
                 debug!(
-                    "[SESSION-DISCOVERY {}] Single candidate, letting server watcher auto-claim",
-                    instance_id
+                    "[SESSION-DISCOVERY {}] Single candidate {} already claimed, retrying",
+                    instance_id, session_id
                 );
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
@@ -876,6 +897,188 @@ mod tests {
             "No user turns yet → trust timestamp gate (JSONL still being written)"
         );
     }
+
+    // ── Hypothesis tests: H3, H11 ───────────────────────────────────────
+
+    // H3: JSONL timing — prefixes ready before session file exists
+
+    #[tokio::test]
+    async fn h3_zero_candidates_with_populated_first_input() {
+        // When content prefixes exist but candidate_user_texts is empty
+        // (JSONL exists but no user turns written yet), should_auto_claim
+        // must return true — trust the timestamp gate.
+        let prefixes = tui_keystrokes("hello").await;
+        assert!(
+            should_auto_claim(&prefixes, &[]),
+            "should auto-claim when JSONL has no user turns yet (trust timestamp gate)"
+        );
+    }
+
+    #[tokio::test]
+    async fn h3_content_prefixes_ready_before_session_file() {
+        // Content tracking via mark_first_input is decoupled from the
+        // JSONL file existing on disk. Prefixes populate regardless.
+        let prefixes = tui_keystrokes("fix the bug").await;
+        assert_eq!(
+            prefixes,
+            vec!["fix the bug"],
+            "prefixes should populate from keystrokes alone, independent of JSONL"
+        );
+    }
+
+    // H11: Content prefix mismatch — leading context blocks matching
+
+    #[tokio::test]
+    async fn h11_leading_context_blocks_matching() {
+        // If Claude Code PREPENDS context to the user message, neither
+        // the stored prefix nor the JSONL text is a prefix of the other.
+        let prefixes = tui_keystrokes("hello").await;
+        let jsonl_text = "<system-reminder>context</system-reminder>\nhello";
+
+        assert!(
+            !should_auto_claim(&prefixes, &[jsonl_text]),
+            "leading context should break matching — neither is a prefix of the other"
+        );
+        // Call again to confirm the failure is deterministic, not transient
+        assert!(
+            !should_auto_claim(&prefixes, &[jsonl_text]),
+            "failure should be permanent, not transient"
+        );
+    }
+
+    #[tokio::test]
+    async fn h11_web_composed_also_fails_with_leading_context() {
+        // If this test passes, H11 can't explain a TUI-only failure —
+        // leading context breaks BOTH paths equally.
+        let prefixes = web_composed("hello").await;
+        let jsonl_text = "<system-reminder>context</system-reminder>\nhello";
+
+        assert!(
+            !should_auto_claim(&prefixes, &[jsonl_text]),
+            "web composed should also fail with leading context — not a TUI-only issue"
+        );
+    }
+
+    #[tokio::test]
+    async fn h11_attribution_content_matches_bidirectional_prefix() {
+        // Directly test the underlying matching function to confirm
+        // its bidirectional prefix behavior.
+        use crate::models::attribution_content_matches;
+
+        // stored is prefix of entry → match
+        assert!(
+            attribution_content_matches("hello", "hello world"),
+            "stored prefix of entry should match"
+        );
+        // entry is prefix of stored → match
+        assert!(
+            attribution_content_matches("hello world", "hello"),
+            "entry prefix of stored should match"
+        );
+        // leading context breaks it: neither is a prefix of the other
+        assert!(
+            !attribution_content_matches("hello", "<ctx>\nhello"),
+            "leading context should NOT match"
+        );
+        assert!(
+            !attribution_content_matches("<ctx>\nhello", "hello"),
+            "leading context should NOT match (reversed)"
+        );
+    }
+
+    // ── Comprehensive should_auto_claim matrix (H11 extended) ─────────
+
+    #[tokio::test]
+    async fn int_auto_claim_comprehensive_matrix() {
+        // Hypotheses: A5, H11 — comprehensive documentation of matching behavior.
+        struct Case {
+            prefixes: Vec<&'static str>,
+            candidates: Vec<&'static str>,
+            expected: bool,
+            reason: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                prefixes: vec![],
+                candidates: vec![],
+                expected: true,
+                reason: "both empty → fallback",
+            },
+            Case {
+                prefixes: vec![],
+                candidates: vec!["hello"],
+                expected: true,
+                reason: "no prefixes → fallback",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec![],
+                expected: true,
+                reason: "no user turns → trust timestamp gate",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec!["hello"],
+                expected: true,
+                reason: "exact match",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec!["hello world"],
+                expected: true,
+                reason: "prefix match",
+            },
+            Case {
+                prefixes: vec!["hello world"],
+                candidates: vec!["hello"],
+                expected: true,
+                reason: "reverse prefix",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec!["goodbye"],
+                expected: false,
+                reason: "no match",
+            },
+            Case {
+                prefixes: vec!["fix", "hello"],
+                candidates: vec!["hello world"],
+                expected: true,
+                reason: "any prefix matches",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec!["<ctx>\nhello"],
+                expected: false,
+                reason: "leading context blocks",
+            },
+            Case {
+                prefixes: vec!["<ctx>\nhello"],
+                candidates: vec!["hello"],
+                expected: false,
+                reason: "reverse context blocks",
+            },
+            Case {
+                prefixes: vec!["hello"],
+                candidates: vec!["hello", "<ctx>\nfoo"],
+                expected: true,
+                reason: "one of many matches",
+            },
+        ];
+
+        for (i, case) in cases.iter().enumerate() {
+            let prefixes: Vec<String> = case.prefixes.iter().map(|s| s.to_string()).collect();
+            let result = should_auto_claim(&prefixes, &case.candidates);
+            assert_eq!(
+                result, case.expected,
+                "case {}: {} — prefixes={:?}, candidates={:?}",
+                i, case.reason, case.prefixes, case.candidates
+            );
+        }
+    }
+
+    // ── Multiline input ─────────────────────────────────────────────────
 
     #[tokio::test]
     async fn tui_multiline_input() {
