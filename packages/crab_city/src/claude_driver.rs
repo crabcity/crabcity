@@ -188,6 +188,16 @@ impl ProcessDriver for ClaudeDriver {
 }
 
 #[cfg(test)]
+impl ClaudeDriver {
+    /// Set instance_id for integration tests without spawning watcher.
+    /// The test actor's info.id is "test-instance" — this must match.
+    pub(crate) fn with_test_instance_id(mut self, id: &str) -> Self {
+        self.instance_id = id.to_string();
+        self
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -427,6 +437,71 @@ mod tests {
         let d = new_driver();
         // Just created — last_terminal_activity is now, so not stale.
         assert!(!d.is_terminal_stale());
+    }
+
+    // ── Hypothesis tests ──────────────────────────────────────────────
+
+    // H7: Broadcast channel overflow
+
+    #[test]
+    fn h7_broadcast_overflow_causes_lag_error() {
+        // The conversation_tx broadcast has capacity 64. Sending more
+        // than that should cause a Lagged error on the subscriber.
+        let mut d = started_driver();
+        let mut rx = d.conversation_tx.subscribe();
+
+        // Send 70 snapshots — exceeds channel capacity of 64
+        for i in 0..70 {
+            let turns = vec![serde_json::json!({"turn": i})];
+            d.on_signal(DriverSignal::ConversationSnapshot(turns));
+        }
+
+        match rx.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                assert!(n > 0, "should report lagged messages");
+            }
+            other => panic!("expected Lagged error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn h7_snapshot_survives_broadcast_overflow() {
+        // Even when the broadcast channel overflows (no subscribers),
+        // conversation_turns still stores the latest data.
+        let mut d = started_driver();
+        // Don't subscribe — all sends will have 0 receivers.
+
+        for i in 0..70 {
+            let turns = vec![serde_json::json!({"turn": i})];
+            d.on_signal(DriverSignal::ConversationSnapshot(turns));
+        }
+
+        // Data is stored regardless of broadcast success.
+        let snapshot = d.conversation_snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0]["turn"], 69);
+    }
+
+    // H8: Zero subscribers — data still persisted
+
+    #[test]
+    fn h8_broadcast_no_receivers_data_persisted() {
+        // When broadcast has no receivers, send() returns Err.
+        // But conversation_turns should still be updated (line 150
+        // stores before line 151 sends).
+        let mut d = started_driver();
+        // The initial `_` receiver from broadcast::channel is dropped
+        // because started_driver() doesn't hold onto it.
+
+        let turns = vec![
+            serde_json::json!({"role": "user", "text": "hello"}),
+            serde_json::json!({"role": "assistant", "text": "hi"}),
+        ];
+        let effect = d.on_signal(DriverSignal::ConversationSnapshot(turns.clone()));
+        assert_eq!(effect, DriverEffect::none());
+
+        // Data must be stored even with 0 receivers.
+        assert_eq!(d.conversation_snapshot(), &turns[..]);
     }
 
     // ── full lifecycle ─────────────────────────────────────────────────

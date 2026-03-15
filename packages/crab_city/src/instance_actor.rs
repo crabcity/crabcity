@@ -22,6 +22,7 @@ use crate::ws::{FirstInputData, PendingAttribution, StateBroadcast};
 pub struct EnrichedOutput {
     pub data: Vec<u8>,
     pub cursor: (u16, u16),
+    #[allow(dead_code)]
     pub timestamp: i64,
 }
 
@@ -617,14 +618,14 @@ impl InstanceActor {
             info!("Instance '{}' session set to {}", instance_id, session_id);
 
             // If there was a previous session, broadcast rotation
-            if let Some(old) = old_session {
-                if let Some(ref ltx) = self.lifecycle_tx {
-                    let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
-                        instance_id,
-                        from_session: old,
-                        to_session: session_id.clone(),
-                    });
-                }
+            if let Some(old) = old_session
+                && let Some(ref ltx) = self.lifecycle_tx
+            {
+                let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
+                    instance_id,
+                    from_session: old,
+                    to_session: session_id.clone(),
+                });
             }
         }
     }
@@ -818,6 +819,7 @@ impl InstanceHandle {
         (handle, output_tx)
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn spawn_test_with_scrollback(
         rows: u16,
         cols: u16,
@@ -1069,14 +1071,14 @@ impl InstanceHandle {
                                     let instance_id = info_actor.read().await.id.clone();
                                     let old_session = info_actor.read().await.session_id.clone();
                                     info_actor.write().await.session_id = Some(session_id.clone());
-                                    if let Some(old) = old_session {
-                                        if let Some(ref ltx) = lifecycle_tx {
-                                            let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
-                                                instance_id,
-                                                from_session: old,
-                                                to_session: session_id.clone(),
-                                            });
-                                        }
+                                    if let Some(old) = old_session
+                                        && let Some(ref ltx) = lifecycle_tx
+                                    {
+                                        let _ = ltx.send(crate::ws::ServerMessage::SessionRotated {
+                                            instance_id,
+                                            from_session: old,
+                                            to_session: session_id.clone(),
+                                        });
                                     }
                                 }
                             }
@@ -1825,6 +1827,255 @@ mod tests {
             result.is_ok(),
             "should receive state broadcast from on_input"
         );
+
+        drop(handle);
+    }
+
+    // ── ClaudeDriver integration tests ──────────────────────────────
+
+    use crate::claude_driver::ClaudeDriver;
+
+    fn make_turn(n: usize) -> serde_json::Value {
+        serde_json::json!({"uuid": format!("turn-{n}"), "role": "user", "text": format!("turn {n}")})
+    }
+
+    #[tokio::test]
+    async fn int_claude_subscribe_then_signal_delivers_broadcast() {
+        // Hypotheses: C1, C3, E2
+        // Subscribe first, then send snapshot signal → broadcast should deliver.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let mut rx = handle.subscribe_conversation().await.unwrap();
+
+        let turns = vec![make_turn(0), make_turn(1)];
+        signal_tx
+            .send(DriverSignal::ConversationSnapshot(turns.clone()))
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let event = rx.try_recv().expect("should receive broadcast");
+        match event {
+            ConversationEvent::Full {
+                instance_id,
+                turns: t,
+            } => {
+                assert_eq!(instance_id, "test-instance");
+                assert_eq!(t.len(), 2);
+                assert_eq!(t, turns);
+            }
+            _ => panic!("expected Full event, got {:?}", event),
+        }
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_claude_snapshot_persists_after_signal() {
+        // Hypothesis: B1 integration — data stored even with no subscriber.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let turns = vec![make_turn(0)];
+        signal_tx
+            .send(DriverSignal::ConversationSnapshot(turns.clone()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let snapshot = handle.get_conversation_snapshot().await;
+        assert_eq!(snapshot, turns);
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_claude_session_discovered_sets_session_id() {
+        // Hypothesis: E1 — SessionDiscovered sets info.session_id via DriverEffect.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        assert_eq!(handle.get_session_id().await, None);
+
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-abc".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(handle.get_session_id().await, Some("sess-abc".into()));
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_claude_delta_extends_and_broadcasts() {
+        // Hypothesis: C2 — delta extends internal state, broadcasts Update.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let mut rx = handle.subscribe_conversation().await.unwrap();
+
+        // Send initial snapshot
+        signal_tx
+            .send(DriverSignal::ConversationSnapshot(vec![make_turn(0)]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let event = rx.try_recv().expect("should receive Full");
+        assert!(matches!(event, ConversationEvent::Full { .. }));
+
+        // Send delta
+        signal_tx
+            .send(DriverSignal::ConversationDelta(vec![make_turn(1)]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let event = rx.try_recv().expect("should receive Update");
+        match event {
+            ConversationEvent::Update { turns, .. } => {
+                assert_eq!(turns.len(), 1);
+                assert_eq!(turns[0]["uuid"], "turn-1");
+            }
+            _ => panic!("expected Update event"),
+        }
+
+        // Full snapshot should have both turns
+        let snapshot = handle.get_conversation_snapshot().await;
+        assert_eq!(snapshot.len(), 2);
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_claude_late_subscribe_misses_broadcast_gets_snapshot() {
+        // Hypotheses: E2, C3 — late subscriber gets data via snapshot, not broadcast.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        // Send signal BEFORE subscribing
+        signal_tx
+            .send(DriverSignal::ConversationSnapshot(vec![make_turn(0)]))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Subscribe AFTER the broadcast
+        let mut rx = handle.subscribe_conversation().await.unwrap();
+
+        // Broadcast was before subscription — nothing in receiver
+        assert!(
+            rx.try_recv().is_err(),
+            "late subscriber should not receive past broadcast"
+        );
+
+        // But data IS available via snapshot
+        let snapshot = handle.get_conversation_snapshot().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0]["uuid"], "turn-0");
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_premature_session_id_blocks_mark_first_input() {
+        // Hypotheses: A2, H4 integration — session_id set before input → mark_first_input skipped.
+        use crate::ws::{GlobalStateManager, InputContext, create_state_broadcast};
+
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let gsm = GlobalStateManager::new(create_state_broadcast());
+        gsm.insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        // Set session_id BEFORE any input (via driver signal)
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-premature".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(handle.get_session_id().await, Some("sess-premature".into()));
+
+        // Now send input through the pipeline
+        let ctx = InputContext {
+            instance_id: "test-instance".to_string(),
+            data: "hello\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let repo: Option<&Arc<crate::repository::ConversationRepository>> = None;
+        let _ = gsm.handle_input(ctx, repo).await;
+
+        // first_input_data should NOT be populated (session_id gate blocked it)
+        assert!(
+            gsm.get_first_input_at("test-instance").await.is_none(),
+            "mark_first_input should be skipped when session_id is already set via driver"
+        );
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_no_session_id_allows_mark_first_input() {
+        // Hypothesis: A2 counterpart — session_id is None → mark_first_input runs.
+        use crate::ws::{GlobalStateManager, InputContext, create_state_broadcast};
+
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        // No signal channel → no session discovery
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), None, None, None);
+
+        let gsm = GlobalStateManager::new(create_state_broadcast());
+        gsm.insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        let repo: Option<&Arc<crate::repository::ConversationRepository>> = None;
+
+        // Send keystrokes through the pipeline
+        for ch in "hello".chars() {
+            let ctx = InputContext {
+                instance_id: "test-instance".to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = gsm.handle_input(ctx, repo).await;
+        }
+        let ctx = InputContext {
+            instance_id: "test-instance".to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = gsm.handle_input(ctx, repo).await;
+
+        assert!(
+            gsm.get_first_input_at("test-instance").await.is_some(),
+            "mark_first_input should run when session_id is None"
+        );
+        let prefixes = gsm.get_discovery_content_prefixes("test-instance").await;
+        assert_eq!(prefixes, vec!["hello"]);
 
         drop(handle);
     }

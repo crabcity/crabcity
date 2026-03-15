@@ -117,6 +117,9 @@ pub enum ClientMessage {
         instance_id: String,
         rows: u16,
         cols: u16,
+        /// "terminal" for TUI clients, defaults to "web"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_type: Option<String>,
     },
     /// Select a session when ambiguous
     SessionSelect { session_id: String },
@@ -143,6 +146,9 @@ pub enum ClientMessage {
         instance_id: String,
         rows: u16,
         cols: u16,
+        /// "terminal" for TUI clients, defaults to "web"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_type: Option<String>,
     },
     /// Terminal panel was hidden — exclude this client from dimension negotiation
     TerminalHidden { instance_id: String },
@@ -439,10 +445,12 @@ mod tests {
                 instance_id,
                 rows,
                 cols,
+                client_type,
             } => {
                 assert_eq!(instance_id, "inst-456");
                 assert_eq!(rows, 40);
                 assert_eq!(cols, 120);
+                assert!(client_type.is_none());
             }
             _ => panic!("Expected Resize message"),
         }
@@ -712,6 +720,7 @@ mod tests {
                 instance_id,
                 rows,
                 cols,
+                ..
             } => {
                 assert_eq!(instance_id, "inst-1");
                 assert_eq!(rows, 1);
@@ -727,6 +736,7 @@ mod tests {
                 instance_id,
                 rows,
                 cols,
+                ..
             } => {
                 assert_eq!(instance_id, "inst-2");
                 assert_eq!(rows, 65535);
@@ -895,6 +905,7 @@ mod tests {
             instance_id: "inst-1".to_string(),
             rows: 40,
             cols: 120,
+            client_type: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: ClientMessage = serde_json::from_str(&json).unwrap();
@@ -904,10 +915,12 @@ mod tests {
                 instance_id,
                 rows,
                 cols,
+                client_type,
             } => {
                 assert_eq!(instance_id, "inst-1");
                 assert_eq!(rows, 40);
                 assert_eq!(cols, 120);
+                assert!(client_type.is_none());
             }
             _ => panic!("Expected TerminalVisible message"),
         }
@@ -979,10 +992,12 @@ mod tests {
                 instance_id,
                 rows,
                 cols,
+                client_type,
             } => {
                 assert_eq!(instance_id, "inst-1");
                 assert_eq!(rows, 40);
                 assert_eq!(cols, 120);
+                assert!(client_type.is_none());
             }
             _ => panic!("Expected TerminalVisible message"),
         }

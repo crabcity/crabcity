@@ -261,22 +261,22 @@ pub async fn handle_multiplexed_ws(
                             ClientMessage::ConversationSync { since_uuid } => {
                                 // Sync conversation without changing focus
                                 // This is used when a tab becomes visible again
-                                if let Some(id) = focused_clone.read().await.clone() {
-                                    if let Some(h) = state_mgr.get_handle(&id).await {
-                                        let tx_sync = tx_input.clone();
-                                        tokio::spawn(async move {
-                                            if let Err(e) = send_conversation_since(
-                                                &id,
-                                                since_uuid.as_deref(),
-                                                &h,
-                                                &tx_sync,
-                                            )
-                                            .await
-                                            {
-                                                error!("Failed to sync conversation: {}", e);
-                                            }
-                                        });
-                                    }
+                                if let Some(id) = focused_clone.read().await.clone()
+                                    && let Some(h) = state_mgr.get_handle(&id).await
+                                {
+                                    let tx_sync = tx_input.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = send_conversation_since(
+                                            &id,
+                                            since_uuid.as_deref(),
+                                            &h,
+                                            &tx_sync,
+                                        )
+                                        .await
+                                        {
+                                            error!("Failed to sync conversation: {}", e);
+                                        }
+                                    });
                                 }
                             }
                             ClientMessage::Input {
@@ -310,14 +310,19 @@ pub async fn handle_multiplexed_ws(
                                 instance_id,
                                 rows,
                                 cols,
+                                client_type,
                             } => {
+                                let ct = match client_type.as_deref() {
+                                    Some("terminal") => ClientType::Terminal,
+                                    _ => ClientType::Web,
+                                };
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await
                                     && let Err(e) = handle
                                         .update_viewport_and_resize(
                                             &connection_id_clone,
                                             rows,
                                             cols,
-                                            ClientType::Web,
+                                            ct,
                                         )
                                         .await
                                 {
@@ -328,7 +333,12 @@ pub async fn handle_multiplexed_ws(
                                 instance_id,
                                 rows,
                                 cols,
+                                client_type,
                             } => {
+                                let ct = match client_type.as_deref() {
+                                    Some("terminal") => ClientType::Terminal,
+                                    _ => ClientType::Web,
+                                };
                                 debug!(
                                     conn = %connection_id_clone,
                                     instance = %instance_id,
@@ -342,7 +352,7 @@ pub async fn handle_multiplexed_ws(
                                             &connection_id_clone,
                                             rows,
                                             cols,
-                                            ClientType::Web,
+                                            ct,
                                         )
                                         .await
                                     {

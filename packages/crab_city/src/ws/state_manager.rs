@@ -324,6 +324,7 @@ impl GlobalStateManager {
 
     /// Get content prefixes stored for session discovery verification.
     /// Returns an empty vec if no inputs have been recorded.
+    #[allow(dead_code)]
     pub async fn get_discovery_content_prefixes(&self, instance_id: &str) -> Vec<String> {
         self.first_input_at
             .read()
@@ -371,6 +372,7 @@ impl GlobalStateManager {
 
     /// Try to consume a pending attribution that matches a conversation entry's content.
     /// Delegates to the free function in handlers::conversations::format.
+    #[allow(dead_code)]
     pub async fn consume_pending_attribution(
         &self,
         instance_id: &str,
@@ -388,7 +390,7 @@ impl GlobalStateManager {
     pub fn pending_attributions_lock(
         &self,
     ) -> &RwLock<HashMap<String, VecDeque<PendingAttribution>>> {
-        &*self.pending_attributions
+        &self.pending_attributions
     }
 
     // =========================================================================
@@ -1951,6 +1953,302 @@ mod tests {
             .last_activity;
 
         assert!(after > before, "terminal lock should be refreshed by input");
+    }
+
+    // =========================================================================
+    // Hypothesis tests: H4, H5, H6
+    // =========================================================================
+
+    // H4: get_session_id() gates mark_first_input — premature session_id
+    //     prevents discovery content tracking.
+
+    #[tokio::test]
+    async fn h4_session_id_set_before_input_blocks_mark_first_input() {
+        // When session_id is already set before any input, handle_input
+        // skips mark_first_input entirely (line 629-631). This means
+        // first_input_data is never populated, and the watcher can never
+        // discover the session via content matching.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr
+            .insert_test_tracker("inst-1", handle.clone())
+            .await;
+
+        // Set session_id BEFORE any input
+        handle
+            .set_session_id("sess-premature".to_string())
+            .await
+            .unwrap();
+
+        // Now send input through the pipeline
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        // first_input_data should NOT be populated (session_id gate blocked it)
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_none(),
+            "mark_first_input should be skipped when session_id is already set"
+        );
+        assert!(
+            state_mgr
+                .get_discovery_content_prefixes("inst-1")
+                .await
+                .is_empty(),
+            "no content prefixes when session_id was set early"
+        );
+    }
+
+    #[tokio::test]
+    async fn h4_mark_first_input_runs_when_session_id_is_none() {
+        // Normal flow: session_id is None, so mark_first_input runs.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_some(),
+            "mark_first_input should run when session_id is None"
+        );
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes, vec!["hello"]);
+    }
+
+    #[tokio::test]
+    async fn h4_watcher_gates_on_first_input_data() {
+        // The conversation watcher checks first_input_data before
+        // attempting session discovery. Without it, discovery is blocked.
+        let first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        // No entry for "inst-1" → watcher would skip discovery
+        let has_first_input = first_input_data
+            .read()
+            .await
+            .get("inst-1")
+            .map(|d| d.timestamp)
+            .is_some();
+        assert!(
+            !has_first_input,
+            "no first_input_data → watcher should not attempt discovery"
+        );
+
+        // Add an entry → watcher would proceed
+        first_input_data.write().await.insert(
+            "inst-1".to_string(),
+            FirstInputData {
+                timestamp: Utc::now(),
+                content_prefixes: vec!["hello".to_string()],
+                pending_line: String::new(),
+            },
+        );
+        let has_first_input = first_input_data
+            .read()
+            .await
+            .get("inst-1")
+            .map(|d| d.timestamp)
+            .is_some();
+        assert!(
+            has_first_input,
+            "with first_input_data → watcher proceeds to discovery"
+        );
+    }
+
+    // H5: Stale claimed_sessions entry from prior instance
+
+    #[tokio::test]
+    async fn h5_stale_claim_blocks_new_instance() {
+        // If an instance crashes without unregister_instance, its
+        // claimed session remains and blocks a new instance.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // "inst-crashed" claims sess-1
+        assert!(state_mgr.try_claim_session("sess-1", "inst-crashed").await);
+
+        // New instance tries to claim the same session → blocked
+        assert!(
+            !state_mgr.try_claim_session("sess-1", "inst-new").await,
+            "stale claim should block new instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn h5_unregister_releases_claimed_session() {
+        // unregister_instance properly cleans up claims, allowing
+        // re-use by a new instance.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // Register + claim
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr
+            .register_instance(
+                "inst-old".to_string(),
+                handle,
+                "/tmp".to_string(),
+                Utc::now(),
+                true,
+            )
+            .await;
+        assert!(state_mgr.try_claim_session("sess-1", "inst-old").await);
+
+        // Unregister releases the session
+        state_mgr.unregister_instance("inst-old").await;
+
+        // New instance can now claim it
+        assert!(
+            state_mgr.try_claim_session("sess-1", "inst-new").await,
+            "claim should succeed after unregister releases it"
+        );
+    }
+
+    // H6: first_input_data keyed by wrong instance_id
+
+    #[tokio::test]
+    async fn h6_first_input_data_keyed_correctly_across_instances() {
+        // Verify that input to inst-1 does NOT leak into inst-2's data.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle1, _) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle2, _) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle1).await;
+        state_mgr.insert_test_tracker("inst-2", handle2).await;
+
+        // Send input only to inst-1
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        // inst-1 should have data
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_some(),
+            "inst-1 should have first_input_data"
+        );
+        let prefixes_1 = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes_1, vec!["hello"]);
+
+        // inst-2 should have nothing
+        assert!(
+            state_mgr.get_first_input_at("inst-2").await.is_none(),
+            "inst-2 should NOT have first_input_data"
+        );
+        assert!(
+            state_mgr
+                .get_discovery_content_prefixes("inst-2")
+                .await
+                .is_empty(),
+            "inst-2 should have no content prefixes"
+        );
+    }
+
+    // =========================================================================
+    // Cleanup tests
+    // =========================================================================
+
+    // =========================================================================
+    // ClaudeDriver integration tests
+    // =========================================================================
+
+    use crate::claude_driver::ClaudeDriver;
+    use crate::process_driver::DriverSignal;
+
+    #[tokio::test]
+    async fn int_handle_input_through_real_actor() {
+        // Hypothesis: A1 final verification — keystroke accumulation through full pipeline.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), None, None, None);
+
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        state_mgr
+            .insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        // Send keystrokes: "hi\r"
+        for ch in ['h', 'i'] {
+            let ctx = InputContext {
+                instance_id: "test-instance".to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+        let ctx = InputContext {
+            instance_id: "test-instance".to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+
+        assert!(
+            state_mgr
+                .get_first_input_at("test-instance")
+                .await
+                .is_some(),
+            "first_input_at should be set"
+        );
+        let prefixes = state_mgr
+            .get_discovery_content_prefixes("test-instance")
+            .await;
+        assert_eq!(prefixes, vec!["hi"]);
+
+        // Session ID should still be None (no signal sent)
+        assert_eq!(handle.get_session_id().await, None);
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_premature_session_persists_across_inputs() {
+        // Hypothesis: A2 depth — session_id persists, mark_first_input permanently blocked.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        state_mgr
+            .insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        // Set session_id before any input
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-1".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(handle.get_session_id().await, Some("sess-1".into()));
+
+        // Send several keystrokes
+        for ch in ['a', 'b', 'c'] {
+            let ctx = InputContext {
+                instance_id: "test-instance".to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+
+        // Session ID should persist
+        assert_eq!(
+            handle.get_session_id().await,
+            Some("sess-1".into()),
+            "session_id should not be cleared by input"
+        );
+
+        // mark_first_input should still be blocked
+        assert!(
+            state_mgr
+                .get_first_input_at("test-instance")
+                .await
+                .is_none(),
+            "mark_first_input should remain blocked"
+        );
+
+        drop(handle);
     }
 
     #[tokio::test]

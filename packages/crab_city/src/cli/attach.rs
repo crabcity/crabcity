@@ -15,7 +15,7 @@ use crate::cli::daemon::{DaemonError, DaemonInfo};
 use crate::cli::terminal::get_terminal_size;
 use crate::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
 use crate::inference::ClaudeState;
-use crate::websocket_proxy::WsMessage;
+use crate::ws::protocol::{ClientMessage, ServerMessage};
 use virtual_terminal::walk_row;
 
 /// Default scrollback lines if config fetch fails.
@@ -254,16 +254,14 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutc
     // 1. Fetch scrollback_lines from server config (best-effort, fall back to default)
     let scrollback_lines = fetch_scrollback_lines(daemon).await;
 
-    // 2. Connect WebSocket — the server sends a screen replay as the first
-    //    Output message (see websocket_proxy::handle_proxy), so there is no
-    //    need for a separate HTTP fetch of /output.
-    let ws_url = daemon.ws_url(instance_id);
+    // 2. Connect to the multiplexed WebSocket endpoint.
+    let ws_url = daemon.mux_ws_url();
     let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
         .map_err(DaemonError::from_tungstenite)?;
 
     // 3. Session phase — internal anyhow, mapped to Other at boundary
-    attach_session(ws_stream, scrollback_lines)
+    attach_session(ws_stream, scrollback_lines, instance_id)
         .await
         .map_err(Into::into)
 }
@@ -289,6 +287,7 @@ async fn attach_session(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     scrollback_lines: usize,
+    instance_id: &str,
 ) -> Result<AttachOutcome> {
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
@@ -302,31 +301,71 @@ async fn attach_session(
     let (ws_read_tx, ws_read_rx) = std::sync::mpsc::channel::<AttachEvent>();
     let (ws_write_tx, ws_write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // Send initial resize
-    let resize_msg = WsMessage::Resize {
+    // Send Focus to subscribe to the instance
+    let focus_msg = ClientMessage::Focus {
+        instance_id: instance_id.to_string(),
+        since_uuid: None,
+    };
+    let json = serde_json::to_string(&focus_msg)?;
+    ws_write.send(tungstenite::Message::Text(json)).await?;
+
+    // Send TerminalVisible to trigger resize + OutputHistory replay
+    let visible_msg = ClientMessage::TerminalVisible {
+        instance_id: instance_id.to_string(),
         rows: pty_rows,
         cols: term_cols,
+        client_type: Some("terminal".to_string()),
     };
-    let json = serde_json::to_string(&resize_msg)?;
+    let json = serde_json::to_string(&visible_msg)?;
     ws_write.send(tungstenite::Message::Text(json)).await?;
 
     // Spawn async WS reader task
     let read_tx = ws_read_tx.clone();
+    let filter_instance_id = instance_id.to_string();
     tokio::spawn(async move {
         while let Some(msg) = ws_read.next().await {
             match msg {
                 Ok(tungstenite::Message::Text(text)) => {
-                    match serde_json::from_str::<WsMessage>(&text) {
-                        Ok(WsMessage::Output { data, .. }) => {
+                    match serde_json::from_str::<ServerMessage>(&text) {
+                        // Terminal output (live)
+                        Ok(ServerMessage::Output {
+                            instance_id: ref iid,
+                            data,
+                            ..
+                        }) if iid == &filter_instance_id => {
                             if read_tx.send(AttachEvent::Output(data)).is_err() {
                                 break;
                             }
                         }
-                        Ok(WsMessage::StateChange { state, .. }) => {
+                        // Terminal replay on focus/TerminalVisible
+                        Ok(ServerMessage::OutputHistory {
+                            instance_id: ref iid,
+                            data,
+                        }) if iid == &filter_instance_id => {
+                            if read_tx.send(AttachEvent::Output(data)).is_err() {
+                                break;
+                            }
+                        }
+                        // State change
+                        Ok(ServerMessage::StateChange {
+                            instance_id: ref iid,
+                            state,
+                            ..
+                        }) if iid == &filter_instance_id => {
                             if read_tx.send(AttachEvent::StateChange(state)).is_err() {
                                 break;
                             }
                         }
+                        // Initial state from focus acknowledgment
+                        Ok(ServerMessage::FocusAck {
+                            instance_id: ref iid,
+                            claude_state: Some(state),
+                        }) if iid == &filter_instance_id => {
+                            if read_tx.send(AttachEvent::StateChange(state)).is_err() {
+                                break;
+                            }
+                        }
+                        // Ignore everything else (InstanceList, PresenceUpdate, Chat, etc.)
                         _ => {}
                     }
                 }
@@ -363,6 +402,7 @@ async fn attach_session(
             &ws_read_rx,
             &ws_write_tx,
             scrollback_lines,
+            instance_id,
         )
     });
     let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
@@ -466,6 +506,7 @@ fn apply_action(
     state: &mut AttachState,
     ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     scrollback_capacity: usize,
+    instance_id: &str,
 ) -> Option<AttachOutcome> {
     match action {
         InputAction::Detach => {
@@ -480,8 +521,10 @@ fn apply_action(
         }
         InputAction::SendBytes(bytes) => {
             state.scroll_offset = 0;
-            let msg = WsMessage::Input {
+            let msg = ClientMessage::Input {
+                instance_id: instance_id.to_string(),
                 data: String::from_utf8_lossy(&bytes).to_string(),
+                task_id: None,
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 let _ = ws_write_tx.send(json);
@@ -496,9 +539,12 @@ fn apply_action(
             *vt_parser = vt100::Parser::new(pty_rows, cols, scrollback_capacity);
             vt_parser.process(&content);
             vt_parser.process(format!("\x1b[{};{}H", cursor.0 + 1, cursor.1 + 1).as_bytes());
-            let msg = WsMessage::Resize {
+            // Use TerminalVisible to trigger both resize AND OutputHistory replay
+            let msg = ClientMessage::TerminalVisible {
+                instance_id: instance_id.to_string(),
                 rows: pty_rows,
                 cols,
+                client_type: Some("terminal".to_string()),
             };
             if let Ok(json) = serde_json::to_string(&msg) {
                 let _ = ws_write_tx.send(json);
@@ -559,6 +605,7 @@ fn run_event_loop(
     ws_read_rx: &std::sync::mpsc::Receiver<AttachEvent>,
     ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     scrollback_capacity: usize,
+    instance_id: &str,
 ) -> Result<AttachOutcome> {
     let mut state = AttachState {
         claude_state: ClaudeState::Initializing,
@@ -595,6 +642,7 @@ fn run_event_loop(
                     &mut state,
                     ws_write_tx,
                     scrollback_capacity,
+                    instance_id,
                 )
             {
                 return Ok(outcome);
@@ -962,7 +1010,14 @@ mod tests {
         let mut parser = vt100::Parser::new(24, 80, 0);
         let mut state = make_state();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let result = apply_action(InputAction::Detach, &mut parser, &mut state, &tx, 100);
+        let result = apply_action(
+            InputAction::Detach,
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
         assert!(matches!(result, Some(AttachOutcome::Detached)));
     }
 
@@ -971,7 +1026,14 @@ mod tests {
         let mut parser = vt100::Parser::new(24, 80, 0);
         let mut state = make_state();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        apply_action(InputAction::ScrollUp(10), &mut parser, &mut state, &tx, 100);
+        apply_action(
+            InputAction::ScrollUp(10),
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
         assert_eq!(state.scroll_offset, 10);
     }
 
@@ -987,6 +1049,7 @@ mod tests {
             &mut state,
             &tx,
             100,
+            "test",
         );
         assert_eq!(state.scroll_offset, 10);
     }
@@ -1003,6 +1066,7 @@ mod tests {
             &mut state,
             &tx,
             100,
+            "test",
         );
         assert_eq!(state.scroll_offset, 0);
     }
@@ -1019,6 +1083,7 @@ mod tests {
             &mut state,
             &tx,
             100,
+            "test",
         );
         assert!(result.is_none());
         assert_eq!(state.scroll_offset, 0, "should snap to bottom on input");
@@ -1041,6 +1106,7 @@ mod tests {
             &mut state,
             &tx,
             100,
+            "test",
         );
         assert!(result.is_none());
         // Parser should be at new dims (rows - 1 for status bar)
@@ -1068,6 +1134,7 @@ mod tests {
             &mut state,
             &tx,
             100,
+            "test",
         );
         let (rows, _) = parser.screen().size();
         assert_eq!(rows, 1);
