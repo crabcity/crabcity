@@ -15,7 +15,8 @@ use crate::cli::daemon::{DaemonError, DaemonInfo};
 use crate::cli::terminal::get_terminal_size;
 use crate::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
 use crate::inference::ClaudeState;
-use crate::websocket_proxy::WsMessage;
+use crate::ws::protocol::{ClientMessage, ServerMessage};
+use virtual_terminal::walk_row;
 
 /// Default scrollback lines if config fetch fails.
 const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -95,38 +96,29 @@ impl Widget for PtyWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let screen = self.screen;
         for row in 0..area.height {
-            for col in 0..area.width {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                let contents = cell.contents();
-                let symbol = if contents.is_empty() { " " } else { contents };
-
+            for cell in walk_row(screen, row, area.width) {
                 let mut style = Style::default()
-                    .fg(vt100_color_to_ratatui(cell.fgcolor()))
-                    .bg(vt100_color_to_ratatui(cell.bgcolor()));
+                    .fg(vt100_color_to_ratatui(cell.fg))
+                    .bg(vt100_color_to_ratatui(cell.bg));
                 let mut modifiers = Modifier::empty();
-                if cell.bold() {
+                if cell.bold {
                     modifiers |= Modifier::BOLD;
                 }
-                if cell.italic() {
+                if cell.italic {
                     modifiers |= Modifier::ITALIC;
                 }
-                if cell.underline() {
+                if cell.underline {
                     modifiers |= Modifier::UNDERLINED;
                 }
-                if cell.inverse() {
+                if cell.inverse {
                     modifiers |= Modifier::REVERSED;
                 }
                 style = style.add_modifier(modifiers);
 
-                let x = area.x + col;
+                let x = area.x + cell.col;
                 let y = area.y + row;
                 if x < area.right() && y < area.bottom() {
-                    buf[(x, y)].set_symbol(symbol).set_style(style);
+                    buf[(x, y)].set_symbol(cell.contents).set_style(style);
                 }
             }
         }
@@ -262,16 +254,14 @@ pub async fn attach(daemon: &DaemonInfo, instance_id: &str) -> Result<AttachOutc
     // 1. Fetch scrollback_lines from server config (best-effort, fall back to default)
     let scrollback_lines = fetch_scrollback_lines(daemon).await;
 
-    // 2. Connect WebSocket — the server sends a screen replay as the first
-    //    Output message (see websocket_proxy::handle_proxy), so there is no
-    //    need for a separate HTTP fetch of /output.
-    let ws_url = daemon.ws_url(instance_id);
+    // 2. Connect to the multiplexed WebSocket endpoint.
+    let ws_url = daemon.mux_ws_url();
     let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
         .await
         .map_err(DaemonError::from_tungstenite)?;
 
     // 3. Session phase — internal anyhow, mapped to Other at boundary
-    attach_session(ws_stream, scrollback_lines)
+    attach_session(ws_stream, scrollback_lines, instance_id)
         .await
         .map_err(Into::into)
 }
@@ -297,6 +287,7 @@ async fn attach_session(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     scrollback_lines: usize,
+    instance_id: &str,
 ) -> Result<AttachOutcome> {
     let (mut ws_write, mut ws_read) = ws_stream.split();
 
@@ -310,31 +301,71 @@ async fn attach_session(
     let (ws_read_tx, ws_read_rx) = std::sync::mpsc::channel::<AttachEvent>();
     let (ws_write_tx, ws_write_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // Send initial resize
-    let resize_msg = WsMessage::Resize {
+    // Send Focus to subscribe to the instance
+    let focus_msg = ClientMessage::Focus {
+        instance_id: instance_id.to_string(),
+        since_uuid: None,
+    };
+    let json = serde_json::to_string(&focus_msg)?;
+    ws_write.send(tungstenite::Message::Text(json)).await?;
+
+    // Send TerminalVisible to trigger resize + OutputHistory replay
+    let visible_msg = ClientMessage::TerminalVisible {
+        instance_id: instance_id.to_string(),
         rows: pty_rows,
         cols: term_cols,
+        client_type: Some("terminal".to_string()),
     };
-    let json = serde_json::to_string(&resize_msg)?;
+    let json = serde_json::to_string(&visible_msg)?;
     ws_write.send(tungstenite::Message::Text(json)).await?;
 
     // Spawn async WS reader task
     let read_tx = ws_read_tx.clone();
+    let filter_instance_id = instance_id.to_string();
     tokio::spawn(async move {
         while let Some(msg) = ws_read.next().await {
             match msg {
                 Ok(tungstenite::Message::Text(text)) => {
-                    match serde_json::from_str::<WsMessage>(&text) {
-                        Ok(WsMessage::Output { data, .. }) => {
+                    match serde_json::from_str::<ServerMessage>(&text) {
+                        // Terminal output (live)
+                        Ok(ServerMessage::Output {
+                            instance_id: ref iid,
+                            data,
+                            ..
+                        }) if iid == &filter_instance_id => {
                             if read_tx.send(AttachEvent::Output(data)).is_err() {
                                 break;
                             }
                         }
-                        Ok(WsMessage::StateChange { state, .. }) => {
+                        // Terminal replay on focus/TerminalVisible
+                        Ok(ServerMessage::OutputHistory {
+                            instance_id: ref iid,
+                            data,
+                        }) if iid == &filter_instance_id => {
+                            if read_tx.send(AttachEvent::Output(data)).is_err() {
+                                break;
+                            }
+                        }
+                        // State change
+                        Ok(ServerMessage::StateChange {
+                            instance_id: ref iid,
+                            state,
+                            ..
+                        }) if iid == &filter_instance_id => {
                             if read_tx.send(AttachEvent::StateChange(state)).is_err() {
                                 break;
                             }
                         }
+                        // Initial state from focus acknowledgment
+                        Ok(ServerMessage::FocusAck {
+                            instance_id: ref iid,
+                            claude_state: Some(state),
+                        }) if iid == &filter_instance_id => {
+                            if read_tx.send(AttachEvent::StateChange(state)).is_err() {
+                                break;
+                            }
+                        }
+                        // Ignore everything else (InstanceList, PresenceUpdate, Chat, etc.)
                         _ => {}
                     }
                 }
@@ -371,6 +402,7 @@ async fn attach_session(
             &ws_read_rx,
             &ws_write_tx,
             scrollback_lines,
+            instance_id,
         )
     });
     let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
@@ -379,170 +411,243 @@ async fn attach_session(
     outcome
 }
 
-/// Blocking event loop: drain WS events, render, handle input.
+// =============================================================================
+// Event loop types
+// =============================================================================
+
+/// Mutable state for a TUI attach session.
+struct AttachState {
+    claude_state: ClaudeState,
+    scroll_offset: usize,
+    badge_until: Instant,
+    attach_time: Instant,
+}
+
+/// What the input handler decided — pure classification, no side effects.
+#[derive(Debug, PartialEq)]
+enum InputAction {
+    Detach,
+    ScrollUp(usize),
+    ScrollDown(usize),
+    SendBytes(Vec<u8>),
+    Resize { rows: u16, cols: u16 },
+}
+
+// =============================================================================
+// Event loop phases
+// =============================================================================
+
+/// Drain all pending WS events into the parser and state.
+/// Returns `true` if the connection closed.
+fn drain_ws(
+    ws_read_rx: &std::sync::mpsc::Receiver<AttachEvent>,
+    vt_parser: &mut vt100::Parser,
+    state: &mut AttachState,
+) -> bool {
+    while let Ok(ev) = ws_read_rx.try_recv() {
+        match ev {
+            AttachEvent::Output(data) => vt_parser.process(data.as_bytes()),
+            AttachEvent::StateChange(new_state) => state.claude_state = new_state,
+            AttachEvent::Closed => return true,
+        }
+    }
+    false
+}
+
+/// Classify a crossterm event into an InputAction.
+/// Pure function — no state mutation, no I/O.
+fn classify_input(ev: &Event, page_size: usize) -> Option<InputAction> {
+    match ev {
+        // Shift+scroll keys
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            match key.code {
+                KeyCode::PageUp => Some(InputAction::ScrollUp(page_size)),
+                KeyCode::PageDown => Some(InputAction::ScrollDown(page_size)),
+                KeyCode::Up => Some(InputAction::ScrollUp(1)),
+                KeyCode::Down => Some(InputAction::ScrollDown(1)),
+                _ => {
+                    // Any other Shift+key: forward as input (apply_action snaps to bottom)
+                    key_to_bytes(key).map(InputAction::SendBytes)
+                }
+            }
+        }
+
+        // Mouse wheel
+        Event::Mouse(mouse) => match mouse.kind {
+            MouseEventKind::ScrollUp => Some(InputAction::ScrollUp(MOUSE_SCROLL_LINES)),
+            MouseEventKind::ScrollDown => Some(InputAction::ScrollDown(MOUSE_SCROLL_LINES)),
+            _ => None,
+        },
+
+        // Regular key presses
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            if is_detach_key(key) {
+                Some(InputAction::Detach)
+            } else {
+                key_to_bytes(key).map(InputAction::SendBytes)
+            }
+        }
+
+        Event::Resize(cols, rows) => Some(InputAction::Resize {
+            rows: *rows,
+            cols: *cols,
+        }),
+
+        _ => None,
+    }
+}
+
+/// Apply a classified action to session state. Returns `Some(outcome)` to exit the loop.
+fn apply_action(
+    action: InputAction,
+    vt_parser: &mut vt100::Parser,
+    state: &mut AttachState,
+    ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    scrollback_capacity: usize,
+    instance_id: &str,
+) -> Option<AttachOutcome> {
+    match action {
+        InputAction::Detach => {
+            eprintln!("\r\n[crab: detached]");
+            return Some(AttachOutcome::Detached);
+        }
+        InputAction::ScrollUp(n) => {
+            state.scroll_offset = state.scroll_offset.saturating_add(n);
+        }
+        InputAction::ScrollDown(n) => {
+            state.scroll_offset = state.scroll_offset.saturating_sub(n);
+        }
+        InputAction::SendBytes(bytes) => {
+            state.scroll_offset = 0;
+            let msg = ClientMessage::Input {
+                instance_id: instance_id.to_string(),
+                data: String::from_utf8_lossy(&bytes).to_string(),
+                task_id: None,
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = ws_write_tx.send(json);
+            }
+        }
+        InputAction::Resize { rows, cols } => {
+            let pty_rows = rows.saturating_sub(1).max(1);
+            // Save visible screen, recreate parser at new dims (clears
+            // scrollback — SIGWINCH redraw will rebuild it correctly).
+            let content = vt_parser.screen().contents_formatted();
+            let cursor = vt_parser.screen().cursor_position();
+            *vt_parser = vt100::Parser::new(pty_rows, cols, scrollback_capacity);
+            vt_parser.process(&content);
+            vt_parser.process(format!("\x1b[{};{}H", cursor.0 + 1, cursor.1 + 1).as_bytes());
+            // Use TerminalVisible to trigger both resize AND OutputHistory replay
+            let msg = ClientMessage::TerminalVisible {
+                instance_id: instance_id.to_string(),
+                rows: pty_rows,
+                cols,
+                client_type: Some("terminal".to_string()),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = ws_write_tx.send(json);
+            }
+        }
+    }
+    None
+}
+
+/// Render the current frame: PTY content, status bar, optional badge.
+fn render_frame(
+    terminal: &mut ratatui::DefaultTerminal,
+    vt_parser: &vt100::Parser,
+    state: &AttachState,
+) -> Result<()> {
+    let screen = vt_parser.screen();
+    let bar_text = if state.scroll_offset > 0 {
+        format!(
+            " SCROLL \u{2502} {} lines up \u{2502} Shift-PgDn or scroll to return ",
+            state.scroll_offset
+        )
+    } else {
+        status_bar_text(&state.claude_state, state.attach_time)
+    };
+    let show_badge = Instant::now() < state.badge_until;
+    let cursor_pos = screen.cursor_position();
+    let hide_cursor = screen.hide_cursor();
+    let at_bottom = state.scroll_offset == 0;
+
+    terminal.draw(|frame| {
+        let [content, status] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+
+        frame.render_widget(PtyWidget { screen }, content);
+        frame.render_widget(StatusBarWidget { text: &bar_text }, status);
+
+        if show_badge && at_bottom {
+            const OVERLAY_TEXT: &str = "attached -- Ctrl-] to detach";
+            frame.render_widget(OverlayBadge { text: OVERLAY_TEXT }, content);
+        }
+
+        if at_bottom && !hide_cursor {
+            let (row, col) = cursor_pos;
+            frame.set_cursor_position((content.x + col, content.y + row));
+        }
+    })?;
+    Ok(())
+}
+
+// =============================================================================
+// Main event loop
+// =============================================================================
+
+/// Blocking event loop: drain → clamp scroll → render → poll → classify → apply.
 fn run_event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     vt_parser: &mut vt100::Parser,
     ws_read_rx: &std::sync::mpsc::Receiver<AttachEvent>,
     ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     scrollback_capacity: usize,
+    instance_id: &str,
 ) -> Result<AttachOutcome> {
-    let mut claude_state = ClaudeState::Initializing;
-    let attach_time = Instant::now();
-    let badge_until = Instant::now() + Duration::from_secs(5);
-    const OVERLAY_TEXT: &str = "attached -- Ctrl-] to detach";
-
-    // Scrollback: 0 = live screen (bottom), >0 = scrolled into history.
-    let mut scroll_offset: usize = 0;
+    let mut state = AttachState {
+        claude_state: ClaudeState::Initializing,
+        scroll_offset: 0,
+        badge_until: Instant::now() + Duration::from_secs(5),
+        attach_time: Instant::now(),
+    };
 
     loop {
-        // Drain WS messages
-        let mut ws_closed = false;
-        while let Ok(ev) = ws_read_rx.try_recv() {
-            match ev {
-                AttachEvent::Output(data) => vt_parser.process(data.as_bytes()),
-                AttachEvent::StateChange(state) => claude_state = state,
-                AttachEvent::Closed => {
-                    ws_closed = true;
-                }
-            }
-        }
-        if ws_closed {
+        // 1. Drain all pending WS messages
+        if drain_ws(ws_read_rx, vt_parser, &mut state) {
             eprintln!("\r\n[crab: exited]");
             return Ok(AttachOutcome::Exited);
         }
 
-        // Apply scrollback viewport — vt100 clamps to actual depth.
-        vt_parser.screen_mut().set_scrollback(scroll_offset);
-        scroll_offset = vt_parser.screen().scrollback();
+        // 2. Clamp scroll offset to actual scrollback depth
+        vt_parser.screen_mut().set_scrollback(state.scroll_offset);
+        state.scroll_offset = vt_parser.screen().scrollback();
 
-        // Render
-        let screen = vt_parser.screen();
-        let bar_text = if scroll_offset > 0 {
-            format!(
-                " SCROLL \u{2502} {} lines up \u{2502} Shift-PgDn or scroll to return ",
-                scroll_offset
-            )
-        } else {
-            status_bar_text(&claude_state, attach_time)
-        };
-        let show_badge = Instant::now() < badge_until;
-        let cursor_pos = screen.cursor_position();
-        let hide_cursor = screen.hide_cursor();
-        let at_bottom = scroll_offset == 0;
+        // 3. Render
+        render_frame(terminal, vt_parser, &state)?;
 
-        terminal.draw(|frame| {
-            let [content, status] =
-                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-
-            frame.render_widget(PtyWidget { screen }, content);
-            frame.render_widget(StatusBarWidget { text: &bar_text }, status);
-
-            if show_badge && at_bottom {
-                frame.render_widget(OverlayBadge { text: OVERLAY_TEXT }, content);
-            }
-
-            // Only show cursor when at live screen position
-            if at_bottom && !hide_cursor {
-                let (row, col) = cursor_pos;
-                frame.set_cursor_position((content.x + col, content.y + row));
-            }
-        })?;
-
-        // Input events
+        // 4. Poll, classify, apply
         if event::poll(Duration::from_millis(16))? {
             let ev = event::read()?;
-
-            // Compute content area height for page scrolling
             let page_size = terminal
                 .size()
                 .map_or(23, |s| s.height.saturating_sub(1).max(1) as usize);
 
-            match ev {
-                // Scroll keys: Shift+PageUp/Down, Shift+Up/Down
-                Event::Key(key)
-                    if key.kind == KeyEventKind::Press
-                        && key.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    match key.code {
-                        KeyCode::PageUp => {
-                            scroll_offset = scroll_offset.saturating_add(page_size);
-                        }
-                        KeyCode::PageDown => {
-                            scroll_offset = scroll_offset.saturating_sub(page_size);
-                        }
-                        KeyCode::Up => {
-                            scroll_offset = scroll_offset.saturating_add(1);
-                        }
-                        KeyCode::Down => {
-                            scroll_offset = scroll_offset.saturating_sub(1);
-                        }
-                        _ => {
-                            // Any other Shift+key: snap to bottom and forward
-                            scroll_offset = 0;
-                            if let Some(bytes) = key_to_bytes(&key) {
-                                send_input(ws_write_tx, &bytes);
-                            }
-                        }
-                    }
-                }
-
-                // Mouse wheel
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        scroll_offset = scroll_offset.saturating_add(MOUSE_SCROLL_LINES);
-                    }
-                    MouseEventKind::ScrollDown => {
-                        scroll_offset = scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
-                    }
-                    _ => {}
-                },
-
-                // Regular key presses
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if is_detach_key(&key) {
-                        eprintln!("\r\n[crab: detached]");
-                        return Ok(AttachOutcome::Detached);
-                    }
-                    // Any non-scroll input snaps back to live screen
-                    scroll_offset = 0;
-                    if let Some(bytes) = key_to_bytes(&key) {
-                        send_input(ws_write_tx, &bytes);
-                    }
-                }
-
-                Event::Resize(cols, rows) => {
-                    let pty_rows = rows.saturating_sub(1).max(1);
-                    // Save visible screen, recreate parser at new dims (clears
-                    // scrollback — SIGWINCH redraw will rebuild it correctly).
-                    let content = vt_parser.screen().contents_formatted();
-                    let cursor = vt_parser.screen().cursor_position();
-                    *vt_parser = vt100::Parser::new(pty_rows, cols, scrollback_capacity);
-                    vt_parser.process(&content);
-                    vt_parser
-                        .process(format!("\x1b[{};{}H", cursor.0 + 1, cursor.1 + 1).as_bytes());
-                    let msg = WsMessage::Resize {
-                        rows: pty_rows,
-                        cols,
-                    };
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        let _ = ws_write_tx.send(json);
-                    }
-                }
-
-                _ => {}
+            if let Some(action) = classify_input(&ev, page_size)
+                && let Some(outcome) = apply_action(
+                    action,
+                    vt_parser,
+                    &mut state,
+                    ws_write_tx,
+                    scrollback_capacity,
+                    instance_id,
+                )
+            {
+                return Ok(outcome);
             }
         }
-    }
-}
-
-/// Send input bytes to the PTY via the WS writer channel.
-fn send_input(ws_write_tx: &tokio::sync::mpsc::UnboundedSender<String>, bytes: &[u8]) {
-    let msg = WsMessage::Input {
-        data: String::from_utf8_lossy(bytes).to_string(),
-    };
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = ws_write_tx.send(json);
     }
 }
 
@@ -763,5 +868,336 @@ mod tests {
                 state
             );
         }
+    }
+
+    // ── classify_input ──────────────────────────────────────────────
+
+    fn key_press(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new_with_kind(
+            code,
+            modifiers,
+            KeyEventKind::Press,
+        ))
+    }
+
+    fn mouse_event(kind: MouseEventKind) -> Event {
+        use ratatui::crossterm::event::MouseEvent;
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn classify_shift_page_up_scrolls_up_by_page() {
+        let ev = key_press(KeyCode::PageUp, KeyModifiers::SHIFT);
+        assert_eq!(classify_input(&ev, 24), Some(InputAction::ScrollUp(24)));
+    }
+
+    #[test]
+    fn classify_shift_page_down_scrolls_down_by_page() {
+        let ev = key_press(KeyCode::PageDown, KeyModifiers::SHIFT);
+        assert_eq!(classify_input(&ev, 24), Some(InputAction::ScrollDown(24)));
+    }
+
+    #[test]
+    fn classify_shift_up_scrolls_up_by_one() {
+        let ev = key_press(KeyCode::Up, KeyModifiers::SHIFT);
+        assert_eq!(classify_input(&ev, 24), Some(InputAction::ScrollUp(1)));
+    }
+
+    #[test]
+    fn classify_shift_down_scrolls_down_by_one() {
+        let ev = key_press(KeyCode::Down, KeyModifiers::SHIFT);
+        assert_eq!(classify_input(&ev, 24), Some(InputAction::ScrollDown(1)));
+    }
+
+    #[test]
+    fn classify_shift_other_key_sends_bytes() {
+        // Shift+A should forward as input, not scroll
+        let ev = key_press(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(
+            classify_input(&ev, 24),
+            Some(InputAction::SendBytes(b"A".to_vec()))
+        );
+    }
+
+    #[test]
+    fn classify_mouse_scroll_up() {
+        let ev = mouse_event(MouseEventKind::ScrollUp);
+        assert_eq!(
+            classify_input(&ev, 24),
+            Some(InputAction::ScrollUp(MOUSE_SCROLL_LINES))
+        );
+    }
+
+    #[test]
+    fn classify_mouse_scroll_down() {
+        let ev = mouse_event(MouseEventKind::ScrollDown);
+        assert_eq!(
+            classify_input(&ev, 24),
+            Some(InputAction::ScrollDown(MOUSE_SCROLL_LINES))
+        );
+    }
+
+    #[test]
+    fn classify_mouse_move_ignored() {
+        let ev = mouse_event(MouseEventKind::Moved);
+        assert_eq!(classify_input(&ev, 24), None);
+    }
+
+    #[test]
+    fn classify_detach_key() {
+        // Crossterm represents Ctrl-] as Char('5') + CONTROL
+        let ev = key_press(KeyCode::Char('5'), KeyModifiers::CONTROL);
+        assert_eq!(classify_input(&ev, 24), Some(InputAction::Detach));
+    }
+
+    #[test]
+    fn classify_regular_char_sends_bytes() {
+        let ev = key_press(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(
+            classify_input(&ev, 24),
+            Some(InputAction::SendBytes(vec![0x61]))
+        );
+    }
+
+    #[test]
+    fn classify_resize_event() {
+        let ev = Event::Resize(120, 40);
+        assert_eq!(
+            classify_input(&ev, 24),
+            Some(InputAction::Resize {
+                rows: 40,
+                cols: 120
+            })
+        );
+    }
+
+    #[test]
+    fn classify_key_release_ignored() {
+        let ev = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(classify_input(&ev, 24), None);
+    }
+
+    #[test]
+    fn classify_page_size_propagates() {
+        // Page size should be exactly what's passed in
+        let ev = key_press(KeyCode::PageUp, KeyModifiers::SHIFT);
+        assert_eq!(classify_input(&ev, 53), Some(InputAction::ScrollUp(53)));
+        assert_eq!(classify_input(&ev, 1), Some(InputAction::ScrollUp(1)));
+    }
+
+    // ── apply_action ────────────────────────────────────────────────
+
+    fn make_state() -> AttachState {
+        AttachState {
+            claude_state: ClaudeState::Idle,
+            scroll_offset: 0,
+            badge_until: Instant::now(),
+            attach_time: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn apply_detach_returns_detached() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = apply_action(
+            InputAction::Detach,
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert!(matches!(result, Some(AttachOutcome::Detached)));
+    }
+
+    #[test]
+    fn apply_scroll_up_increases_offset() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        apply_action(
+            InputAction::ScrollUp(10),
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert_eq!(state.scroll_offset, 10);
+    }
+
+    #[test]
+    fn apply_scroll_down_decreases_offset() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        state.scroll_offset = 15;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        apply_action(
+            InputAction::ScrollDown(5),
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert_eq!(state.scroll_offset, 10);
+    }
+
+    #[test]
+    fn apply_scroll_down_saturates_at_zero() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        state.scroll_offset = 3;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        apply_action(
+            InputAction::ScrollDown(100),
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn apply_send_bytes_snaps_to_bottom_and_sends() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        state.scroll_offset = 42;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = apply_action(
+            InputAction::SendBytes(b"hello".to_vec()),
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert!(result.is_none());
+        assert_eq!(state.scroll_offset, 0, "should snap to bottom on input");
+        let msg = rx.try_recv().expect("should have sent a message");
+        assert!(msg.contains("hello"), "message should contain input data");
+    }
+
+    #[test]
+    fn apply_resize_recreates_parser_and_sends_resize() {
+        let mut parser = vt100::Parser::new(24, 80, 100);
+        parser.process(b"visible content");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = make_state();
+        let result = apply_action(
+            InputAction::Resize {
+                rows: 40,
+                cols: 120,
+            },
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        assert!(result.is_none());
+        // Parser should be at new dims (rows - 1 for status bar)
+        let (rows, cols) = parser.screen().size();
+        assert_eq!(rows, 39);
+        assert_eq!(cols, 120);
+        // Content should be preserved
+        let vis = virtual_terminal::read_row_text(parser.screen(), 0, cols);
+        assert!(vis.contains("visible content"));
+        // Resize message should have been sent
+        let msg = rx.try_recv().expect("should have sent resize message");
+        assert!(msg.contains("\"rows\":39"));
+        assert!(msg.contains("\"cols\":120"));
+    }
+
+    #[test]
+    fn apply_resize_minimum_one_row() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = make_state();
+        // rows=1 means pty_rows = max(1-1, 1) = 1
+        apply_action(
+            InputAction::Resize { rows: 1, cols: 80 },
+            &mut parser,
+            &mut state,
+            &tx,
+            100,
+            "test",
+        );
+        let (rows, _) = parser.screen().size();
+        assert_eq!(rows, 1);
+    }
+
+    // ── drain_ws ────────────────────────────────────────────────────
+
+    #[test]
+    fn drain_ws_processes_output() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        tx.send(AttachEvent::Output("Hello".to_string())).unwrap();
+        let closed = drain_ws(&rx, &mut parser, &mut state);
+        assert!(!closed);
+        let vis = virtual_terminal::read_row_text(parser.screen(), 0, 80);
+        assert!(vis.contains("Hello"));
+    }
+
+    #[test]
+    fn drain_ws_updates_claude_state() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        assert!(matches!(state.claude_state, ClaudeState::Idle));
+        tx.send(AttachEvent::StateChange(ClaudeState::Thinking))
+            .unwrap();
+        let closed = drain_ws(&rx, &mut parser, &mut state);
+        assert!(!closed);
+        assert!(matches!(state.claude_state, ClaudeState::Thinking));
+    }
+
+    #[test]
+    fn drain_ws_returns_true_on_close() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        tx.send(AttachEvent::Closed).unwrap();
+        assert!(drain_ws(&rx, &mut parser, &mut state));
+    }
+
+    #[test]
+    fn drain_ws_processes_all_pending() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        tx.send(AttachEvent::Output("A".to_string())).unwrap();
+        tx.send(AttachEvent::Output("B".to_string())).unwrap();
+        tx.send(AttachEvent::StateChange(ClaudeState::Responding))
+            .unwrap();
+        let closed = drain_ws(&rx, &mut parser, &mut state);
+        assert!(!closed);
+        let vis = virtual_terminal::read_row_text(parser.screen(), 0, 80);
+        assert!(vis.contains("AB"));
+        assert!(matches!(state.claude_state, ClaudeState::Responding));
+    }
+
+    #[test]
+    fn drain_ws_empty_channel_is_noop() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        let mut state = make_state();
+        let closed = drain_ws(&rx, &mut parser, &mut state);
+        assert!(!closed);
     }
 }

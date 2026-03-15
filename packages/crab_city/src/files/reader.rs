@@ -117,15 +117,14 @@ mod tests {
         let (state, tmp) = crate::test_helpers::test_app_state().await;
 
         // Create a real instance pointing to our temp dir
-        state
-            .instance_manager
-            .create(
-                Some("reader-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("reader-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let router = Router::new()
             .route(
@@ -177,15 +176,14 @@ mod tests {
         std::fs::write(&file_path, "Hello, world!").unwrap();
 
         // Create instance
-        let instance = state
-            .instance_manager
-            .create(
-                Some("read-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("read-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route(
@@ -218,15 +216,14 @@ mod tests {
     #[tokio::test]
     async fn test_read_file_not_found() {
         let (state, tmp) = crate::test_helpers::test_app_state().await;
-        let instance = state
-            .instance_manager
-            .create(
-                Some("notfound-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("notfound-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route(
@@ -256,15 +253,14 @@ mod tests {
         // Create a subdirectory
         std::fs::create_dir(tmp.path().join("subdir")).unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("dir-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("dir-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route(
@@ -295,15 +291,14 @@ mod tests {
         let large_content = "x".repeat(1024 * 1024 + 1);
         std::fs::write(tmp.path().join("large.txt"), &large_content).unwrap();
 
-        let instance = state
-            .instance_manager
-            .create(
-                Some("large-test".to_string()),
-                Some(tmp.path().to_string_lossy().to_string()),
-                Some("echo hello".to_string()),
-            )
-            .await
-            .unwrap();
+        let instance = crate::test_helpers::create_test_instance(
+            &state.instance_manager,
+            Some("large-test".to_string()),
+            Some(tmp.path().to_string_lossy().to_string()),
+            Some("echo hello".to_string()),
+        )
+        .await
+        .unwrap();
 
         let app = Router::new()
             .route(

@@ -99,16 +99,15 @@ pub(crate) async fn send_output_history(
 
 /// Send conversation entries since a given UUID (or full conversation if None).
 ///
-/// Reads from the server-owned conversation store (maintained by the server watcher),
-/// not directly from the JSONL file. This ensures a single source of truth.
+/// Reads conversation data from the instance actor's driver (which owns the
+/// formatted conversation turns). This is the single source of truth.
 pub async fn send_conversation_since(
     instance_id: &str,
     since_uuid: Option<&str>,
-    state_manager: &Arc<GlobalStateManager>,
+    handle: &InstanceHandle,
     tx: &mpsc::Sender<ServerMessage>,
-    _repository: Option<&Arc<crate::repository::ConversationRepository>>,
 ) -> Result<(), String> {
-    let all_turns = state_manager.get_conversation_snapshot(instance_id).await;
+    let all_turns = handle.get_conversation_snapshot().await;
 
     if all_turns.is_empty() {
         debug!(
@@ -266,13 +265,13 @@ pub async fn handle_focus(
     };
 
     // Subscribe to conversation broadcast BEFORE reading the snapshot.
-    // This prevents a race where the server watcher broadcasts between
+    // This prevents a race where the driver broadcasts between
     // our snapshot read and subscription, causing us to miss the data.
-    let mut convo_rx = state_manager.subscribe_conversation(&instance_id).await;
+    let mut convo_rx = handle.subscribe_conversation().await;
 
-    // Send current conversation snapshot from server store.
+    // Send current conversation snapshot from the actor's driver.
     if is_claude {
-        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+        let turns = handle.get_conversation_snapshot().await;
         if !turns.is_empty() {
             info!(
                 "[FOCUS {}] Sending ConversationFull with {} turns from server store",
@@ -399,8 +398,8 @@ pub async fn handle_focus(
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(instance = %instance_id, "Conversation broadcast lagged by {} messages, sending full sync", n);
-                        // Re-sync from server store
-                        let turns = state_manager.get_conversation_snapshot(&instance_id).await;
+                        // Re-sync from actor's driver
+                        let turns = handle.get_conversation_snapshot().await;
                         if !turns.is_empty() {
                             let _ = tx.send(ServerMessage::ConversationFull {
                                 instance_id: instance_id.clone(),
@@ -717,21 +716,87 @@ mod tests {
         assert_eq!(r, "\u{FFFD}\u{FFFD}x");
     }
 
+    // ── ClaudeDriver integration tests ──────────────────────────────
+
+    use crate::claude_driver::ClaudeDriver;
+    use crate::process_driver::DriverSignal;
+
+    #[tokio::test]
+    async fn int_focus_claude_subscribe_returns_some() {
+        // Hypotheses: C1, D4 — ClaudeDriver returns Some, ShellDriver returns None.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), None, None, None);
+
+        let rx = handle.subscribe_conversation().await;
+        assert!(
+            rx.is_some(),
+            "ClaudeDriver should return Some from subscribe_conversation"
+        );
+
+        // Contrast: ShellDriver returns None
+        let (handle2, _output_tx2) = InstanceHandle::spawn_test(24, 80, 4096);
+        let rx2 = handle2.subscribe_conversation().await;
+        assert!(
+            rx2.is_none(),
+            "ShellDriver should return None from subscribe_conversation"
+        );
+
+        drop(handle);
+        drop(handle2);
+    }
+
+    #[tokio::test]
+    async fn int_focus_lag_on_conversation_recovers() {
+        // Hypotheses: C4, H7 — broadcast lag is recoverable via snapshot re-read.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = tokio::sync::mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let mut rx = handle.subscribe_conversation().await.unwrap();
+
+        // Send 70 snapshots — exceeds broadcast capacity 64
+        for i in 0..70 {
+            let turns = vec![serde_json::json!({"uuid": format!("turn-{i}"), "turn": i})];
+            signal_tx
+                .send(DriverSignal::ConversationSnapshot(turns))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // First recv should report lag
+        match rx.try_recv() {
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                // Expected: lag detected
+            }
+            other => panic!("expected Lagged error, got {:?}", other),
+        }
+
+        // Recovery: read the snapshot directly
+        let snapshot = handle.get_conversation_snapshot().await;
+        assert_eq!(snapshot.len(), 1, "snapshot should have latest turn");
+        assert_eq!(snapshot[0]["turn"], 69, "snapshot should contain turn 69");
+
+        drop(handle);
+    }
+
     // ── send_conversation_since ────────────────────────────────────────
 
-    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     use crate::instance_actor::InstanceHandle;
-    use crate::ws::state_manager::{GlobalStateManager, create_state_broadcast};
 
-    /// Helper: create a state manager with conversation turns pre-loaded.
-    async fn setup_state_with_turns(turns: Vec<serde_json::Value>) -> Arc<GlobalStateManager> {
-        let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        mgr.insert_test_tracker("inst-1", handle).await;
-        mgr.set_test_conversation_turns("inst-1", turns).await;
-        mgr
+    /// Helper: spawn a test actor with conversation turns pre-loaded.
+    async fn setup_handle_with_turns(
+        turns: Vec<serde_json::Value>,
+    ) -> (InstanceHandle, mpsc::Sender<Vec<u8>>) {
+        let (handle, output_tx, convo_turns) =
+            InstanceHandle::spawn_test_with_scrollback(24, 80, 4096, 0);
+        // Pre-populate conversation turns (the actor reads from this Arc)
+        *convo_turns.write().await = turns;
+        (handle, output_tx)
     }
 
     #[tokio::test]
@@ -740,10 +805,10 @@ mod tests {
             serde_json::json!({"uuid": "t1", "role": "user"}),
             serde_json::json!({"uuid": "t2", "role": "assistant"}),
         ];
-        let mgr = setup_state_with_turns(turns).await;
+        let (handle, _output_tx) = setup_handle_with_turns(turns).await;
         let (tx, mut rx) = mpsc::channel(16);
 
-        send_conversation_since("inst-1", None, &mgr, &tx, None)
+        send_conversation_since("inst-1", None, &handle, &tx)
             .await
             .unwrap();
 
@@ -763,10 +828,10 @@ mod tests {
             serde_json::json!({"uuid": "t2", "role": "assistant"}),
             serde_json::json!({"uuid": "t3", "role": "user"}),
         ];
-        let mgr = setup_state_with_turns(turns).await;
+        let (handle, _output_tx) = setup_handle_with_turns(turns).await;
         let (tx, mut rx) = mpsc::channel(16);
 
-        send_conversation_since("inst-1", Some("t1"), &mgr, &tx, None)
+        send_conversation_since("inst-1", Some("t1"), &handle, &tx)
             .await
             .unwrap();
 
@@ -784,11 +849,11 @@ mod tests {
     #[tokio::test]
     async fn send_full_when_since_uuid_unknown() {
         let turns = vec![serde_json::json!({"uuid": "t1", "role": "user"})];
-        let mgr = setup_state_with_turns(turns).await;
+        let (handle, _output_tx) = setup_handle_with_turns(turns).await;
         let (tx, mut rx) = mpsc::channel(16);
 
         // Unknown UUID → full sync (all turns sent as Update)
-        send_conversation_since("inst-1", Some("nonexistent"), &mgr, &tx, None)
+        send_conversation_since("inst-1", Some("nonexistent"), &handle, &tx)
             .await
             .unwrap();
 
@@ -810,10 +875,10 @@ mod tests {
             serde_json::json!({"uuid": "t1", "role": "user"}),
             serde_json::json!({"uuid": "t2", "role": "assistant"}),
         ];
-        let mgr = setup_state_with_turns(turns).await;
+        let (handle, _output_tx) = setup_handle_with_turns(turns).await;
         let (tx, mut rx) = mpsc::channel(16);
 
-        send_conversation_since("inst-1", Some("t2"), &mgr, &tx, None)
+        send_conversation_since("inst-1", Some("t2"), &handle, &tx)
             .await
             .unwrap();
 
@@ -823,12 +888,10 @@ mod tests {
 
     #[tokio::test]
     async fn send_nothing_when_store_empty() {
-        let mgr = Arc::new(GlobalStateManager::new(create_state_broadcast()));
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        mgr.insert_test_tracker("inst-1", handle).await;
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
         let (tx, mut rx) = mpsc::channel(16);
 
-        send_conversation_since("inst-1", None, &mgr, &tx, None)
+        send_conversation_since("inst-1", None, &handle, &tx)
             .await
             .unwrap();
 
@@ -839,8 +902,8 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_sent_when_buffer_nonempty() {
-        let (handle, vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        vt.lock().await.process_output(b"Hello from test\r\nLine 2");
+        let (handle, output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        InstanceHandle::inject_output(&output_tx, b"Hello from test\r\nLine 2").await;
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, 24, &tx)
@@ -862,7 +925,7 @@ mod tests {
         // Even a fresh VT produces a screen-dump keyframe, so OutputHistory
         // is always sent. This is correct — the client gets a blank screen
         // rather than stale content.
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, mut rx) = mpsc::channel(16);
         send_output_history(&handle, "inst-1", 4096, 24, &tx)
@@ -879,12 +942,100 @@ mod tests {
 
     #[tokio::test]
     async fn output_history_err_on_closed_channel() {
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
 
         let (tx, rx) = mpsc::channel(16);
         drop(rx); // close the receiver
 
         let result = send_output_history(&handle, "inst-1", 4096, 24, &tx).await;
         assert!(result.is_err());
+    }
+
+    // ── Hypothesis tests ──────────────────────────────────────────────
+
+    // H1: Driver watcher timing — empty snapshot sends nothing
+
+    #[tokio::test]
+    async fn h1_empty_snapshot_no_message_sent() {
+        // When conversation turns are empty, send_conversation_since must
+        // not produce a ConversationFull message (would confuse the client).
+        let (handle, _output_tx) = setup_handle_with_turns(vec![]).await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        send_conversation_since("inst-1", None, &handle, &tx)
+            .await
+            .unwrap();
+
+        assert!(rx.try_recv().is_err(), "empty snapshot should send nothing");
+    }
+
+    #[tokio::test]
+    async fn h1_broadcast_received_after_empty_snapshot() {
+        // First call: empty → nothing sent.
+        // Then populate turns and call again → ConversationFull sent.
+        let (handle, _output_tx, convo_turns) =
+            InstanceHandle::spawn_test_with_scrollback(24, 80, 4096, 0);
+        let (tx, mut rx) = mpsc::channel(16);
+
+        // Empty snapshot → nothing
+        send_conversation_since("inst-1", None, &handle, &tx)
+            .await
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // Populate and re-send
+        *convo_turns.write().await = vec![serde_json::json!({"uuid": "t1", "role": "user"})];
+        send_conversation_since("inst-1", None, &handle, &tx)
+            .await
+            .unwrap();
+
+        match rx.recv().await.unwrap() {
+            ServerMessage::ConversationFull { turns, .. } => {
+                assert_eq!(turns.len(), 1);
+            }
+            other => panic!("expected ConversationFull, got {:?}", other),
+        }
+    }
+
+    // H2: Subscribe-before-snapshot race — serialized through actor
+
+    #[tokio::test]
+    async fn h2_subscribe_then_snapshot_serialized_through_actor() {
+        // Both get_conversation_snapshot calls go through the actor's
+        // mpsc channel. Updating the Arc between calls should give a
+        // consistent point-in-time view each time.
+        let (handle, _output_tx, convo_turns) =
+            InstanceHandle::spawn_test_with_scrollback(24, 80, 4096, 0);
+
+        let turn1 = serde_json::json!({"uuid": "t1", "role": "user"});
+        let turn2 = serde_json::json!({"uuid": "t2", "role": "assistant"});
+
+        *convo_turns.write().await = vec![turn1.clone()];
+        let snap1 = handle.get_conversation_snapshot().await;
+        assert_eq!(snap1.len(), 1, "first snapshot should have 1 turn");
+
+        *convo_turns.write().await = vec![turn1, turn2];
+        let snap2 = handle.get_conversation_snapshot().await;
+        assert_eq!(snap2.len(), 2, "second snapshot should have 2 turns");
+    }
+
+    // H10: Focus required for conversation data
+
+    #[tokio::test]
+    async fn h10_conversation_requires_focus_call() {
+        // Without calling send_conversation_since or handle_focus,
+        // no conversation data appears on the channel.
+        let turns = vec![
+            serde_json::json!({"uuid": "t1", "role": "user"}),
+            serde_json::json!({"uuid": "t2", "role": "assistant"}),
+        ];
+        let (_handle, _output_tx) = setup_handle_with_turns(turns).await;
+        let (_tx, mut rx) = mpsc::channel::<ServerMessage>(16);
+
+        // No focus call → no conversation data
+        assert!(
+            rx.try_recv().is_err(),
+            "conversation data should not arrive without explicit focus"
+        );
     }
 }

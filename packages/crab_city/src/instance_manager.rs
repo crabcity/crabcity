@@ -1,11 +1,16 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use tokio::sync::RwLock;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::{RwLock, broadcast};
+
 use tracing::{debug, info, warn};
 
 use crate::inference::ClaudeState;
 use crate::instance_actor::{InstanceHandle, SpawnOptions, create_instance};
+use crate::process_driver::ProcessDriver;
+use crate::repository::ConversationRepository;
+use crate::ws::{FirstInputData, PendingAttribution, StateBroadcast};
 
 // This is for API compatibility - we'll remove the fake "port" concept later
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +64,11 @@ impl InstanceManager {
         }
     }
 
+    /// The default command (path to claude binary or shell).
+    pub fn default_command(&self) -> &str {
+        &self.claude_path
+    }
+
     fn generate_unique_name(&self) -> String {
         use rand::Rng;
 
@@ -96,11 +106,19 @@ impl InstanceManager {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         name: Option<String>,
         working_dir: Option<String>,
         command: Option<String>,
+        driver: Box<dyn ProcessDriver>,
+        state_broadcast_tx: Option<StateBroadcast>,
+        lifecycle_tx: Option<broadcast::Sender<crate::ws::ServerMessage>>,
+        claimed_sessions: Arc<RwLock<HashMap<String, String>>>,
+        first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>>,
+        pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
+        repository: Option<Arc<ConversationRepository>>,
     ) -> Result<ClaudeInstance> {
         // Generate unique name if not provided
         let name = if let Some(provided_name) = name {
@@ -166,10 +184,19 @@ impl InstanceManager {
             max_buffer_bytes: self.max_buffer_bytes,
             scrollback_lines: self.scrollback_lines,
             vt_record_dir: self.vt_record_dir.clone(),
+            driver,
+            state_broadcast_tx,
+            lifecycle_tx,
+            claimed_sessions,
+            first_input_data,
+            pending_attributions,
+            repository,
         })
         .await?;
 
-        let id = handle.id_async().await;
+        let info = handle.get_info().await;
+        let id = info.id.clone();
+        let created_at = info.created_at.clone();
 
         // Store the handle
         let mut instances = self.instances.write().await;
@@ -185,7 +212,7 @@ impl InstanceManager {
             working_dir,
             command: command_line,
             running: true,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at,
             session_id: None, // Will be detected when conversation is accessed
             claude_state: None,
         })

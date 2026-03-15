@@ -18,7 +18,9 @@ use crate::virtual_terminal::ClientType;
 
 use super::focus::{handle_focus, send_conversation_since};
 use super::protocol::{BackpressureStats, ClientMessage, PresenceUser, ServerMessage, WsUser};
-use super::state_manager::{GlobalStateManager, TERMINAL_LOCK_TIMEOUT_SECS};
+use super::state_manager::{
+    GlobalStateManager, InputContext, InputUser, TERMINAL_LOCK_TIMEOUT_SECS,
+};
 
 /// Handle a multiplexed WebSocket connection
 pub async fn handle_multiplexed_ws(
@@ -259,17 +261,16 @@ pub async fn handle_multiplexed_ws(
                             ClientMessage::ConversationSync { since_uuid } => {
                                 // Sync conversation without changing focus
                                 // This is used when a tab becomes visible again
-                                if let Some(id) = focused_clone.read().await.clone() {
+                                if let Some(id) = focused_clone.read().await.clone()
+                                    && let Some(h) = state_mgr.get_handle(&id).await
+                                {
                                     let tx_sync = tx_input.clone();
-                                    let state_mgr_sync = state_mgr.clone();
-                                    let repo_sync = repository_clone.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = send_conversation_since(
                                             &id,
                                             since_uuid.as_deref(),
-                                            &state_mgr_sync,
+                                            &h,
                                             &tx_sync,
-                                            repo_sync.as_ref(),
                                         )
                                         .await
                                         {
@@ -283,88 +284,45 @@ pub async fn handle_multiplexed_ws(
                                 data,
                                 task_id,
                             } => {
-                                // Shared input ceremony: state signal + session discovery + PTY write
-                                match state_mgr.write_input(&instance_id, &data).await {
-                                    Err(e) => {
-                                        error!(instance = %instance_id, "Failed to write to PTY: {}", e);
-                                        if tx_input
-                                            .send(ServerMessage::Error {
-                                                instance_id: Some(instance_id.clone()),
-                                                message: format!("Failed to send input: {}", e),
-                                            })
-                                            .await
-                                            .is_err()
-                                        {
-                                            warn!(instance = %instance_id, "Failed to send error notification - channel closed");
-                                        }
-                                    }
-                                    Ok(()) => {
-                                        // Keep terminal lock activity fresh
-                                        state_mgr
-                                            .touch_terminal_lock(&instance_id, &connection_id_clone)
-                                            .await;
-
-                                        // Record input attribution if user is authenticated
-                                        if let Some(user) = &ws_user_clone {
-                                            // Only record for non-trivial input (not just Enter or control chars)
-                                            let trimmed = data.trim();
-                                            if !trimmed.is_empty()
-                                                && trimmed != "\r"
-                                                && trimmed != "\n"
-                                            {
-                                                // Push in-process pending attribution for real-time content matching
-                                                state_mgr
-                                                    .push_pending_attribution(
-                                                        &instance_id,
-                                                        user.user_id.clone(),
-                                                        user.display_name.clone(),
-                                                        trimmed,
-                                                        task_id,
-                                                    )
-                                                    .await;
-
-                                                // Also persist to DB for historical audit
-                                                if let Some(repo) = &repository_clone {
-                                                    let attr = crate::models::InputAttribution {
-                                                        id: None,
-                                                        instance_id: instance_id.clone(),
-                                                        user_id: user.user_id.clone(),
-                                                        display_name: user.display_name.clone(),
-                                                        timestamp: chrono::Utc::now().timestamp(),
-                                                        entry_uuid: None,
-                                                        content_preview: Some(
-                                                            trimmed.chars().take(100).collect(),
-                                                        ),
-                                                        task_id,
-                                                    };
-                                                    let repo = repo.clone();
-                                                    let inst_id = instance_id.clone();
-                                                    tokio::spawn(async move {
-                                                        if let Err(e) = repo
-                                                            .record_input_attribution(&attr)
-                                                            .await
-                                                        {
-                                                            warn!(instance = %inst_id, "Failed to record input attribution: {}", e);
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
+                                let ctx = InputContext {
+                                    instance_id: instance_id.clone(),
+                                    data,
+                                    connection_id: connection_id_clone.clone(),
+                                    user: ws_user_clone.as_ref().map(|u| InputUser {
+                                        user_id: u.user_id.clone(),
+                                        display_name: u.display_name.clone(),
+                                    }),
+                                    task_id,
+                                };
+                                if let Err(e) =
+                                    state_mgr.handle_input(ctx, repository_clone.as_ref()).await
+                                {
+                                    error!(instance = %instance_id, "Failed to write to PTY: {}", e);
+                                    let _ = tx_input
+                                        .send(ServerMessage::Error {
+                                            instance_id: Some(instance_id),
+                                            message: format!("Failed to send input: {}", e),
+                                        })
+                                        .await;
                                 }
                             }
                             ClientMessage::Resize {
                                 instance_id,
                                 rows,
                                 cols,
+                                client_type,
                             } => {
+                                let ct = match client_type.as_deref() {
+                                    Some("terminal") => ClientType::Terminal,
+                                    _ => ClientType::Web,
+                                };
                                 if let Some(handle) = state_mgr.get_handle(&instance_id).await
                                     && let Err(e) = handle
                                         .update_viewport_and_resize(
                                             &connection_id_clone,
                                             rows,
                                             cols,
-                                            ClientType::Web,
+                                            ct,
                                         )
                                         .await
                                 {
@@ -375,7 +333,12 @@ pub async fn handle_multiplexed_ws(
                                 instance_id,
                                 rows,
                                 cols,
+                                client_type,
                             } => {
+                                let ct = match client_type.as_deref() {
+                                    Some("terminal") => ClientType::Terminal,
+                                    _ => ClientType::Web,
+                                };
                                 debug!(
                                     conn = %connection_id_clone,
                                     instance = %instance_id,
@@ -389,7 +352,7 @@ pub async fn handle_multiplexed_ws(
                                             &connection_id_clone,
                                             rows,
                                             cols,
-                                            ClientType::Web,
+                                            ct,
                                         )
                                         .await
                                     {

@@ -224,6 +224,9 @@
 	}
 
 	.instance-meta {
+		display: flex;
+		align-items: center;
+		gap: 4px;
 		margin-top: 2px;
 	}
 
@@ -285,6 +288,7 @@
 		font-size: 9px;
 		font-weight: 700;
 		color: var(--purple-400);
+		transition: all 0.15s ease;
 	}
 
 	.queue-badge {
@@ -302,6 +306,36 @@
 		font-weight: 700;
 		color: var(--amber-400);
 		font-variant-numeric: tabular-nums;
+		transition: all 0.15s ease;
+	}
+
+	/* Active state: expand badges from circles to labeled pills */
+	.instance-item.active .presence-count {
+		border-radius: 4px;
+		padding: 1px 6px;
+		margin-left: 0;
+		font-size: 9px;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.instance-item.active .presence-count::before {
+		content: 'VIEWERS ';
+		font-weight: 600;
+		opacity: 0.7;
+	}
+
+	.instance-item.active .queue-badge {
+		border-radius: 4px;
+		padding: 1px 6px;
+		margin-left: 0;
+		font-size: 9px;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.instance-item.active .queue-badge::before {
+		content: 'QUEUED ';
+		font-weight: 600;
+		opacity: 0.7;
 	}
 
 	/* Analog theme */

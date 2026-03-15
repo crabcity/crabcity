@@ -28,4 +28,4 @@ pub use tasks::{
     get_task_handler, list_tasks_handler, migrate_tasks_handler, remove_task_tag_handler,
     send_task_handler, update_task_handler,
 };
-pub use websocket::{multiplexed_websocket_handler, websocket_handler};
+pub use websocket::multiplexed_websocket_handler;

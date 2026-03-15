@@ -5,19 +5,31 @@
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tokio::sync::{RwLock, broadcast};
+use tracing::{debug, info, warn};
 
-use crate::inference::{
-    ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
-};
+use crate::inference::ClaudeState;
 use crate::instance_actor::InstanceHandle;
-use crate::models::{attribution_content_matches, normalize_attribution_content};
+use crate::models::normalize_attribution_content;
 use crate::repository::ConversationRepository;
 
-use super::conversation_watcher::run_server_conversation_watcher;
 use super::protocol::{PresenceUser, ServerMessage, WsUser};
+
+/// Everything a transport layer knows about an input event.
+/// Both WS handlers build this and call `handle_input()`. Nothing else.
+pub struct InputContext {
+    pub instance_id: String,
+    pub data: String,
+    pub connection_id: String,
+    /// Optional — TUI has no authenticated user
+    pub user: Option<InputUser>,
+    pub task_id: Option<i64>,
+}
+
+pub struct InputUser {
+    pub user_id: String,
+    pub display_name: String,
+}
 
 /// Entry in the presence map: one per WebSocket connection.
 #[derive(Debug, Clone)]
@@ -93,188 +105,36 @@ pub enum ConversationEvent {
     },
 }
 
-/// Per-instance conversation broadcast channel.
-pub type ConversationBroadcast = broadcast::Sender<ConversationEvent>;
-
 /// Create a new state broadcast channel
 pub fn create_state_broadcast() -> StateBroadcast {
     let (tx, _) = broadcast::channel(256);
     tx
 }
 
-/// Per-instance state tracking (lives in GlobalStateManager)
+/// Per-instance tracking (lives in GlobalStateManager).
+///
+/// State detection and conversation tracking are now owned by each actor's
+/// ProcessDriver. The tracker only holds metadata needed for presence,
+/// session claiming, and lifecycle management.
 pub(crate) struct InstanceTracker {
-    pub instance_id: String,
     pub handle: InstanceHandle,
     pub working_dir: String,
     pub created_at: DateTime<Utc>,
     pub is_claude: bool,
-    /// Sender for state signals to this instance's state manager
-    signal_tx: Option<mpsc::Sender<StateSignal>>,
-    /// Cancellation token to stop background tasks when instance is unregistered
-    cancel: CancellationToken,
-    /// Formatted conversation turns maintained by the server-owned watcher.
-    conversation_turns: Arc<RwLock<Vec<serde_json::Value>>>,
-    /// Broadcast channel for conversation events (Full/Update).
-    conversation_tx: ConversationBroadcast,
 }
 
 impl InstanceTracker {
     pub fn new(
-        instance_id: String,
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
     ) -> Self {
-        let (conversation_tx, _) = broadcast::channel(64);
         Self {
-            instance_id,
             handle,
             working_dir,
             created_at,
             is_claude,
-            signal_tx: None,
-            cancel: CancellationToken::new(),
-            conversation_turns: Arc::new(RwLock::new(Vec::new())),
-            conversation_tx,
-        }
-    }
-
-    /// Start the state manager for this instance
-    pub fn start_state_manager(
-        &mut self,
-        broadcast_tx: StateBroadcast,
-        global_state_manager: Arc<GlobalStateManager>,
-        repository: Option<Arc<ConversationRepository>>,
-    ) {
-        if !self.is_claude {
-            return;
-        }
-
-        let (signal_tx, signal_rx) = mpsc::channel::<StateSignal>(100);
-        let (state_tx, mut state_rx) = mpsc::channel::<StateUpdate>(100);
-
-        // Spawn the state manager
-        let _handle = spawn_state_manager(signal_rx, state_tx, StateManagerConfig::default());
-
-        // Forward state changes to broadcast and instance actor
-        let instance_id = self.instance_id.clone();
-        let handle = self.handle.clone();
-        tokio::spawn(async move {
-            while let Some(update) = state_rx.recv().await {
-                info!(
-                    "[STATE-FWD {}] State changed to {:?} (stale={})",
-                    instance_id, update.state, update.terminal_stale
-                );
-                // Update the instance actor's stored state
-                if let Err(e) = handle.set_claude_state(update.state.clone()).await {
-                    debug!("Failed to update instance state: {}", e);
-                }
-                // Broadcast to all connected clients (include staleness)
-                let _ =
-                    broadcast_tx.send((instance_id.clone(), update.state, update.terminal_stale));
-            }
-            warn!("[STATE-FWD {}] State receiver closed", instance_id);
-        });
-
-        // Spawn background PTY reader to continuously feed state manager
-        // This runs INDEPENDENTLY of focus, so state updates even when not viewing this instance
-        let signal_tx_pty = signal_tx.clone();
-        let handle_pty = self.handle.clone();
-        let instance_id_pty = self.instance_id.clone();
-        let cancel_pty = self.cancel.clone();
-
-        tokio::spawn(async move {
-            // Subscribe to PTY output
-            let mut output_rx = match handle_pty.subscribe_output().await {
-                Ok(rx) => rx,
-                Err(e) => {
-                    error!(
-                        "Failed to subscribe to PTY output for state tracking: {}",
-                        e
-                    );
-                    return;
-                }
-            };
-
-            debug!(
-                "Started background PTY state tracking for instance {}",
-                instance_id_pty
-            );
-
-            loop {
-                tokio::select! {
-                    _ = cancel_pty.cancelled() => {
-                        debug!("Stopping background PTY state tracking for instance {}", instance_id_pty);
-                        break;
-                    }
-                    result = output_rx.recv() => {
-                        match result {
-                            Ok(event) => {
-                                let data = String::from_utf8_lossy(&event.data).to_string();
-                                // Feed the state manager
-                                if signal_tx_pty.send(StateSignal::TerminalOutput { data }).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!("State tracking PTY output lagged by {} messages for {}", n, instance_id_pty);
-                            }
-                            Err(broadcast::error::RecvError::Closed) => {
-                                debug!("PTY output channel closed for state tracking {}", instance_id_pty);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // Spawn the server-owned conversation watcher.
-        // This is the single watcher per instance: does session discovery, maintains
-        // formatted conversation data, broadcasts updates, and feeds state signals.
-        let signal_tx_convo = signal_tx.clone();
-        let instance_id_convo = self.instance_id.clone();
-        let working_dir_convo = self.working_dir.clone();
-        let created_at_convo = self.created_at;
-        let cancel_convo = self.cancel.clone();
-        let state_manager_convo = global_state_manager.clone();
-        let convo_turns = self.conversation_turns.clone();
-        let convo_tx = self.conversation_tx.clone();
-
-        tokio::spawn(async move {
-            run_server_conversation_watcher(
-                instance_id_convo,
-                working_dir_convo,
-                created_at_convo,
-                cancel_convo,
-                signal_tx_convo,
-                state_manager_convo,
-                convo_turns,
-                convo_tx,
-                repository,
-            )
-            .await;
-        });
-
-        self.signal_tx = Some(signal_tx);
-    }
-
-    /// Stop background tasks for this instance
-    pub fn stop(&self) {
-        self.cancel.cancel();
-    }
-
-    /// Send a signal to this instance's state manager
-    pub async fn send_signal(&self, signal: StateSignal) {
-        if let Some(tx) = &self.signal_tx
-            && tx.send(signal).await.is_err()
-        {
-            warn!(
-                "Failed to send signal to state manager for instance {} (receiver dropped)",
-                self.instance_id
-            );
         }
     }
 }
@@ -286,18 +146,18 @@ pub struct GlobalStateManager {
     lifecycle_tx: LifecycleBroadcast,
     /// Sessions that have been claimed by instances (session_id -> instance_id)
     /// Prevents multiple instances from claiming the same Claude session
-    claimed_sessions: RwLock<HashMap<String, String>>,
+    claimed_sessions: Arc<RwLock<HashMap<String, String>>>,
     /// First input data per instance (instance_id -> FirstInputData).
     /// Used for causation-based session discovery: the timestamp gates when
     /// discovery starts, and content prefixes verify the candidate session
     /// actually contains input sent to *this* instance.
-    first_input_at: RwLock<HashMap<String, FirstInputData>>,
+    first_input_at: Arc<RwLock<HashMap<String, FirstInputData>>>,
     /// Presence tracking: instance_id -> (connection_id -> PresenceEntry)
     presence: RwLock<HashMap<String, HashMap<String, PresenceEntry>>>,
     /// Pending attributions: instance_id -> queue of (user, content_prefix).
     /// Pushed by the WebSocket input handler, consumed by the conversation watcher.
     /// Content-matched to conversation entries for reliable attribution.
-    pending_attributions: RwLock<HashMap<String, VecDeque<PendingAttribution>>>,
+    pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
     /// Terminal locks: instance_id -> lock holder info
     terminal_locks: RwLock<HashMap<String, TerminalLock>>,
 }
@@ -309,12 +169,22 @@ impl GlobalStateManager {
             trackers: RwLock::new(HashMap::new()),
             broadcast_tx,
             lifecycle_tx,
-            claimed_sessions: RwLock::new(HashMap::new()),
-            first_input_at: RwLock::new(HashMap::new()),
+            claimed_sessions: Arc::new(RwLock::new(HashMap::new())),
+            first_input_at: Arc::new(RwLock::new(HashMap::new())),
             presence: RwLock::new(HashMap::new()),
-            pending_attributions: RwLock::new(HashMap::new()),
+            pending_attributions: Arc::new(RwLock::new(HashMap::new())),
             terminal_locks: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Expose the state broadcast sender (for passing to drivers via SpawnOptions).
+    pub fn broadcast_tx(&self) -> &StateBroadcast {
+        &self.broadcast_tx
+    }
+
+    /// Expose the lifecycle broadcast sender (for passing to drivers via SpawnOptions).
+    pub fn lifecycle_tx(&self) -> &LifecycleBroadcast {
+        &self.lifecycle_tx
     }
 
     /// Try to claim a session for an instance. Returns true if successful.
@@ -344,6 +214,23 @@ impl GlobalStateManager {
     /// Get all sessions claimed by other instances (for filtering candidates)
     pub async fn get_claimed_sessions(&self) -> HashSet<String> {
         self.claimed_sessions.read().await.keys().cloned().collect()
+    }
+
+    /// Get a cloned Arc to the claimed_sessions map for use by DriverContext.
+    pub fn claimed_sessions_arc(&self) -> Arc<RwLock<HashMap<String, String>>> {
+        Arc::clone(&self.claimed_sessions)
+    }
+
+    /// Get a cloned Arc to the first_input_data map for use by DriverContext.
+    pub fn first_input_data_arc(&self) -> Arc<RwLock<HashMap<String, FirstInputData>>> {
+        Arc::clone(&self.first_input_at)
+    }
+
+    /// Get a cloned Arc to the pending_attributions map for use by DriverContext.
+    pub fn pending_attributions_arc(
+        &self,
+    ) -> Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>> {
+        Arc::clone(&self.pending_attributions)
     }
 
     /// Record input for an instance before session discovery.
@@ -407,13 +294,20 @@ impl GlobalStateManager {
             }
         } else {
             // Individual keystroke — accumulate in the line buffer.
-            // Skip control characters and escape sequences that won't
-            // appear in the JSONL user entry text.
+            // Handle backspace/DEL by removing the last character, and
+            // skip other control characters and escape sequences that
+            // won't appear in the JSONL user entry text.
             let first_byte = content.as_bytes().first().copied().unwrap_or(0);
-            let is_control = first_byte < 0x20 || first_byte == 0x7f;
-            if !is_control {
+            if first_byte == 0x7f || first_byte == 0x08 {
+                // Backspace (0x7f DEL or 0x08 BS): remove last char to
+                // mirror what the PTY line discipline delivers to Claude.
+                data.pending_line.pop();
+            } else if first_byte >= 0x20 {
                 data.pending_line.push_str(content);
             }
+            // Other control chars (0x00-0x1f except 0x08) and escape
+            // sequences (0x1b...) are silently dropped — they don't
+            // appear in JSONL user entry text.
         }
 
         is_first
@@ -430,6 +324,7 @@ impl GlobalStateManager {
 
     /// Get content prefixes stored for session discovery verification.
     /// Returns an empty vec if no inputs have been recorded.
+    #[allow(dead_code)]
     pub async fn get_discovery_content_prefixes(&self, instance_id: &str) -> Vec<String> {
         self.first_input_at
             .read()
@@ -476,35 +371,26 @@ impl GlobalStateManager {
     }
 
     /// Try to consume a pending attribution that matches a conversation entry's content.
-    /// Returns the attribution if found, or None if this was external/terminal input.
-    ///
-    /// Matching strategy: compare the first N chars of the conversation entry content
-    /// against pending attribution prefixes. The first match is consumed (FIFO order
-    /// handles the case where the same user sends multiple messages).
+    /// Delegates to the free function in handlers::conversations::format.
+    #[allow(dead_code)]
     pub async fn consume_pending_attribution(
         &self,
         instance_id: &str,
         entry_content: &str,
     ) -> Option<PendingAttribution> {
-        if normalize_attribution_content(entry_content).is_empty() {
-            return None;
-        }
+        crate::handlers::conversations::format::consume_pending_attribution(
+            &self.pending_attributions,
+            instance_id,
+            entry_content,
+        )
+        .await
+    }
 
-        let mut map = self.pending_attributions.write().await;
-        let queue = map.get_mut(instance_id)?;
-
-        // Find the first pending attribution whose content matches
-        if let Some(idx) = queue
-            .iter()
-            .position(|attr| attribution_content_matches(&attr.content_prefix, entry_content))
-        {
-            Some(queue.remove(idx).unwrap())
-        } else {
-            // Prune stale entries (older than 60 seconds) while we're here
-            let cutoff = Utc::now() - chrono::Duration::seconds(60);
-            queue.retain(|attr| attr.timestamp > cutoff);
-            None
-        }
+    /// Expose pending_attributions for direct use by format_turn_with_attribution.
+    pub fn pending_attributions_lock(
+        &self,
+    ) -> &RwLock<HashMap<String, VecDeque<PendingAttribution>>> {
+        &self.pending_attributions
     }
 
     // =========================================================================
@@ -655,34 +541,24 @@ impl GlobalStateManager {
         false
     }
 
-    /// Register a new instance for state tracking
+    /// Register a new instance. The actor's ProcessDriver handles state detection
+    /// and conversation tracking. The GSM only needs the tracker for presence,
+    /// session claiming, and lifecycle.
     pub async fn register_instance(
-        self: &Arc<Self>,
+        &self,
         instance_id: String,
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
         is_claude: bool,
-        repository: Option<Arc<ConversationRepository>>,
     ) {
-        let mut tracker = InstanceTracker::new(
-            instance_id.clone(),
-            handle,
-            working_dir,
-            created_at,
-            is_claude,
-        );
-        tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
-
+        let tracker = InstanceTracker::new(handle, working_dir, created_at, is_claude);
         self.trackers.write().await.insert(instance_id, tracker);
     }
 
     /// Unregister an instance
     pub async fn unregister_instance(&self, instance_id: &str) {
-        if let Some(tracker) = self.trackers.write().await.remove(instance_id) {
-            // Stop background tasks before dropping
-            tracker.stop();
-        }
+        self.trackers.write().await.remove(instance_id);
         // Release any claimed sessions
         self.release_session(instance_id).await;
         // Clean up first_input_at tracking
@@ -727,45 +603,79 @@ impl GlobalStateManager {
         })
     }
 
-    /// Send a signal to an instance's state manager
-    pub async fn send_signal(&self, instance_id: &str, signal: StateSignal) {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            tracker.send_signal(signal).await;
-        }
-    }
-
-    /// Process terminal input for an instance: send state signal, record for
-    /// session discovery, and write to PTY.
+    /// Unified input handler — the single entry point for all terminal input.
     ///
-    /// This is the single entry point for input handling — both the
-    /// multiplexed WebSocket handler and the TUI proxy call this instead of
-    /// duplicating the state-signal + mark_first_input + PTY-write ceremony.
+    /// Both the multiplexed WebSocket handler (web) and the TUI proxy call
+    /// this instead of duplicating the input ceremony. Performs:
     ///
-    /// Returns `Err` if the PTY write fails or the instance handle is gone.
-    pub async fn write_input(&self, instance_id: &str, data: &str) -> Result<(), String> {
-        // Send state signal for idle→thinking detection
-        self.send_signal(
-            instance_id,
-            StateSignal::TerminalInput {
-                data: data.to_string(),
-            },
-        )
-        .await;
-
+    /// 1. Session discovery content tracking (`mark_first_input`)
+    /// 2. Terminal lock keepalive (`touch_terminal_lock`)
+    /// 3. Real-time attribution tracking (`push_pending_attribution`)
+    /// 4. DB attribution persistence (`record_input_attribution`)
+    /// 5. PTY write (`handle.write_input`)
+    ///
+    /// Steps 2–4 are skipped when `ctx.user` is `None` (TUI path).
+    /// State detection (idle→thinking) is handled by the actor's ProcessDriver
+    /// via `driver.on_input()` in the WriteInput command handler.
+    pub async fn handle_input(
+        &self,
+        ctx: InputContext,
+        repository: Option<&Arc<ConversationRepository>>,
+    ) -> Result<(), String> {
         let handle = self
-            .get_handle(instance_id)
+            .get_handle(&ctx.instance_id)
             .await
             .ok_or_else(|| "Instance handle not found".to_string())?;
 
-        // Record for session discovery (with line accumulation).
-        // Only relevant while the session hasn't been claimed yet.
+        // 2. Session discovery content tracking
         if handle.get_session_id().await.is_none() {
-            self.mark_first_input(instance_id, data).await;
+            self.mark_first_input(&ctx.instance_id, &ctx.data).await;
         }
 
-        // Write to PTY
+        // 3. Terminal lock keepalive
+        self.touch_terminal_lock(&ctx.instance_id, &ctx.connection_id)
+            .await;
+
+        // 4–5. Attribution (only when user is authenticated)
+        if let Some(ref user) = ctx.user {
+            let trimmed = ctx.data.trim();
+            if !trimmed.is_empty() && trimmed != "\r" && trimmed != "\n" {
+                // 4. Push in-process pending attribution for real-time content matching
+                self.push_pending_attribution(
+                    &ctx.instance_id,
+                    user.user_id.clone(),
+                    user.display_name.clone(),
+                    trimmed,
+                    ctx.task_id,
+                )
+                .await;
+
+                // 5. Persist to DB for historical audit
+                if let Some(repo) = repository {
+                    let attr = crate::models::InputAttribution {
+                        id: None,
+                        instance_id: ctx.instance_id.clone(),
+                        user_id: user.user_id.clone(),
+                        display_name: user.display_name.clone(),
+                        timestamp: chrono::Utc::now().timestamp(),
+                        entry_uuid: None,
+                        content_preview: Some(trimmed.chars().take(100).collect()),
+                        task_id: ctx.task_id,
+                    };
+                    let repo = repo.clone();
+                    let inst_id = ctx.instance_id.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = repo.record_input_attribution(&attr).await {
+                            warn!(instance = %inst_id, "Failed to record input attribution: {}", e);
+                        }
+                    });
+                }
+            }
+        }
+
+        // 6. PTY write
         handle
-            .write_input(data)
+            .write_input(&ctx.data)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -785,32 +695,6 @@ impl GlobalStateManager {
     /// Broadcast an instance lifecycle event to all connected WebSocket clients
     pub fn broadcast_lifecycle(&self, msg: ServerMessage) {
         let _ = self.lifecycle_tx.send(msg);
-    }
-
-    // =========================================================================
-    // Conversation data (server-owned watcher)
-    // =========================================================================
-
-    /// Get a snapshot of the current formatted conversation turns for an instance.
-    pub async fn get_conversation_snapshot(&self, instance_id: &str) -> Vec<serde_json::Value> {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            tracker.conversation_turns.read().await.clone()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Subscribe to conversation events (Full/Update) for an instance.
-    /// Returns None if the instance doesn't exist.
-    pub async fn subscribe_conversation(
-        &self,
-        instance_id: &str,
-    ) -> Option<broadcast::Receiver<ConversationEvent>> {
-        self.trackers
-            .read()
-            .await
-            .get(instance_id)
-            .map(|t| t.conversation_tx.subscribe())
     }
 
     // =========================================================================
@@ -901,35 +785,18 @@ impl GlobalStateManager {
     /// Insert a minimal tracker for testing conversation data flow.
     /// Does NOT spawn any background tasks (watcher, state manager).
     pub(crate) async fn insert_test_tracker(&self, instance_id: &str, handle: InstanceHandle) {
-        let tracker = InstanceTracker::new(
-            instance_id.to_string(),
-            handle,
-            "/tmp/test".to_string(),
-            Utc::now(),
-            true,
-        );
+        let tracker = InstanceTracker::new(handle, "/tmp/test".to_string(), Utc::now(), true);
         self.trackers
             .write()
             .await
             .insert(instance_id.to_string(), tracker);
-    }
-
-    /// Write conversation turns directly into a tracker's store (for testing).
-    pub(crate) async fn set_test_conversation_turns(
-        &self,
-        instance_id: &str,
-        turns: Vec<serde_json::Value>,
-    ) {
-        if let Some(tracker) = self.trackers.read().await.get(instance_id) {
-            let mut store = tracker.conversation_turns.write().await;
-            *store = turns;
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_mark_first_input_returns_true_then_false() {
@@ -1008,6 +875,45 @@ mod tests {
         let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
         assert_eq!(prefixes.len(), 1);
         assert_eq!(prefixes[0], "Hi");
+    }
+
+    #[tokio::test]
+    async fn test_mark_first_input_backspace_corrects_pending_line() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Type "helo", backspace (DEL), "lo" → should produce "hello"
+        for ch in ["h", "e", "l", "o"] {
+            state_mgr.mark_first_input("inst-1", ch).await;
+        }
+        state_mgr.mark_first_input("inst-1", "\x7f").await; // DEL
+        state_mgr.mark_first_input("inst-1", "l").await;
+        state_mgr.mark_first_input("inst-1", "o").await;
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_mark_first_input_backspace_bs_char() {
+        let broadcast_tx = create_state_broadcast();
+        let state_mgr = GlobalStateManager::new(broadcast_tx);
+
+        // Same test but with BS (0x08) instead of DEL (0x7f)
+        for ch in ["a", "b", "c"] {
+            state_mgr.mark_first_input("inst-1", ch).await;
+        }
+        state_mgr.mark_first_input("inst-1", "\x08").await; // BS
+        state_mgr.mark_first_input("inst-1", "\x08").await; // BS
+        state_mgr.mark_first_input("inst-1", "x").await;
+        state_mgr.mark_first_input("inst-1", "y").await;
+        state_mgr.mark_first_input("inst-1", "\r").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "axy");
     }
 
     #[tokio::test]
@@ -1786,91 +1692,6 @@ mod tests {
     }
 
     // =========================================================================
-    // Conversation store tests
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_conversation_snapshot_empty_without_tracker() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let turns = state_mgr.get_conversation_snapshot("nonexistent").await;
-        assert!(turns.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_conversation_snapshot_roundtrip() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        state_mgr.insert_test_tracker("inst-1", handle).await;
-
-        // Initially empty
-        assert!(
-            state_mgr
-                .get_conversation_snapshot("inst-1")
-                .await
-                .is_empty()
-        );
-
-        // Write turns
-        let turns = vec![
-            serde_json::json!({"uuid": "t1", "role": "user", "content": "hello"}),
-            serde_json::json!({"uuid": "t2", "role": "assistant", "content": "hi"}),
-        ];
-        state_mgr
-            .set_test_conversation_turns("inst-1", turns.clone())
-            .await;
-
-        // Read them back
-        let snapshot = state_mgr.get_conversation_snapshot("inst-1").await;
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot[0]["uuid"], "t1");
-        assert_eq!(snapshot[1]["uuid"], "t2");
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_conversation_receives_events() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        let (handle, _vt, _etx) = InstanceHandle::spawn_test(24, 80, 4096);
-        state_mgr.insert_test_tracker("inst-1", handle).await;
-
-        // Subscribe BEFORE sending
-        let mut rx = state_mgr
-            .subscribe_conversation("inst-1")
-            .await
-            .expect("tracker exists");
-
-        // Manually broadcast a ConversationEvent via the tracker's channel
-        {
-            let trackers = state_mgr.trackers.read().await;
-            let tracker = trackers.get("inst-1").unwrap();
-            let _ = tracker.conversation_tx.send(ConversationEvent::Full {
-                instance_id: "inst-1".to_string(),
-                turns: vec![serde_json::json!({"uuid": "t1"})],
-            });
-        }
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            ConversationEvent::Full { instance_id, turns } => {
-                assert_eq!(instance_id, "inst-1");
-                assert_eq!(turns.len(), 1);
-                assert_eq!(turns[0]["uuid"], "t1");
-            }
-            _ => panic!("expected Full event"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_subscribe_conversation_nonexistent_returns_none() {
-        let state_mgr = GlobalStateManager::new(create_state_broadcast());
-        assert!(
-            state_mgr
-                .subscribe_conversation("nonexistent")
-                .await
-                .is_none()
-        );
-    }
-
-    // =========================================================================
     // Keystroke → flush → prefix flow tests
     // =========================================================================
 
@@ -1912,6 +1733,523 @@ mod tests {
     // =========================================================================
     // Unregister instance cleanup tests
     // =========================================================================
+
+    // =========================================================================
+    // Unified handle_input pipeline (TUI + web parity)
+    // =========================================================================
+
+    /// Simulate TUI-style per-keystroke input through handle_input
+    /// (requires a registered instance with InstanceHandle).
+    async fn handle_input_keystrokes(
+        state_mgr: &GlobalStateManager,
+        instance_id: &str,
+        chars: &str,
+    ) {
+        for ch in chars.chars() {
+            let ctx = InputContext {
+                instance_id: instance_id.to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+    }
+
+    /// Simulate web-style composed input through handle_input
+    /// (text first, then \r).
+    async fn handle_input_composed(
+        state_mgr: &GlobalStateManager,
+        instance_id: &str,
+        text: &str,
+        user: Option<InputUser>,
+        task_id: Option<i64>,
+    ) {
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: text.to_string(),
+            connection_id: "test-conn".to_string(),
+            user,
+            task_id,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+        let ctx = InputContext {
+            instance_id: instance_id.to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_tui_keystrokes_produce_prefix() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_keystrokes(&state_mgr, "inst-1", "hello").await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_web_composed_produce_prefix() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes.len(), 1);
+        assert_eq!(prefixes[0], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_tui_and_web_produce_same_prefixes() {
+        // TUI path (per-keystroke through handle_input)
+        let state_mgr_tui = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr_tui.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_keystrokes(&state_mgr_tui, "inst-1", "fix the login bug").await;
+
+        let tui_prefixes = state_mgr_tui.get_discovery_content_prefixes("inst-1").await;
+
+        // Web path (composed through handle_input)
+        let state_mgr_web = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr_web.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr_web, "inst-1", "fix the login bug", None, None).await;
+
+        let web_prefixes = state_mgr_web.get_discovery_content_prefixes("inst-1").await;
+
+        assert_eq!(tui_prefixes, web_prefixes);
+        assert_eq!(tui_prefixes[0], "fix the login bug");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_stops_recording_after_session_claimed() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // First message goes through
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        let prefixes_before = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes_before.len(), 1);
+
+        // Simulate session being claimed (set session_id on the handle)
+        let handle = state_mgr.get_handle("inst-1").await.unwrap();
+        handle
+            .set_session_id("sess-123".to_string())
+            .await
+            .expect("set_session_id should succeed in test actor");
+
+        // Second message should NOT be recorded (session already claimed)
+        handle_input_composed(&state_mgr, "inst-1", "second message", None, None).await;
+
+        let prefixes_after = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(
+            prefixes_after.len(),
+            1,
+            "should not record after session claimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_with_user_records_attribution() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        let user = InputUser {
+            user_id: "u-1".to_string(),
+            display_name: "Alice".to_string(),
+        };
+        handle_input_composed(&state_mgr, "inst-1", "fix the bug", Some(user), None).await;
+
+        // Should have a pending attribution
+        let attr = state_mgr
+            .consume_pending_attribution("inst-1", "fix the bug")
+            .await;
+        assert!(
+            attr.is_some(),
+            "attribution should be recorded for web user"
+        );
+        let attr = attr.unwrap();
+        assert_eq!(attr.user_id, "u-1");
+        assert_eq!(attr.display_name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_without_user_skips_attribution() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // TUI path: no user
+        handle_input_composed(&state_mgr, "inst-1", "fix the bug", None, None).await;
+
+        // Should NOT have a pending attribution
+        let attr = state_mgr
+            .consume_pending_attribution("inst-1", "fix the bug")
+            .await;
+        assert!(
+            attr.is_none(),
+            "attribution should NOT be recorded for TUI (no user)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_input_touches_terminal_lock() {
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        // Acquire a terminal lock for "test-conn"
+        let user = make_ws_user("u-1", "Alice");
+        state_mgr
+            .try_acquire_terminal_lock("inst-1", "test-conn", &user)
+            .await;
+
+        let before = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // handle_input uses connection_id "test-conn" which matches the lock holder
+        let ctx = InputContext {
+            instance_id: "inst-1".to_string(),
+            data: "x".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+
+        let after = state_mgr
+            .get_terminal_lock("inst-1")
+            .await
+            .unwrap()
+            .last_activity;
+
+        assert!(after > before, "terminal lock should be refreshed by input");
+    }
+
+    // =========================================================================
+    // Hypothesis tests: H4, H5, H6
+    // =========================================================================
+
+    // H4: get_session_id() gates mark_first_input — premature session_id
+    //     prevents discovery content tracking.
+
+    #[tokio::test]
+    async fn h4_session_id_set_before_input_blocks_mark_first_input() {
+        // When session_id is already set before any input, handle_input
+        // skips mark_first_input entirely (line 629-631). This means
+        // first_input_data is never populated, and the watcher can never
+        // discover the session via content matching.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr
+            .insert_test_tracker("inst-1", handle.clone())
+            .await;
+
+        // Set session_id BEFORE any input
+        handle
+            .set_session_id("sess-premature".to_string())
+            .await
+            .unwrap();
+
+        // Now send input through the pipeline
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        // first_input_data should NOT be populated (session_id gate blocked it)
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_none(),
+            "mark_first_input should be skipped when session_id is already set"
+        );
+        assert!(
+            state_mgr
+                .get_discovery_content_prefixes("inst-1")
+                .await
+                .is_empty(),
+            "no content prefixes when session_id was set early"
+        );
+    }
+
+    #[tokio::test]
+    async fn h4_mark_first_input_runs_when_session_id_is_none() {
+        // Normal flow: session_id is None, so mark_first_input runs.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle).await;
+
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_some(),
+            "mark_first_input should run when session_id is None"
+        );
+        let prefixes = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes, vec!["hello"]);
+    }
+
+    #[tokio::test]
+    async fn h4_watcher_gates_on_first_input_data() {
+        // The conversation watcher checks first_input_data before
+        // attempting session discovery. Without it, discovery is blocked.
+        let first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        // No entry for "inst-1" → watcher would skip discovery
+        let has_first_input = first_input_data
+            .read()
+            .await
+            .get("inst-1")
+            .map(|d| d.timestamp)
+            .is_some();
+        assert!(
+            !has_first_input,
+            "no first_input_data → watcher should not attempt discovery"
+        );
+
+        // Add an entry → watcher would proceed
+        first_input_data.write().await.insert(
+            "inst-1".to_string(),
+            FirstInputData {
+                timestamp: Utc::now(),
+                content_prefixes: vec!["hello".to_string()],
+                pending_line: String::new(),
+            },
+        );
+        let has_first_input = first_input_data
+            .read()
+            .await
+            .get("inst-1")
+            .map(|d| d.timestamp)
+            .is_some();
+        assert!(
+            has_first_input,
+            "with first_input_data → watcher proceeds to discovery"
+        );
+    }
+
+    // H5: Stale claimed_sessions entry from prior instance
+
+    #[tokio::test]
+    async fn h5_stale_claim_blocks_new_instance() {
+        // If an instance crashes without unregister_instance, its
+        // claimed session remains and blocks a new instance.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // "inst-crashed" claims sess-1
+        assert!(state_mgr.try_claim_session("sess-1", "inst-crashed").await);
+
+        // New instance tries to claim the same session → blocked
+        assert!(
+            !state_mgr.try_claim_session("sess-1", "inst-new").await,
+            "stale claim should block new instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn h5_unregister_releases_claimed_session() {
+        // unregister_instance properly cleans up claims, allowing
+        // re-use by a new instance.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+
+        // Register + claim
+        let (handle, _output_tx) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr
+            .register_instance(
+                "inst-old".to_string(),
+                handle,
+                "/tmp".to_string(),
+                Utc::now(),
+                true,
+            )
+            .await;
+        assert!(state_mgr.try_claim_session("sess-1", "inst-old").await);
+
+        // Unregister releases the session
+        state_mgr.unregister_instance("inst-old").await;
+
+        // New instance can now claim it
+        assert!(
+            state_mgr.try_claim_session("sess-1", "inst-new").await,
+            "claim should succeed after unregister releases it"
+        );
+    }
+
+    // H6: first_input_data keyed by wrong instance_id
+
+    #[tokio::test]
+    async fn h6_first_input_data_keyed_correctly_across_instances() {
+        // Verify that input to inst-1 does NOT leak into inst-2's data.
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        let (handle1, _) = InstanceHandle::spawn_test(24, 80, 4096);
+        let (handle2, _) = InstanceHandle::spawn_test(24, 80, 4096);
+        state_mgr.insert_test_tracker("inst-1", handle1).await;
+        state_mgr.insert_test_tracker("inst-2", handle2).await;
+
+        // Send input only to inst-1
+        handle_input_composed(&state_mgr, "inst-1", "hello", None, None).await;
+
+        // inst-1 should have data
+        assert!(
+            state_mgr.get_first_input_at("inst-1").await.is_some(),
+            "inst-1 should have first_input_data"
+        );
+        let prefixes_1 = state_mgr.get_discovery_content_prefixes("inst-1").await;
+        assert_eq!(prefixes_1, vec!["hello"]);
+
+        // inst-2 should have nothing
+        assert!(
+            state_mgr.get_first_input_at("inst-2").await.is_none(),
+            "inst-2 should NOT have first_input_data"
+        );
+        assert!(
+            state_mgr
+                .get_discovery_content_prefixes("inst-2")
+                .await
+                .is_empty(),
+            "inst-2 should have no content prefixes"
+        );
+    }
+
+    // =========================================================================
+    // Cleanup tests
+    // =========================================================================
+
+    // =========================================================================
+    // ClaudeDriver integration tests
+    // =========================================================================
+
+    use crate::claude_driver::ClaudeDriver;
+    use crate::process_driver::DriverSignal;
+
+    #[tokio::test]
+    async fn int_handle_input_through_real_actor() {
+        // Hypothesis: A1 final verification — keystroke accumulation through full pipeline.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), None, None, None);
+
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        state_mgr
+            .insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        // Send keystrokes: "hi\r"
+        for ch in ['h', 'i'] {
+            let ctx = InputContext {
+                instance_id: "test-instance".to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+        let ctx = InputContext {
+            instance_id: "test-instance".to_string(),
+            data: "\r".to_string(),
+            connection_id: "test-conn".to_string(),
+            user: None,
+            task_id: None,
+        };
+        let _ = state_mgr.handle_input(ctx, None).await;
+
+        assert!(
+            state_mgr
+                .get_first_input_at("test-instance")
+                .await
+                .is_some(),
+            "first_input_at should be set"
+        );
+        let prefixes = state_mgr
+            .get_discovery_content_prefixes("test-instance")
+            .await;
+        assert_eq!(prefixes, vec!["hi"]);
+
+        // Session ID should still be None (no signal sent)
+        assert_eq!(handle.get_session_id().await, None);
+
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn int_premature_session_persists_across_inputs() {
+        // Hypothesis: A2 depth — session_id persists, mark_first_input permanently blocked.
+        let driver = ClaudeDriver::new().with_test_instance_id("test-instance");
+        let (signal_tx, signal_rx) = mpsc::channel(16);
+        let (handle, _output_tx) =
+            InstanceHandle::spawn_test_with_driver(Box::new(driver), Some(signal_rx), None, None);
+
+        let state_mgr = GlobalStateManager::new(create_state_broadcast());
+        state_mgr
+            .insert_test_tracker("test-instance", handle.clone())
+            .await;
+
+        // Set session_id before any input
+        signal_tx
+            .send(DriverSignal::SessionDiscovered("sess-1".into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(handle.get_session_id().await, Some("sess-1".into()));
+
+        // Send several keystrokes
+        for ch in ['a', 'b', 'c'] {
+            let ctx = InputContext {
+                instance_id: "test-instance".to_string(),
+                data: ch.to_string(),
+                connection_id: "test-conn".to_string(),
+                user: None,
+                task_id: None,
+            };
+            let _ = state_mgr.handle_input(ctx, None).await;
+        }
+
+        // Session ID should persist
+        assert_eq!(
+            handle.get_session_id().await,
+            Some("sess-1".into()),
+            "session_id should not be cleared by input"
+        );
+
+        // mark_first_input should still be blocked
+        assert!(
+            state_mgr
+                .get_first_input_at("test-instance")
+                .await
+                .is_none(),
+            "mark_first_input should remain blocked"
+        );
+
+        drop(handle);
+    }
 
     #[tokio::test]
     async fn test_unregister_cleans_up_all_state() {

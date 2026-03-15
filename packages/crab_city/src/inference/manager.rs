@@ -27,10 +27,9 @@
 //! The current patterns are based on Claude Code CLI v1.x spinner output format.
 
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use tracing::debug;
 
-use super::state::{ClaudeState, StateSignal, StateUpdate};
+use super::state::{ClaudeState, StateSignal};
 
 /// Tool patterns for detecting tool execution from terminal output.
 ///
@@ -343,45 +342,6 @@ impl StateManager {
         }
         None
     }
-}
-
-/// Spawn a state manager task that processes signals and emits state changes
-pub fn spawn_state_manager(
-    mut signal_rx: mpsc::Receiver<StateSignal>,
-    state_tx: mpsc::Sender<StateUpdate>,
-    config: StateManagerConfig,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut manager = StateManager::new(config);
-        let mut tick_interval = tokio::time::interval(Duration::from_millis(500));
-
-        loop {
-            tokio::select! {
-                Some(signal) = signal_rx.recv() => {
-                    if let Some(new_state) = manager.process(signal) {
-                        let update = StateUpdate {
-                            state: new_state,
-                            terminal_stale: manager.is_terminal_stale(),
-                        };
-                        if state_tx.send(update).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                _ = tick_interval.tick() => {
-                    if let Some(new_state) = manager.process(StateSignal::Tick) {
-                        let update = StateUpdate {
-                            state: new_state,
-                            terminal_stale: manager.is_terminal_stale(),
-                        };
-                        if state_tx.send(update).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    })
 }
 
 #[cfg(test)]

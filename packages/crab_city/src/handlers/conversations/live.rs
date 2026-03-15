@@ -47,7 +47,7 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
                         turn,
                         &id,
                         Some(&state.repository),
-                        Some(&state.global_state_manager),
+                        Some(state.global_state_manager.pending_attributions_lock()),
                     )
                     .await,
                 );
@@ -124,7 +124,7 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
                                 turn,
                                 &id,
                                 Some(&state.repository),
-                                Some(&state.global_state_manager),
+                                Some(state.global_state_manager.pending_attributions_lock()),
                             )
                             .await,
                         );
@@ -135,7 +135,7 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
                                 turn,
                                 &id,
                                 Some(&state.repository),
-                                Some(&state.global_state_manager),
+                                Some(state.global_state_manager.pending_attributions_lock()),
                             )
                             .await,
                         );

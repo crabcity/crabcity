@@ -16,6 +16,7 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 mod auth;
+mod claude_driver;
 mod cli;
 mod config;
 mod db;
@@ -33,9 +34,9 @@ mod models;
 mod notes;
 mod onboarding;
 mod persistence;
+mod process_driver;
 mod repository;
 mod virtual_terminal;
-pub mod websocket_proxy;
 mod ws;
 
 #[cfg(test)]
@@ -563,7 +564,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/api/instances/{id}", get(handlers::get_instance))
             .route("/api/instances/{id}", delete(handlers::delete_instance))
             .route("/api/instances/{id}/name", patch(handlers::set_custom_name))
-            .route("/api/instances/{id}/ws", get(handlers::websocket_handler))
             .route("/api/ws", get(handlers::multiplexed_websocket_handler))
             .route(
                 "/api/instances/{id}/output",
@@ -743,7 +743,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             info!("  POST   /api/instances       - Create new instance");
             info!("  GET    /api/instances/:id   - Get instance details");
             info!("  DELETE /api/instances/:id   - Stop instance");
-            info!("  GET    /api/instances/:id/ws - WebSocket connection to instance");
+            info!("  GET    /api/ws              - Multiplexed WebSocket connection");
         } else {
             info!("Server restarted on http://{}", actual_addr);
         }
