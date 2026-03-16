@@ -9,6 +9,9 @@
 	import ChannelChange from '$lib/components/ChannelChange.svelte';
 	import ServerShutdownModal from '$lib/components/ServerShutdownModal.svelte';
 	import ToastStack from '$lib/components/ToastStack.svelte';
+	import HistoryView from '$lib/components/HistoryView.svelte';
+	import SettingsPanel from '$lib/components/settings/SettingsPanel.svelte';
+	import CreateInstanceModal from '$lib/components/CreateInstanceModal.svelte';
 	import { toggleExplorer, isExplorerOpen, closeExplorer } from '$lib/stores/files';
 	import { isChatOpen, closeChat, toggleChat, composeOpen, closeCompose, selectionMode, exitSelectionMode } from '$lib/stores/chat';
 	import { isTaskPanelOpen, closeTaskPanel, toggleTaskPanel } from '$lib/stores/tasks';
@@ -17,6 +20,7 @@
 	import { connectionStatus } from '$lib/stores/websocket';
 	import { currentProject } from '$lib/stores/projects';
 	import { toggleTheme } from '$lib/stores/settings';
+	import { fullscreenView, closeFullscreen, isFullscreenOpen } from '$lib/stores/fullscreen';
 	import { layoutState, splitPane, closePane, paneCount, moveFocus, focusPane, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
 	import type { PaneContentKind } from '$lib/stores/layout';
 
@@ -52,9 +56,11 @@
 			return;
 		}
 
-		// Escape closes fileViewer → compose → selection → chat → tasks → explorer → sidebar (priority order)
+		// Escape closes fullscreen → fileViewer → compose → selection → chat → tasks → explorer → sidebar (priority order)
 		if (e.key === 'Escape') {
-			if ($isFileViewerOpen) {
+			if ($isFullscreenOpen && $fullscreenView !== 'new-project') {
+				closeFullscreen();
+			} else if ($isFileViewerOpen) {
 				closeFileViewer();
 			} else if ($composeOpen) {
 				closeCompose();
@@ -154,21 +160,29 @@
 	<!-- Project rail sidebar — always visible -->
 	<Sidebar />
 
-	<MainView />
+	{#if $fullscreenView === 'history'}
+		<HistoryView onclose={closeFullscreen} />
+	{:else if $fullscreenView === 'settings'}
+		<SettingsPanel onback={closeFullscreen} />
+	{:else if $fullscreenView === 'new-project'}
+		<CreateInstanceModal mode="project" onclose={closeFullscreen} />
+	{:else}
+		<MainView />
 
-	<!-- Overlay panels: only in single-pane mode (multi-pane uses embedded pane types) -->
-	{#if isSinglePane}
-		<!-- File explorer panel -->
-		<FileExplorer />
+		<!-- Overlay panels: only in single-pane mode (multi-pane uses embedded pane types) -->
+		{#if isSinglePane}
+			<!-- File explorer panel -->
+			<FileExplorer />
 
-		<!-- Chat panel -->
-		<ChatPanel />
+			<!-- Chat panel -->
+			<ChatPanel />
 
-		<!-- Task panel (left slide-out) -->
-		<TaskPanel />
+			<!-- Task panel (left slide-out) -->
+			<TaskPanel />
 
-		<!-- Global file viewer overlay -->
-		<FileViewer />
+			<!-- Global file viewer overlay -->
+			<FileViewer />
+		{/if}
 	{/if}
 </div>
 

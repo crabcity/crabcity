@@ -356,7 +356,7 @@
 	.task-panel {
 		position: fixed;
 		top: 0;
-		left: 0;
+		left: 48px;
 		bottom: 0;
 		width: 340px;
 		z-index: 56;
@@ -637,6 +637,7 @@
 	/* === Responsive === */
 	@media (max-width: 1023px) {
 		.task-panel {
+			left: 0;
 			width: min(85vw, 380px);
 			min-width: 280px;
 		}
@@ -644,6 +645,7 @@
 
 	@media (max-width: 639px) {
 		.task-panel {
+			left: 0;
 			width: 100%;
 		}
 	}

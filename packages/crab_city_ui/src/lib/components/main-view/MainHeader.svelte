@@ -168,7 +168,7 @@
 	<!-- Right: Actions -->
 	<div class="header-actions">
 		<button
-			class="action-btn icon-only-mobile"
+			class="action-btn"
 			class:active={!isMultiPane && $isExplorerOpen}
 			onclick={handleFilesClick}
 			title="Files"
@@ -177,10 +177,9 @@
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
 			</svg>
-			<span class="btn-label">Files</span>
 		</button>
 		<button
-			class="action-btn icon-only-mobile tasks-btn"
+			class="action-btn tasks-btn"
 			class:active={!isMultiPane && $isTaskPanelOpen}
 			onclick={handleTasksClick}
 			title="Tasks"
@@ -192,10 +191,9 @@
 			{#if $currentInstanceTaskCount > 0}
 				<span class="tasks-badge">{$currentInstanceTaskCount}</span>
 			{/if}
-			<span class="btn-label">Tasks</span>
 		</button>
 		<button
-			class="action-btn icon-only-mobile chat-btn"
+			class="action-btn chat-btn"
 			class:active={!isMultiPane && $isChatOpen}
 			onclick={handleChatClick}
 			title="Chat"
@@ -207,7 +205,6 @@
 			{#if $totalUnread > 0}
 				<span class="chat-badge">{$totalUnread > 99 ? '99+' : $totalUnread}</span>
 			{/if}
-			<span class="btn-label">Chat</span>
 		</button>
 	</div>
 </header>
@@ -308,18 +305,15 @@
 	.action-btn {
 		display: flex;
 		align-items: center;
-		gap: 4px;
-		padding: 5px 10px;
+		justify-content: center;
+		padding: 5px;
 		background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
 		border: 1px solid var(--surface-border);
 		border-radius: 3px;
 		color: var(--text-secondary);
-		font-size: 10px;
-		font-weight: 600;
-		font-family: inherit;
-		letter-spacing: 0.05em;
 		cursor: pointer;
 		transition: all 0.15s ease;
+		min-width: 28px;
 		min-height: 28px;
 	}
 
@@ -342,8 +336,6 @@
 		height: 12px;
 		flex-shrink: 0;
 	}
-
-	.btn-label { display: inline; }
 
 	.tasks-btn, .chat-btn { position: relative; }
 
@@ -389,27 +381,7 @@
 			display: none;
 		}
 
-		.action-btn.icon-only-mobile {
-			padding: 5px;
-			min-width: 28px;
-			justify-content: center;
-		}
-
-		.action-btn.icon-only-mobile .btn-label {
-			display: none;
-		}
-
 		.header-actions { gap: 4px; }
-	}
-
-	@media (min-width: 640px) and (max-width: 1023px) {
-		.action-btn.icon-only-mobile .btn-label {
-			display: none;
-		}
-
-		.action-btn.icon-only-mobile {
-			padding: 5px 8px;
-		}
 	}
 
 	/* Analog theme */

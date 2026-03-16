@@ -6,7 +6,7 @@
 	import { currentInstanceId } from '$lib/stores/instances';
 	import { consumeTerminalFocus } from '$lib/stores/layout';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
-	import { theme } from '$lib/stores/settings';
+	import { theme, userSettings } from '$lib/stores/settings';
 
 	/** Optional: bind to a specific instance instead of following currentInstanceId */
 	interface Props {
@@ -162,11 +162,12 @@
 			await import('@xterm/xterm/css/xterm.css');
 
 			const currentTheme = get(theme);
+			const settings = get(userSettings);
 
 			terminal = new Terminal({
 				cursorBlink: true,
-				fontSize: 13,
-				fontFamily: "'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', monospace",
+				fontSize: settings.terminalFontSize,
+				fontFamily: settings.terminalFontFamily,
 				allowProposedApi: true, // Required for clipboard addon
 				theme: currentTheme === 'analog' ? analogTheme : phosphorTheme
 			});
@@ -240,6 +241,24 @@
 		terminal.options.theme = t === 'analog' ? analogTheme : phosphorTheme;
 	});
 
+	// React to font setting changes
+	const settingsUnsubscribe = userSettings.subscribe((s) => {
+		if (!terminal) return;
+		let changed = false;
+		if (terminal.options.fontSize !== s.terminalFontSize) {
+			terminal.options.fontSize = s.terminalFontSize;
+			changed = true;
+		}
+		if (terminal.options.fontFamily !== s.terminalFontFamily) {
+			terminal.options.fontFamily = s.terminalFontFamily;
+			changed = true;
+		}
+		if (changed && fitAddon && isReady) {
+			fitAddon.fit();
+			sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
+		}
+	});
+
 	onDestroy(() => {
 		// Unregister from server-side dimension negotiation before cleanup.
 		// Use the captured mountedInstanceId — NOT the store — because
@@ -249,6 +268,7 @@
 		}
 
 		themeUnsubscribe();
+		settingsUnsubscribe();
 		outputUnsubscribe?.();
 		resizeObserver?.disconnect();
 		terminal?.dispose();

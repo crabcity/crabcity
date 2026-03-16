@@ -66,9 +66,15 @@
 {#if mode === 'project'}
 	<!-- Full-screen layout for project creation -->
 	<div class="fullscreen">
+		<header class="project-header">
+			<button class="back-chip" onclick={onclose} aria-label="Back">
+				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+					<path d="M10 3L5 8l5 5" />
+				</svg>
+			</button>
+			<h1 class="header-title">New Project</h1>
+		</header>
 		<div class="fullscreen-panel">
-			<h2 class="title">NEW PROJECT</h2>
-
 			<div class="picker-area">
 				<DirectoryPicker bind:value={workingDir} onselect={(path) => workingDir = path} />
 			</div>
@@ -104,19 +110,14 @@
 					<p class="error">{error}</p>
 				{/if}
 
-				<div class="actions">
-					<button type="button" class="cancel-btn" onclick={onclose} disabled={isCreating}>
-						CANCEL
-					</button>
-					<button type="submit" class="create-btn" disabled={isCreating}>
-						{#if isCreating}
-							<span class="spinner"></span>
-							CREATING…
-						{:else}
-							CREATE
-						{/if}
-					</button>
-				</div>
+				<button type="submit" class="create-btn fullwidth" disabled={isCreating}>
+					{#if isCreating}
+						<span class="spinner"></span>
+						CREATING…
+					{:else}
+						CREATE
+					{/if}
+				</button>
 			</form>
 		</div>
 	</div>
@@ -338,6 +339,11 @@
 		filter: brightness(1.1);
 	}
 
+	.create-btn.fullwidth {
+		width: 100%;
+		flex: none;
+	}
+
 	.create-btn:disabled { opacity: 0.7; cursor: not-allowed; }
 
 	.spinner {
@@ -351,16 +357,61 @@
 
 	@keyframes spin { to { transform: rotate(360deg); } }
 
-	/* Full-screen project layout */
+	.project-header {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 10px 16px;
+		background: linear-gradient(180deg, var(--surface-600) 0%, var(--surface-700) 100%);
+		border-bottom: 1px solid var(--surface-border);
+		flex-shrink: 0;
+	}
+
+	.back-chip {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		font-family: inherit;
+		color: var(--text-muted);
+		background: var(--surface-800);
+		border: 1px solid var(--surface-border);
+		border-radius: 3px;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.back-chip:hover {
+		color: var(--text-secondary);
+		border-color: var(--surface-border-light);
+		background: var(--surface-700);
+	}
+
+	.back-chip svg {
+		width: 14px;
+		height: 14px;
+	}
+
+	.project-header .header-title {
+		flex: 1;
+		margin: 0;
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--amber-500);
+	}
+
+	/* Full-screen project layout (inline — parent handles placement) */
 	.fullscreen {
-		position: fixed;
-		inset: 0;
-		z-index: 200;
-		background: var(--surface-900, #0a0a0a);
 		display: flex;
 		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		background: var(--surface-900, #0a0a0a);
 		font-family: var(--font-mono, 'JetBrains Mono', monospace);
-		animation: fade-in 0.2s ease;
 	}
 
 	.fullscreen-panel {
@@ -368,12 +419,6 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-	}
-
-	.fullscreen-panel .title {
-		padding: 0.5rem 1.5rem 0;
-		margin-bottom: 0.5rem;
-		flex-shrink: 0;
 	}
 
 	.picker-area {

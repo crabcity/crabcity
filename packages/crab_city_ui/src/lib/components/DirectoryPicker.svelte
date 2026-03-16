@@ -82,6 +82,17 @@
 
 	let hoveredPath = $state<string | null>(null);
 	let hoveredIsPrefix = $state(false); // true when hover source is project/worktree (prefix match)
+	let copied = $state(false);
+
+	async function copyPath() {
+		const path = currentPath();
+		if (!path) return;
+		try {
+			await navigator.clipboard.writeText(path);
+			copied = true;
+			setTimeout(() => { copied = false; }, 1500);
+		} catch { /* clipboard not available */ }
+	}
 
 	let columnsEl: HTMLDivElement | undefined = $state();
 	let pathInputEl: HTMLInputElement | undefined = $state();
@@ -449,6 +460,18 @@
 
 	<!-- Path bar -->
 	<div class="path-bar">
+		<button class="copy-path-btn" class:copied onclick={copyPath} title={copied ? 'Copied!' : 'Copy path'}>
+			{#if copied}
+				<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+					<polyline points="3 8 7 12 13 4" />
+				</svg>
+			{:else}
+				<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6z"/>
+					<path d="M2 4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h-1v1H2V5h1V4H2z"/>
+				</svg>
+			{/if}
+		</button>
 		{#if editingPath}
 			<input
 				bind:this={pathInputEl}
@@ -778,6 +801,22 @@
 	}
 
 	.edit-path-btn:hover { opacity: 1; color: var(--text-secondary); }
+
+	.copy-path-btn {
+		display: flex;
+		align-items: center;
+		padding: 3px;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		opacity: 0.6;
+		flex-shrink: 0;
+		transition: all 0.15s ease;
+	}
+
+	.copy-path-btn:hover { opacity: 1; color: var(--text-secondary); }
+	.copy-path-btn.copied { opacity: 1; color: var(--amber-400); }
 
 	.path-input {
 		flex: 1;

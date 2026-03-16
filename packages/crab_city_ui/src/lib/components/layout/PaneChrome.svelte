@@ -296,62 +296,64 @@
 		<span class="chrome-label">{chatScopeLabel}</span>
 	{/if}
 	<div class="pane-spacer"></div>
-	<div class="pane-actions">
-		{#if isTerminal && paneInstanceId}
+	{#if pane.content.kind !== 'landing'}
+		<div class="pane-actions">
+			{#if isTerminal && paneInstanceId}
+				<button
+					class="chrome-btn"
+					onclick={() => sendRefresh(paneInstanceId!)}
+					title="Refresh terminal"
+					aria-label="Refresh terminal"
+				>
+					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+						<path d="M2.5 8a5.5 5.5 0 0 1 9.3-4" />
+						<path d="M13.5 8a5.5 5.5 0 0 1-9.3 4" />
+						<polyline points="11.5 2 12 4.2 9.8 4.5" />
+						<polyline points="4.5 14 4 11.8 6.2 11.5" />
+					</svg>
+				</button>
+			{/if}
 			<button
 				class="chrome-btn"
-				onclick={() => sendRefresh(paneInstanceId!)}
-				title="Refresh terminal"
-				aria-label="Refresh terminal"
+				onpointerdown={(e) => handleSplitPointerDown('vertical', e)}
+				onpointermove={handleSplitPointerMove}
+				onpointerup={handleSplitPointerUp}
+				title="Split vertical (Cmd+\)"
+				aria-label="Split pane vertically"
 			>
 				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-					<path d="M2.5 8a5.5 5.5 0 0 1 9.3-4" />
-					<path d="M13.5 8a5.5 5.5 0 0 1-9.3 4" />
-					<polyline points="11.5 2 12 4.2 9.8 4.5" />
-					<polyline points="4.5 14 4 11.8 6.2 11.5" />
+					<rect x="1" y="1" width="14" height="14" rx="1" />
+					<line x1="8" y1="1" x2="8" y2="15" />
 				</svg>
 			</button>
-		{/if}
-		<button
-			class="chrome-btn"
-			onpointerdown={(e) => handleSplitPointerDown('vertical', e)}
-			onpointermove={handleSplitPointerMove}
-			onpointerup={handleSplitPointerUp}
-			title="Split vertical (Cmd+\)"
-			aria-label="Split pane vertically"
-		>
-			<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<rect x="1" y="1" width="14" height="14" rx="1" />
-				<line x1="8" y1="1" x2="8" y2="15" />
-			</svg>
-		</button>
-		<button
-			class="chrome-btn"
-			onpointerdown={(e) => handleSplitPointerDown('horizontal', e)}
-			onpointermove={handleSplitPointerMove}
-			onpointerup={handleSplitPointerUp}
-			title="Split horizontal"
-			aria-label="Split pane horizontally"
-		>
-			<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-				<rect x="1" y="1" width="14" height="14" rx="1" />
-				<line x1="1" y1="8" x2="15" y2="8" />
-			</svg>
-		</button>
-		{#if canClose}
 			<button
-				class="chrome-btn close"
-				onclick={handleClose}
-				title="Close pane (Cmd+W)"
-				aria-label="Close pane"
+				class="chrome-btn"
+				onpointerdown={(e) => handleSplitPointerDown('horizontal', e)}
+				onpointermove={handleSplitPointerMove}
+				onpointerup={handleSplitPointerUp}
+				title="Split horizontal"
+				aria-label="Split pane horizontally"
 			>
 				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-					<line x1="4" y1="4" x2="12" y2="12" />
-					<line x1="12" y1="4" x2="4" y2="12" />
+					<rect x="1" y="1" width="14" height="14" rx="1" />
+					<line x1="1" y1="8" x2="15" y2="8" />
 				</svg>
 			</button>
-		{/if}
-	</div>
+			{#if canClose}
+				<button
+					class="chrome-btn close"
+					onclick={handleClose}
+					title="Close pane (Cmd+W)"
+					aria-label="Close pane"
+				>
+					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+						<line x1="4" y1="4" x2="12" y2="12" />
+						<line x1="12" y1="4" x2="4" y2="12" />
+					</svg>
+				</button>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 {#if showCreateModal}

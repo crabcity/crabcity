@@ -2,6 +2,7 @@
 	import { userSettings, updateSetting, toggleTheme, DEFAULT_SETTINGS, type UserSettings } from '$lib/stores/settings';
 	import { connectionStatus } from '$lib/stores/websocket';
 	import { requestNotificationPermission } from '$lib/stores/inbox';
+	import FullscreenHeader from '../FullscreenHeader.svelte';
 
 	interface Props {
 		embedded?: boolean;
@@ -37,6 +38,11 @@
 		updateSetting('terminalFontSize', value);
 	}
 
+	function handleFontFamilyChange(e: Event) {
+		const value = (e.target as HTMLInputElement).value;
+		updateSetting('terminalFontFamily', value);
+	}
+
 	async function handleNotificationsToggle() {
 		const enabling = !$userSettings.showNotifications;
 		if (enabling) {
@@ -52,17 +58,15 @@
 </script>
 
 <div class="settings-panel" class:embedded>
+	{#if onback}
+		<FullscreenHeader title="Settings" onclose={onback} />
+	{/if}
 	<div class="settings-scroll">
-		<div class="settings-header">
-			{#if onback}
-				<button class="back-btn" onclick={onback} title="Back" aria-label="Back">
-					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-						<path d="M10 3L5 8l5 5" />
-					</svg>
-				</button>
-			{/if}
-			<h1 class="settings-title">SETTINGS</h1>
-		</div>
+		{#if !onback}
+			<div class="settings-header">
+				<h1 class="settings-title">SETTINGS</h1>
+			</div>
+		{/if}
 
 		<!-- Appearance -->
 		<section class="settings-section">
@@ -99,6 +103,21 @@
 					value={$userSettings.terminalFontSize}
 					oninput={handleFontSizeChange}
 					class="range-input"
+				/>
+			</div>
+
+			<div class="setting-row">
+				<div class="setting-info">
+					<label class="setting-label" for="font-family">Terminal Font</label>
+					<span class="setting-desc">CSS font-family stack</span>
+				</div>
+				<input
+					id="font-family"
+					type="text"
+					class="setting-input font-family-input"
+					value={$userSettings.terminalFontFamily}
+					onchange={handleFontFamilyChange}
+					placeholder={DEFAULT_SETTINGS.terminalFontFamily}
 				/>
 			</div>
 		</section>
@@ -224,33 +243,6 @@
 		align-items: center;
 		gap: 8px;
 		margin-bottom: 24px;
-	}
-
-	.back-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		background: transparent;
-		border: 1px solid var(--surface-border);
-		border-radius: 4px;
-		color: var(--text-muted);
-		cursor: pointer;
-		padding: 0;
-		flex-shrink: 0;
-		transition: all 0.15s ease;
-	}
-
-	.back-btn:hover {
-		background: var(--tint-hover);
-		border-color: var(--amber-600);
-		color: var(--text-secondary);
-	}
-
-	.back-btn svg {
-		width: 14px;
-		height: 14px;
 	}
 
 	.settings-title {
@@ -421,6 +413,11 @@
 	.setting-input::placeholder {
 		color: var(--text-muted);
 		opacity: 0.5;
+	}
+
+	.setting-input.font-family-input {
+		width: 220px;
+		font-size: 10px;
 	}
 
 	/* Indicator toggle (ON/OFF) */

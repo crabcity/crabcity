@@ -4,7 +4,6 @@
 	import {
 		inboxItems,
 		inboxSorted,
-		inboxCount,
 		dismissInboxItem,
 		formatDuration,
 		type InboxItem
@@ -385,8 +384,8 @@
 				title={expanded ? 'Collapse fleet panel' : 'Expand fleet panel'}
 				aria-expanded={expanded}
 			>
-				{#if $inboxCount > 0 && !expanded}
-					<span class="expand-badge">{$inboxCount}</span>
+				{#if actionItems.length > 0 && !expanded}
+					<span class="expand-badge">{actionItems.length}</span>
 				{/if}
 				<svg class="expand-chevron" class:open={expanded} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
 					<polyline points="4,6 8,10 12,6" />

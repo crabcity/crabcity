@@ -284,7 +284,7 @@
 	.file-explorer-panel {
 		position: fixed;
 		top: 0;
-		left: var(--sidebar-width, 260px);
+		left: 48px;
 		bottom: 0;
 		display: flex;
 		flex-direction: column;

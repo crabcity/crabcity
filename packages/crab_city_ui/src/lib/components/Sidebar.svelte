@@ -5,13 +5,10 @@
 	} from '$lib/stores/instances';
 	import { projects, currentProject } from '$lib/stores/projects';
 	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
-	import QuickSettings from './settings/QuickSettings.svelte';
-	import CreateInstanceModal from './CreateInstanceModal.svelte';
+	import { fullscreenView, openFullscreen, closeFullscreen } from '$lib/stores/fullscreen';
 	import CloseProjectModal from './CloseProjectModal.svelte';
 	import type { Project } from '$lib/stores/projects';
 
-	let showQuickSettings = $state(false);
-	let showCreateModal = $state(false);
 	let closeProjectTarget = $state<Project | null>(null);
 
 	async function handleLogout() {
@@ -76,7 +73,7 @@
 	<div class="rail-bottom">
 		<button
 			class="rail-btn"
-			onclick={() => showCreateModal = true}
+			onclick={() => $fullscreenView === 'new-project' ? closeFullscreen() : openFullscreen('new-project')}
 			title="New project"
 			aria-label="Create new project"
 		>
@@ -88,8 +85,20 @@
 
 		<button
 			class="rail-btn"
-			class:active={showQuickSettings}
-			onclick={() => showQuickSettings = !showQuickSettings}
+			onclick={() => $fullscreenView === 'history' ? closeFullscreen() : openFullscreen('history')}
+			title="History"
+			aria-label="Conversation history"
+		>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M6 2L6 6M18 2L18 6M6 18L6 22M18 18L18 22" />
+				<path d="M6 6C6 6 4 6 4 8V10C4 12 6 12 6 12H18C18 12 20 12 20 10V8C20 6 18 6 18 6" />
+				<path d="M6 12C6 12 4 12 4 14V16C4 18 6 18 6 18H18C18 18 20 18 20 16V14C20 12 18 12 18 12" />
+			</svg>
+		</button>
+
+		<button
+			class="rail-btn"
+			onclick={() => $fullscreenView === 'settings' ? closeFullscreen() : openFullscreen('settings')}
 			title="Settings"
 			aria-label="Settings"
 		>
@@ -98,10 +107,6 @@
 				<path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4" />
 			</svg>
 		</button>
-
-		{#if showQuickSettings}
-			<QuickSettings onclose={() => showQuickSettings = false} />
-		{/if}
 
 		{#if $isAuthenticated && $currentUser}
 			<button
@@ -115,10 +120,6 @@
 		{/if}
 	</div>
 </aside>
-
-{#if showCreateModal}
-	<CreateInstanceModal mode="project" onclose={() => showCreateModal = false} />
-{/if}
 
 {#if closeProjectTarget}
 	<CloseProjectModal project={closeProjectTarget} onclose={() => closeProjectTarget = null} />
@@ -270,11 +271,6 @@
 		color: var(--text-secondary);
 	}
 
-	.rail-btn.active {
-		background: var(--tint-active);
-		border-color: var(--amber-600);
-		color: var(--amber-400);
-	}
 
 	.rail-btn svg { width: 14px; height: 14px; }
 

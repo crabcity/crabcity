@@ -1,14 +1,13 @@
 <script lang="ts">
 	import SnakeTeaser from '../SnakeTeaser.svelte';
 	import SnakeGame from '../SnakeGame.svelte';
-	import CreateInstanceModal from '../CreateInstanceModal.svelte';
 	import { projects } from '$lib/stores/projects';
+	import { openFullscreen } from '$lib/stores/fullscreen';
 
 	// Easter egg: triple-click the monitor icon to launch snake
 	let clicks = $state(0);
 	let clickTimer: ReturnType<typeof setTimeout> | null = null;
 	let showSnake = $state(false);
-	let showCreateModal = $state(false);
 
 	let hasProjects = $derived($projects.length > 0);
 
@@ -51,7 +50,7 @@
 				<h2>No Projects</h2>
 				<p>Create a project to get started</p>
 			{/if}
-			<button class="new-project-btn" onclick={() => { showCreateModal = true; }}>
+			<button class="new-project-btn" onclick={() => openFullscreen('new-project')}>
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<line x1="12" y1="5" x2="12" y2="19" />
 					<line x1="5" y1="12" x2="19" y2="12" />
@@ -60,10 +59,6 @@
 			</button>
 		</div>
 	</div>
-{/if}
-
-{#if showCreateModal}
-	<CreateInstanceModal mode="project" onclose={() => { showCreateModal = false; }} />
 {/if}
 
 <style>

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { userSettings, toggleTheme } from '$lib/stores/settings';
-	import { layoutState, splitPane, setPaneContent, focusPane } from '$lib/stores/layout';
+	import { openFullscreen } from '$lib/stores/fullscreen';
 
 	interface Props {
 		onclose: () => void;
@@ -12,18 +12,7 @@
 	let popoverEl: HTMLDivElement | undefined = $state();
 
 	function handleOpenSettings() {
-		// Find the focused pane and set it to settings, or split
-		const state = $layoutState;
-		const focusedId = state.focusedPaneId;
-		const pane = state.panes.get(focusedId);
-
-		if (pane && pane.content.kind === 'landing') {
-			// Replace landing with settings
-			setPaneContent(focusedId, { kind: 'settings' });
-		} else if (pane) {
-			// Split focused pane and open settings in the new pane
-			splitPane(focusedId, 'vertical', { kind: 'settings' });
-		}
+		openFullscreen('settings');
 		onclose();
 	}
 

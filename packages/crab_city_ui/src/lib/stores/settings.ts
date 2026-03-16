@@ -12,6 +12,7 @@ export interface UserSettings {
 	shellCommand: string;
 	diffEngine: 'standard' | 'patience' | 'structural';
 	terminalFontSize: number;
+	terminalFontFamily: string;
 	showNotifications: boolean;
 	drawerWidth: number;
 }
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
 	shellCommand: 'bash',
 	diffEngine: 'structural',
 	terminalFontSize: 14,
+	terminalFontFamily: "'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', monospace",
 	showNotifications: true,
 	drawerWidth: 400
 };
