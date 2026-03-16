@@ -147,7 +147,7 @@
 		opacity: 0.6;
 	}
 
-	.card-kind svg {
+	.card-kind :global(svg) {
 		width: 12px;
 		height: 12px;
 		display: block;

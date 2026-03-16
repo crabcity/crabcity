@@ -13,8 +13,9 @@
 
 	let { instanceId, viewMode, paneId }: Props = $props();
 
-	// Expose paneId via context so deeply-nested components (QuestionCard, PlanCard) can reach it
-	setContext('paneId', paneId);
+	// Expose paneId via context so deeply-nested components (QuestionCard, PlanCard) can reach it.
+	// Use a getter to avoid Svelte's state_referenced_locally warning — paneId is reactive via $props().
+	setContext('paneId', { get id() { return paneId; } });
 </script>
 
 <div class="pane-conversation">

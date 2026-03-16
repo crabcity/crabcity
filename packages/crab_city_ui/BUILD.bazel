@@ -81,6 +81,7 @@ svelte_check_bin.svelte_check_binary(
     args = [
         "--tsconfig",
         "./tsconfig.json",
+        "--fail-on-warnings",
     ],
     chdir = package_name(),
     data = [
@@ -97,6 +98,7 @@ svelte_check_bin.svelte_check_test(
     args = [
         "--tsconfig",
         "./tsconfig.json",
+        "--fail-on-warnings",
     ],
     chdir = package_name(),
     data = [

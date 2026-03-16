@@ -3,7 +3,7 @@
 	import { getContext } from 'svelte';
 	import { setPaneViewMode } from '$lib/stores/layout';
 
-	const paneId = getContext<string>('paneId');
+	const paneCtx = getContext<{ readonly id: string }>('paneId');
 
 	interface Props {
 		tool: ToolCell;
@@ -197,7 +197,7 @@
 		{/each}
 
 		{#if isPending}
-			<button class="pending-banner" onclick={() => setPaneViewMode(paneId, 'raw')}>
+			<button class="pending-banner" onclick={() => setPaneViewMode(paneCtx.id, 'raw')}>
 				<span class="pending-icon">⌨</span>
 				<span class="pending-text">Switch to the Terminal view to answer this question</span>
 			</button>

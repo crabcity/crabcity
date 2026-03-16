@@ -923,7 +923,7 @@
 		position: relative;
 	}
 
-	.row-kind svg {
+	.row-kind :global(svg) {
 		width: 12px;
 		height: 12px;
 		display: block;
@@ -934,7 +934,7 @@
 		height: 10px;
 	}
 
-	.row-kind.mini svg {
+	.row-kind.mini :global(svg) {
 		width: 10px;
 		height: 10px;
 	}

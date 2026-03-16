@@ -63,6 +63,21 @@ declare global {
 		SpeechRecognition?: SpeechRecognitionConstructor;
 		webkitSpeechRecognition?: SpeechRecognitionConstructor;
 	}
+
+	// Chrome Prompt API (chrome://flags/#prompt-api-for-gemini-nano)
+	// Minimal ambient types for the LanguageModel global used by voice.ts
+	interface LanguageModel {
+		prompt(messages: Array<{ role: string; content: Array<{ type: string; value: unknown }> }>): Promise<string>;
+		destroy(): void;
+	}
+
+	interface LanguageModelConstructor {
+		availability(options?: { expectedInputs?: Array<{ type: string }> }): Promise<string>;
+		create(options?: { expectedInputs?: Array<{ type: string }> }): Promise<LanguageModel>;
+	}
+
+	// eslint-disable-next-line no-var
+	var LanguageModel: LanguageModelConstructor;
 }
 
 export {};

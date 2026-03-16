@@ -183,7 +183,7 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 		if (session) return Promise.resolve(session);
 		if (sessionPromise) return sessionPromise;
 		sessionPromise = LanguageModel.create({ expectedInputs: [{ type: 'audio' }] })
-			.then((s) => {
+			.then((s: LanguageModel) => {
 				if (destroyed) {
 					s.destroy();
 					return null;
@@ -191,14 +191,14 @@ function createPromptApiSession(cb: VoiceSessionCallbacks): VoiceSession {
 				session = s;
 				return s;
 			})
-			.catch((err) => {
+			.catch((err: unknown) => {
 				const msg = `Failed to create Prompt API session: ${err}`;
 				cb.onError(msg);
 				recordVoiceError(msg);
 				sessionPromise = null;
 				return null;
 			});
-		return sessionPromise;
+		return sessionPromise!;
 	}
 
 	return {
@@ -355,7 +355,7 @@ function createHybridSession(cb: VoiceSessionCallbacks): VoiceSession {
 		if (session) return Promise.resolve(session);
 		if (sessionPromise) return sessionPromise;
 		sessionPromise = LanguageModel.create({ expectedInputs: [{ type: 'audio' }] })
-			.then((s) => {
+			.then((s: LanguageModel) => {
 				if (destroyed) {
 					s.destroy();
 					return null;
@@ -363,14 +363,14 @@ function createHybridSession(cb: VoiceSessionCallbacks): VoiceSession {
 				session = s;
 				return s;
 			})
-			.catch((err) => {
+			.catch((err: unknown) => {
 				const msg = `Failed to create Prompt API session: ${err}`;
 				cb.onError(msg);
 				recordVoiceError(msg);
 				sessionPromise = null;
 				return null;
 			});
-		return sessionPromise;
+		return sessionPromise!;
 	}
 
 	// Wire up Web Speech callbacks for live streaming.
