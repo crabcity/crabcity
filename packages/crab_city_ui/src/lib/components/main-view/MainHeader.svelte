@@ -8,8 +8,8 @@
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
-	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, getPaneInstanceId, defaultContentForKind, setFocusedInstance } from '$lib/stores/layout';
-	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
+	import { paneCount, splitPane, layoutState, focusPane, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
+	import type { PaneContentKind } from '$lib/stores/layout';
 
 	import FleetCommandCenter from './FleetCommandCenter.svelte';
 	import InstancePopover from './InstancePopover.svelte';
@@ -73,7 +73,6 @@
 	function dismissAllPopovers() {
 		panelOpen = false;
 		popoverTarget = null;
-		showPresetMenu = false;
 	}
 
 	function togglePanel() {
@@ -118,23 +117,6 @@
 	function handleChatClick() {
 		if (isMultiPane) openAsSplit('chat');
 		else toggleChat();
-	}
-
-	let showPresetMenu = $state(false);
-
-	function handlePresetSelect(preset: LayoutPreset) {
-		applyPreset(preset);
-		showPresetMenu = false;
-	}
-
-	function togglePresetMenu() {
-		const opening = !showPresetMenu;
-		if (opening) dismissAllPopovers();
-		showPresetMenu = opening;
-	}
-
-	function handlePresetMenuBlur() {
-		setTimeout(() => { showPresetMenu = false; }, 150);
 	}
 
 	// =========================================================================
@@ -185,53 +167,6 @@
 
 	<!-- Right: Actions -->
 	<div class="header-actions">
-		<div class="preset-wrapper">
-			<button
-				class="action-btn icon-only-mobile"
-				class:active={showPresetMenu}
-				onclick={togglePresetMenu}
-				onblur={handlePresetMenuBlur}
-				title="Layout presets"
-				aria-label="Layout presets"
-				aria-expanded={showPresetMenu}
-			>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<rect x="3" y="3" width="7" height="7" />
-					<rect x="14" y="3" width="7" height="7" />
-					<rect x="3" y="14" width="7" height="7" />
-					<rect x="14" y="14" width="7" height="7" />
-				</svg>
-				<span class="btn-label">Layout</span>
-			</button>
-			{#if showPresetMenu}
-				<div class="preset-menu">
-					<button class="preset-item" onclick={() => handlePresetSelect('single')}>
-						<span class="preset-icon">
-							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /></svg>
-						</span>
-						Single
-					</button>
-					<button class="preset-item" onclick={() => handlePresetSelect('dev-split')}>
-						<span class="preset-icon">
-							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /><line x1="10" y1="1" x2="10" y2="15" /></svg>
-						</span>
-						Dev Split
-					</button>
-					<button class="preset-item" onclick={() => handlePresetSelect('side-by-side')}>
-						<span class="preset-icon">
-							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="14" height="14" rx="1" /><line x1="8" y1="1" x2="8" y2="15" /></svg>
-						</span>
-						Side by Side
-					</button>
-					{#if isMultiPane}
-						<div class="preset-divider"></div>
-						<button class="preset-item reset" onclick={() => { resetLayout(); showPresetMenu = false; }}>
-							Reset
-						</button>
-					{/if}
-				</div>
-			{/if}
-		</div>
 		<button
 			class="action-btn icon-only-mobile"
 			class:active={!isMultiPane && $isExplorerOpen}
@@ -475,68 +410,6 @@
 		.action-btn.icon-only-mobile {
 			padding: 5px 8px;
 		}
-	}
-
-	/* Preset menu */
-	.preset-wrapper { position: relative; }
-
-	.preset-menu {
-		position: absolute;
-		top: 100%;
-		right: 0;
-		margin-top: 4px;
-		min-width: 150px;
-		background: var(--surface-600);
-		border: 1px solid var(--surface-border);
-		border-radius: 4px;
-		box-shadow: var(--shadow-dropdown);
-		padding: 4px 0;
-		z-index: 60;
-		animation: preset-pop 0.12s ease-out;
-	}
-
-	@keyframes preset-pop {
-		from { opacity: 0; transform: scale(0.95) translateY(-4px); }
-		to { opacity: 1; transform: scale(1) translateY(0); }
-	}
-
-	.preset-item {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		padding: 6px 12px;
-		background: transparent;
-		border: none;
-		color: var(--text-secondary);
-		font-size: 11px;
-		font-weight: 600;
-		font-family: inherit;
-		letter-spacing: 0.03em;
-		cursor: pointer;
-		transition: all 0.1s ease;
-		text-align: left;
-	}
-
-	.preset-item:hover { background: var(--tint-active-strong); color: var(--amber-400); }
-	.preset-item.reset { color: var(--text-muted); }
-	.preset-item.reset:hover { color: var(--text-primary); }
-
-	.preset-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
-	}
-
-	.preset-icon svg { width: 14px; height: 14px; }
-
-	.preset-divider {
-		height: 1px;
-		margin: 4px 0;
-		background: var(--surface-border);
 	}
 
 	/* Analog theme */

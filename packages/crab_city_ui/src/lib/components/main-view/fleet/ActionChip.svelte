@@ -50,7 +50,7 @@
 			: null
 	);
 
-	function handleDismiss(e: MouseEvent) {
+	function handleDismiss(e: Event) {
 		e.stopPropagation();
 		ondismiss?.();
 	}
@@ -72,9 +72,9 @@
 		<span class="chip-context">{promptSnippet}</span>
 	{/if}
 	{#if ondismiss && item.event_type === 'completed_turn'}
-		<button class="chip-dismiss" onclick={handleDismiss} title="Dismiss" aria-label="Dismiss">
+		<span class="chip-dismiss" role="button" tabindex="-1" onclick={handleDismiss} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleDismiss(e); }}} title="Dismiss" aria-label="Dismiss">
 			&times;
-		</button>
+		</span>
 	{/if}
 </button>
 

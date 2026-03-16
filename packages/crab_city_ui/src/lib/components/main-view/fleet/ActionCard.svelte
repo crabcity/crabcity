@@ -3,6 +3,7 @@
 	import type { InboxItem } from '$lib/stores/inbox';
 	import { formatDuration } from '$lib/stores/inbox';
 	import { getStateInfo } from '$lib/utils/instance-state';
+	import InstanceKindIcon from './InstanceKindIcon.svelte';
 
 	interface Props {
 		item: InboxItem;
@@ -70,17 +71,7 @@
 <div class="action-card {urgency}" class:highlighted>
 	<div class="card-header">
 		<span class="card-kind">
-			{#if instance.kind.type === 'Structured'}
-				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-					<circle cx="8" cy="6" r="3.5" />
-					<path d="M4 12c0-2.2 1.8-4 4-4s4 1.8 4 4" />
-				</svg>
-			{:else}
-				<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-					<polyline points="4 8 6 10 4 12" />
-					<line x1="8" y1="12" x2="12" y2="12" />
-				</svg>
-			{/if}
+			<InstanceKindIcon kind={instance.kind} />
 		</span>
 		<span
 			class="card-led"

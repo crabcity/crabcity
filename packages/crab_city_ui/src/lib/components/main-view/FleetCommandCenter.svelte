@@ -11,6 +11,7 @@
 	} from '$lib/stores/inbox';
 	import ActionChip from './fleet/ActionChip.svelte';
 	import ActionCard from './fleet/ActionCard.svelte';
+	import InstanceKindIcon from './fleet/InstanceKindIcon.svelte';
 
 	interface Props {
 		instances: Instance[];
@@ -323,8 +324,7 @@
 
 <div class="fleet-command-center">
 	<!-- ===== COLLAPSED STRIP ===== -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="strip" onkeydown={handleStripKeydown}>
+	<div class="strip" role="toolbar" tabindex="0" onkeydown={handleStripKeydown}>
 		<!-- Action queue -->
 		<div class="action-queue" bind:this={queueEl}>
 			{#if actionItems.length > 0}
@@ -397,12 +397,12 @@
 
 	<!-- ===== EXPANDED PANEL ===== -->
 	{#if expanded}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="panel-backdrop" onclick={onclose}></div>
+		<button class="panel-backdrop" onclick={onclose} aria-label="Close fleet panel"></button>
 
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="fleet-panel"
+			role="listbox"
+			aria-label="Fleet instances"
 			bind:this={panelEl}
 			onkeydown={handlePanelKeydown}
 			tabindex="-1"
@@ -416,7 +416,7 @@
 					</div>
 					{#each actionItems as { item, instance } (item.instance_id)}
 						{@const rowIdx = getRowIndex(instance.id)}
-						<div
+						<div role="group"
 							data-instance-id={instance.id}
 							oncontextmenu={(e) => handleRowContextMenu(instance, e)}
 							onmouseenter={() => focusedIndex = rowIdx}
@@ -442,14 +442,14 @@
 					{#each activeEntries as entry (entry.instance.id)}
 						{@const inst = entry.instance}
 						{@const rowIdx = getRowIndex(inst.id)}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div role="button" tabindex="0"
+							<div role="button" tabindex="0"
 							class="panel-row activity-row"
 							class:highlighted={rowIdx === focusedIndex}
 							class:current={currentInstanceId === inst.id}
 							class:in-pane={paneInstanceIds.has(inst.id)}
 							data-instance-id={inst.id}
 							onclick={() => { onselect(inst.id); onclose(); }}
+							onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselect(inst.id); onclose(); }}}
 							oncontextmenu={(e) => handleRowContextMenu(inst, e)}
 							onmouseenter={() => focusedIndex = rowIdx}
 						>
@@ -460,17 +460,7 @@
 								style="width: {entry.barPct}%; background: {heatColor(entry.secs)}"
 							></span>
 							<span class="row-kind">
-								{#if inst.kind.type === 'Structured'}
-									<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-										<circle cx="8" cy="6" r="3.5" />
-										<path d="M4 12c0-2.2 1.8-4 4-4s4 1.8 4 4" />
-									</svg>
-								{:else}
-									<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-										<polyline points="4 8 6 10 4 12" />
-										<line x1="8" y1="12" x2="12" y2="12" />
-									</svg>
-								{/if}
+								<InstanceKindIcon kind={inst.kind} />
 							</span>
 							<span
 								class="row-led"
@@ -506,7 +496,6 @@
 						{#each fleet.idle as inst (inst.id)}
 							{@const stateInfo = getStateInfo(inst.id, inst.claude_state, inst.claude_state_stale)}
 							{@const rowIdx = getRowIndex(inst.id)}
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<div role="button" tabindex="0"
 								class="panel-row idle-row"
 								class:highlighted={rowIdx === focusedIndex}
@@ -514,21 +503,12 @@
 								class:in-pane={paneInstanceIds.has(inst.id)}
 								data-instance-id={inst.id}
 								onclick={() => { onselect(inst.id); onclose(); }}
+								onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onselect(inst.id); onclose(); }}}
 								oncontextmenu={(e) => handleRowContextMenu(inst, e)}
 								onmouseenter={() => focusedIndex = rowIdx}
 							>
 								<span class="row-kind">
-									{#if inst.kind.type === 'Structured'}
-										<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-											<circle cx="8" cy="6" r="3.5" />
-											<path d="M4 12c0-2.2 1.8-4 4-4s4 1.8 4 4" />
-										</svg>
-									{:else}
-										<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-											<polyline points="4 8 6 10 4 12" />
-											<line x1="8" y1="12" x2="12" y2="12" />
-										</svg>
-									{/if}
+									<InstanceKindIcon kind={inst.kind} />
 								</span>
 								<span
 									class="row-led"
@@ -554,17 +534,7 @@
 									title={inst.custom_name ?? inst.name}
 								>
 									<span class="row-kind mini">
-										{#if inst.kind.type === 'Structured'}
-											<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-												<circle cx="8" cy="6" r="3.5" />
-												<path d="M4 12c0-2.2 1.8-4 4-4s4 1.8 4 4" />
-											</svg>
-										{:else}
-											<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-												<polyline points="4 8 6 10 4 12" />
-												<line x1="8" y1="12" x2="12" y2="12" />
-											</svg>
-										{/if}
+										<InstanceKindIcon kind={inst.kind} />
 									</span>
 									<span class="chip-name">{inst.custom_name ?? inst.name}</span>
 								</button>
@@ -790,6 +760,11 @@
 		position: fixed;
 		inset: 0;
 		z-index: 49;
+		background: transparent;
+		border: none;
+		padding: 0;
+		margin: 0;
+		cursor: default;
 	}
 
 	.fleet-panel {
