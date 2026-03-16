@@ -5,9 +5,12 @@
   import { quickAddTask, stagedTask, clearStagedTask, commitStagedTask } from '$lib/stores/tasks';
   import { getDraft, setDraft } from '$lib/stores/drafts';
   import { voiceBackendOverride } from '$lib/stores/metrics';
+  import { api } from '$lib/utils/api';
+  import type { PaginatedResponse, SearchResultConversation } from '$lib/types';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { detectVoiceBackend, createVoiceSession, type VoiceSession } from '$lib/utils/voice';
   import VoiceVisualizer from './VoiceVisualizer.svelte';
+  import HistorySearchOverlay from './HistorySearchOverlay.svelte';
 
   interface Props {
     instanceId?: string;
@@ -61,6 +64,57 @@
 
   // Queue flash confirmation
   let queueFlash = $state(false);
+
+  // CTRL+R history search — discriminated state makes impossible states impossible
+  type HistorySearchMode = { mode: 'closed' } | { mode: 'open'; savedMessage: string };
+  let historySearch = $state<HistorySearchMode>({ mode: 'closed' });
+  let hsResults = $state<SearchResultConversation[]>([]);
+  let hsLoading = $state(false);
+  let hsSelectedIndex = $state(0);
+  let hsSeq = 0;
+
+  async function hsSearch(query: string): Promise<void> {
+    const seq = ++hsSeq;
+    hsLoading = true;
+    try {
+      const response = await api(
+        `/api/conversations/search?q=${encodeURIComponent(query)}&role=user&per_page=10`
+      );
+      if (seq !== hsSeq) return;
+      if (!response.ok) throw new Error(`Search failed: ${response.statusText}`);
+      const data: PaginatedResponse<SearchResultConversation> = await response.json();
+      if (seq !== hsSeq) return;
+      hsResults = data.items;
+      hsSelectedIndex = 0;
+    } catch (e) {
+      if (seq !== hsSeq) return;
+      console.error('History search failed:', e);
+      hsResults = [];
+    } finally {
+      if (seq === hsSeq) hsLoading = false;
+    }
+  }
+
+  function hsClear(): void {
+    hsSeq++;
+    hsResults = [];
+    hsLoading = false;
+    hsSelectedIndex = 0;
+  }
+
+  // Debounced search driven by textarea content while overlay is open
+  $effect(() => {
+    if (historySearch.mode !== 'open') return;
+    const q = message.trim();
+    if (!q) {
+      hsClear();
+      return;
+    }
+    const timer = setTimeout(() => {
+      hsSearch(q);
+    }, 150);
+    return () => clearTimeout(timer);
+  });
 
   // Watch for staged tasks — populate input when one arrives
   $effect(() => {
@@ -223,7 +277,77 @@
     inputEl?.focus();
   }
 
+  function hsSelect(index: number) {
+    const result = hsResults[index];
+    if (!result) return;
+    const match = result.matches.find((m) => m.role === 'user') ?? result.matches[0];
+    if (!match) return;
+    message = match.snippet.replace(/<[^>]*>/g, '');
+    historySearch = { mode: 'closed' };
+    hsClear();
+    requestAnimationFrame(() => {
+      inputEl?.focus();
+      if (inputEl) autoResize(inputEl);
+    });
+  }
+
+  function hsClose() {
+    if (historySearch.mode === 'open') {
+      message = historySearch.savedMessage;
+    }
+    historySearch = { mode: 'closed' };
+    hsClear();
+    requestAnimationFrame(() => {
+      inputEl?.focus();
+      if (inputEl) autoResize(inputEl);
+    });
+  }
+
   function handleKeydown(e: KeyboardEvent) {
+    // History search overlay — intercept keys before normal handling
+    if (historySearch.mode === 'open') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hsClose();
+        return;
+      }
+      if (e.key === 'ArrowUp' && hsResults.length > 0) {
+        e.preventDefault();
+        hsSelectedIndex = Math.min(hsSelectedIndex + 1, hsResults.length - 1);
+        return;
+      }
+      if (e.key === 'ArrowDown' && hsResults.length > 0) {
+        e.preventDefault();
+        hsSelectedIndex = Math.max(hsSelectedIndex - 1, 0);
+        return;
+      }
+      if (e.key === 'r' && e.ctrlKey && !e.shiftKey && !e.metaKey && hsResults.length > 0) {
+        e.preventDefault();
+        hsSelectedIndex = Math.min(hsSelectedIndex + 1, hsResults.length - 1);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (hsResults.length > 0) {
+          hsSelect(hsSelectedIndex);
+        }
+        return;
+      }
+      // All other keys: continue typing in the textarea, search triggers via $effect
+      return;
+    }
+
+    // Open history search
+    if (e.key === 'r' && e.ctrlKey && !e.shiftKey && !e.metaKey) {
+      e.preventDefault();
+      historySearch = { mode: 'open', savedMessage: message };
+      // If there's already text, fire search immediately (skip debounce)
+      const q = message.trim();
+      if (q) {
+        hsSearch(q);
+      }
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && (e.metaKey || e.ctrlKey)) {
       // Cmd/Ctrl+Shift handled below — but Cmd+Enter sends normally
     }
@@ -253,8 +377,10 @@
     }
   });
 
-  // Persist draft to store on every change (survives instance switches & reloads)
+  // Persist draft to store on every change (survives instance switches & reloads).
+  // Skip during history search — don't persist search queries as drafts.
   $effect(() => {
+    if (historySearch.mode === 'open') return;
     const id = effectiveInstanceId;
     if (id) {
       setDraft(id, message);
@@ -263,6 +389,15 @@
 </script>
 
 <div class="input-container" class:disconnected={isDisconnected || isServerGone} class:reconnecting={isReconnecting}>
+  {#if historySearch.mode === 'open'}
+    <HistorySearchOverlay
+      results={hsResults}
+      loading={hsLoading}
+      selectedIndex={hsSelectedIndex}
+      hasQuery={message.trim().length > 0}
+      onselect={hsSelect}
+    />
+  {/if}
   {#if $stagedTask}
     <div class="staged-banner">
       <svg class="staged-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -353,8 +488,17 @@
           ? 'Type here — will send when reconnected...'
           : isInstanceStarting
             ? 'Type here — will queue as task while Claude starts...'
-            : 'Message Claude...'}
+            : historySearch.mode === 'open'
+              ? 'Search your message history...'
+              : 'Message Claude...'}
       rows="1"
+      role={historySearch.mode === 'open' ? 'combobox' : undefined}
+      aria-expanded={historySearch.mode === 'open' ? hsResults.length > 0 : undefined}
+      aria-controls={historySearch.mode === 'open' ? 'hs-listbox' : undefined}
+      aria-activedescendant={historySearch.mode === 'open' && hsResults.length > 0
+        ? `hs-result-${hsSelectedIndex}`
+        : undefined}
+      aria-autocomplete={historySearch.mode === 'open' ? 'list' : undefined}
       class:voice-draft={showDraftBanner}
       class:voice-correcting={showCorrectingBanner}
     ></textarea>
@@ -414,6 +558,7 @@
 
 <style>
   .input-container {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0;
