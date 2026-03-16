@@ -13,7 +13,7 @@
 	function handleBack() {
 		const instanceId = get(currentInstanceId);
 		if (instanceId) {
-			setPaneContent(paneId, { kind: 'conversation', instanceId });
+			setPaneContent(paneId, { kind: 'conversation', instanceId, viewMode: 'structured' });
 		} else {
 			setPaneContent(paneId, { kind: 'landing' });
 		}

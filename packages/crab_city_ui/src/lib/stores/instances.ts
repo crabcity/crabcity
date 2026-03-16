@@ -351,13 +351,6 @@ export function registerFocusInstance(fn: FocusInstanceFn): void {
 }
 
 export function selectInstance(id: string, updateHistory = true): void {
-	const previousId = get(_currentInstanceId);
-
-	// Reset to conversation view when switching instances
-	if (previousId !== id) {
-		showTerminal.set(false);
-	}
-
 	_focusInstance?.(id);
 
 	if (updateHistory) {
@@ -418,41 +411,3 @@ export function initViewStateFromUrl(): {
 	return result;
 }
 
-// =============================================================================
-// Terminal Mode (URL-based, per-user UI preference)
-// =============================================================================
-
-/** Writable store for terminal mode, synced to URL */
-export const showTerminal = writable<boolean>(false);
-
-/** When true, the Terminal component should grab focus once it mounts. */
-const pendingTerminalFocus = writable<boolean>(false);
-
-/** Consume (read and clear) a pending terminal focus request. */
-export function consumeTerminalFocus(): boolean {
-	const pending = get(pendingTerminalFocus);
-	if (pending) pendingTerminalFocus.set(false);
-	return pending;
-}
-
-/** Read terminal mode from URL (call once on init) */
-export function initTerminalModeFromUrl(): boolean {
-	const url = new URL(window.location.href);
-	const param = url.searchParams.get('terminal');
-	// 'true' or '1' means terminal mode, anything else means conversation
-	return param === 'true' || param === '1';
-}
-
-/** Update terminal mode in URL and store */
-export function setTerminalMode(show: boolean): void {
-	showTerminal.set(show);
-	if (show) pendingTerminalFocus.set(true);
-	// Only add param if terminal=true (conversation is the default)
-	updateUrl({ terminal: show ? 'true' : null });
-}
-
-/** Toggle terminal mode */
-export function toggleTerminalMode(): void {
-	const current = get(showTerminal);
-	setTerminalMode(!current);
-}

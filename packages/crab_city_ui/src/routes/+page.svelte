@@ -15,7 +15,6 @@
 	import { isFileViewerOpen, closeFileViewer } from '$lib/stores/files';
 	import { claudeState } from '$lib/stores/claude';
 	import { connectionStatus } from '$lib/stores/websocket';
-	import { showTerminal, setTerminalMode } from '$lib/stores/instances';
 	import { currentProject } from '$lib/stores/projects';
 	import { toggleTheme } from '$lib/stores/settings';
 	import { layoutState, splitPane, closePane, paneCount, moveFocus, focusPane, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
@@ -114,11 +113,6 @@
 		if (e.key === 'f') {
 			e.preventDefault();
 			toggleExplorer();
-		}
-		// t to toggle terminal
-		if (e.key === 't') {
-			e.preventDefault();
-			setTerminalMode(!$showTerminal);
 		}
 		// c to toggle chat
 		if (e.key === 'c') {

@@ -10,8 +10,9 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { currentInstanceId, showTerminal, onInstanceDelete, onInstanceListReceived, driveCurrentInstanceId, registerFocusInstance } from './instances';
+import { currentInstanceId, instances, onInstanceDelete, onInstanceListReceived, driveCurrentInstanceId, registerFocusInstance } from './instances';
 import { addToast } from './toasts';
+import { updateUrl } from '$lib/utils/url';
 
 // =============================================================================
 // Types
@@ -49,7 +50,7 @@ export type PaneContentKind =
 export type PaneContent =
 	| { kind: 'landing' }
 	| { kind: 'terminal'; instanceId: string | null }
-	| { kind: 'conversation'; instanceId: string | null }
+	| { kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }
 	| { kind: 'file-viewer'; filePath: string | null; lineNumber?: number }
 	| { kind: 'file-explorer'; instanceId: string | null }
 	| { kind: 'chat'; scope: 'global' | string }
@@ -70,11 +71,12 @@ export function defaultContentForKind(kind: PaneContentKind, instanceId: string 
 		case 'landing':
 			return { kind: 'landing' };
 		case 'terminal':
-		case 'conversation':
 		case 'file-explorer':
 		case 'tasks':
 		case 'git':
 			return { kind, instanceId };
+		case 'conversation':
+			return { kind: 'conversation', instanceId, viewMode: 'structured' };
 		case 'file-viewer':
 			return { kind: 'file-viewer', filePath: null };
 		case 'chat':
@@ -118,16 +120,10 @@ function genSplitId(): string {
 function createInitialState(): LayoutState {
 	const paneId = genPaneId();
 	const instanceId = get(currentInstanceId);
-	const isTerminal = get(showTerminal);
 
-	let content: PaneContent;
-	if (!instanceId) {
-		content = { kind: 'landing' };
-	} else if (isTerminal) {
-		content = { kind: 'terminal', instanceId };
-	} else {
-		content = { kind: 'conversation', instanceId };
-	}
+	const content: PaneContent = instanceId
+		? { kind: 'conversation', instanceId, viewMode: 'structured' }
+		: { kind: 'landing' };
 
 	return {
 		root: { type: 'pane', id: paneId },
@@ -178,6 +174,32 @@ export const terminalPaneCount = derived(layoutState, ($s) => {
 	return count;
 });
 
+/** The focused pane's viewMode (null if not a conversation pane) */
+export const focusedPaneViewMode = derived(focusedPane, ($pane) => {
+	if (!$pane || $pane.content.kind !== 'conversation') return null;
+	return $pane.content.viewMode;
+});
+
+// =============================================================================
+// Per-pane terminal focus requests
+// =============================================================================
+
+const _pendingTerminalFocus = new Set<string>();
+
+/** Request that a pane's terminal grab focus on next ready tick */
+export function requestTerminalFocus(paneId: string): void {
+	_pendingTerminalFocus.add(paneId);
+}
+
+/** Consume (read and clear) a pending terminal focus request for a pane */
+export function consumeTerminalFocus(paneId: string): boolean {
+	if (_pendingTerminalFocus.has(paneId)) {
+		_pendingTerminalFocus.delete(paneId);
+		return true;
+	}
+	return false;
+}
+
 // =============================================================================
 // Instance Focus — the canonical way to change which instance is "current"
 // =============================================================================
@@ -200,10 +222,18 @@ export function setFocusedInstance(id: string | null): FocusResult {
 	}
 
 	const state = get(layoutState);
+	const inst = get(instances).get(id);
+	const isStructured = inst ? inst.kind.type === 'Structured' : true;
 
 	// Try to find a pane already showing this instance → focus it
 	for (const [paneId, pane] of state.panes) {
 		if (getPaneInstanceId(pane.content) === id) {
+			// Correct kind mismatch (e.g. conversation pane restored for an unstructured instance)
+			if (pane.content.kind === 'conversation' && !isStructured) {
+				setPaneContent(paneId, { kind: 'terminal', instanceId: id });
+			} else if (pane.content.kind === 'terminal' && isStructured) {
+				setPaneContent(paneId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
+			}
 			focusPane(paneId);
 			return 'focused';
 		}
@@ -211,12 +241,23 @@ export function setFocusedInstance(id: string | null): FocusResult {
 
 	// No pane shows this instance — bind focused pane to it
 	const focusedId = state.focusedPaneId;
-	const focusedPane = state.panes.get(focusedId);
-	if (focusedPane) {
-		if (focusedPane.content.kind === 'landing') {
-			setPaneContent(focusedId, { kind: 'conversation', instanceId: id });
-		} else if ('instanceId' in focusedPane.content) {
-			setPaneContent(focusedId, { ...focusedPane.content, instanceId: id });
+	const fp = state.panes.get(focusedId);
+	if (fp) {
+		if (fp.content.kind === 'landing') {
+			// Landing → pick the right kind based on instance type
+			if (isStructured) {
+				setPaneContent(focusedId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
+			} else {
+				setPaneContent(focusedId, { kind: 'terminal', instanceId: id });
+			}
+		} else if (fp.content.kind === 'conversation' && !isStructured) {
+			// Conversation pane but unstructured instance → swap to terminal
+			setPaneContent(focusedId, { kind: 'terminal', instanceId: id });
+		} else if (fp.content.kind === 'terminal' && isStructured) {
+			// Terminal pane but structured instance → swap to conversation
+			setPaneContent(focusedId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
+		} else if ('instanceId' in fp.content) {
+			setPaneContent(focusedId, { ...fp.content, instanceId: id });
 		}
 		return 'swapped';
 	}
@@ -225,11 +266,7 @@ export function setFocusedInstance(id: string | null): FocusResult {
 }
 
 // =============================================================================
-// Sync: showTerminal → layout (single-pane compatibility)
-//
-// In single-pane mode, toggling showTerminal swaps the pane between
-// terminal ↔ conversation. currentInstanceId is now derived from
-// focusedPaneInstanceId (one-way data flow).
+// Sync: layout → currentInstanceId (one-way data flow)
 // =============================================================================
 
 let _syncSetup = false;
@@ -243,25 +280,6 @@ export function setupLayoutSync(): void {
 
 	// Register so selectInstance/clearSelection can reach setFocusedInstance
 	registerFocusInstance(setFocusedInstance);
-
-	// When showTerminal changes, update the single pane between terminal ↔ conversation
-	showTerminal.subscribe(($show) => {
-		layoutState.update((s) => {
-			if (s.panes.size !== 1) return s; // Only sync in single-pane mode
-			const pane = Array.from(s.panes.values())[0];
-			const newKind: 'terminal' | 'conversation' = $show ? 'terminal' : 'conversation';
-			if (pane.content.kind === newKind) return s;
-			// Only sync between terminal ↔ conversation; leave other kinds alone
-			if (pane.content.kind !== 'terminal' && pane.content.kind !== 'conversation') return s;
-			const currentInstanceIdVal = getPaneInstanceId(pane.content);
-			const newPanes = new Map(s.panes);
-			newPanes.set(pane.id, {
-				...pane,
-				content: { kind: newKind, instanceId: currentInstanceIdVal }
-			});
-			return { ...s, panes: newPanes };
-		});
-	});
 }
 
 // =============================================================================
@@ -398,6 +416,38 @@ export function setPaneContent(paneId: string, content: PaneContent): void {
 		newPanes.set(paneId, { ...pane, content });
 		return { ...s, panes: newPanes };
 	});
+}
+
+/**
+ * Set the viewMode of a conversation pane. No-op if the pane is not a conversation.
+ * Updates the URL `terminal` param for the focused pane.
+ */
+export function setPaneViewMode(paneId: string, viewMode: 'structured' | 'raw'): void {
+	const state = get(layoutState);
+	const pane = state.panes.get(paneId);
+	if (!pane || pane.content.kind !== 'conversation') return;
+	if (pane.content.viewMode === viewMode) return;
+	setPaneContent(paneId, { ...pane.content, viewMode });
+	if (viewMode === 'raw') {
+		requestTerminalFocus(paneId);
+	}
+	// Sync URL param if this is the focused pane
+	if (paneId === state.focusedPaneId) {
+		updateUrl({ terminal: viewMode === 'raw' ? 'true' : null });
+	}
+}
+
+/**
+ * Toggle the viewMode of a conversation pane between structured ↔ raw.
+ * Returns the new viewMode, or null if the pane is not a conversation.
+ */
+export function togglePaneViewMode(paneId: string): 'structured' | 'raw' | null {
+	const state = get(layoutState);
+	const pane = state.panes.get(paneId);
+	if (!pane || pane.content.kind !== 'conversation') return null;
+	const newMode = pane.content.viewMode === 'structured' ? 'raw' : 'structured';
+	setPaneViewMode(paneId, newMode);
+	return newMode;
 }
 
 /**
@@ -570,7 +620,7 @@ function updateSplitRatio(node: LayoutNode, splitId: string, ratio: number): Lay
 // =============================================================================
 
 const STORAGE_KEY = 'crab_city_layout';
-const LAYOUT_SCHEMA_VERSION = 2;
+const LAYOUT_SCHEMA_VERSION = 3;
 
 const VALID_CONTENT_KINDS: ReadonlySet<string> = new Set([
 	'landing', 'terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings'
@@ -621,6 +671,10 @@ function deserializeState(data: SerializedLayoutState): LayoutState | null {
 				panes.set(id, { ...pane, content: { kind: 'chat', scope: (c.instanceId as string) ?? 'global' } });
 			} else if (c.kind !== 'file-viewer' && c.kind !== 'chat' && !('instanceId' in c)) {
 				panes.set(id, { ...pane, content: { kind: c.kind as PaneContentKind, instanceId: null } as PaneContent });
+			}
+			// v2 → v3: add viewMode to conversation panes
+			if (c.kind === 'conversation' && !('viewMode' in c)) {
+				panes.set(id, { ...pane, content: { kind: 'conversation', instanceId: (c.instanceId as string | null) ?? null, viewMode: 'structured' } });
 			}
 		}
 
@@ -760,8 +814,6 @@ export function setupLayoutPersistence(): void {
 export function tryRestoreLayout(): boolean {
 	const restored = restoreLayout();
 	if (!restored) return false;
-	// Only restore multi-pane layouts; single-pane is the default and syncs with showTerminal
-	if (restored.panes.size <= 1) return false;
 	layoutState.set(restored);
 	return true;
 }
@@ -781,7 +833,7 @@ export function applyPreset(preset: LayoutPreset): void {
 		layoutState.set({
 			root: { type: 'pane', id: paneId },
 			panes: new Map([
-				[paneId, { id: paneId, content: { kind: 'conversation', instanceId } as PaneContent }]
+				[paneId, { id: paneId, content: { kind: 'conversation', instanceId, viewMode: 'structured' } as PaneContent }]
 			]),
 			focusedPaneId: paneId
 		});
@@ -805,7 +857,7 @@ export function applyPreset(preset: LayoutPreset): void {
 				]
 			},
 			panes: new Map([
-				[convId, { id: convId, content: { kind: 'conversation', instanceId } as PaneContent }],
+				[convId, { id: convId, content: { kind: 'conversation', instanceId, viewMode: 'structured' } as PaneContent }],
 				[termId, { id: termId, content: { kind: 'terminal', instanceId: null } as PaneContent }]
 			]),
 			focusedPaneId: convId
@@ -830,8 +882,8 @@ export function applyPreset(preset: LayoutPreset): void {
 				]
 			},
 			panes: new Map([
-				[leftId, { id: leftId, content: { kind: 'conversation', instanceId } as PaneContent }],
-				[rightId, { id: rightId, content: { kind: 'conversation', instanceId } as PaneContent }]
+				[leftId, { id: leftId, content: { kind: 'conversation', instanceId, viewMode: 'structured' } as PaneContent }],
+				[rightId, { id: rightId, content: { kind: 'conversation', instanceId, viewMode: 'structured' } as PaneContent }]
 			]),
 			focusedPaneId: leftId
 		});

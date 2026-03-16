@@ -10,14 +10,14 @@ Server-side multiplexing: [architecture.md#terminal-multiplexing](architecture.m
 |------|------|
 | `components/Terminal.svelte` | xterm.js lifecycle, input/output, resize |
 | `stores/terminal.ts` | Per-instance output buffer (producer/consumer) |
-| `stores/instances.ts` | View mode (`showTerminal`), focus handoff |
+| `stores/layout.ts` | View mode (`PaneContent.viewMode`), per-pane focus handoff |
 | `stores/terminalLock.ts` | Multi-user input lock (mirrors server) |
 | `stores/websocket.ts` | Send helpers: `sendInput`, `sendResize`, `sendTerminalVisible/Hidden` |
 | `stores/ws-handlers.ts` | Receive dispatch: `Output` → buffer, `OutputHistory` → buffer+clear |
 
 ## Lifecycle
 
-Terminal and ConversationView are `{#if}`/`{:else}` branches in MainView — they never coexist. Each view switch is a full mount/unmount cycle.
+Terminal and ConversationView are `{#if}`/`{:else}` branches in PaneConversation — they never coexist within a single pane. Each view switch is a full mount/unmount cycle. The `viewMode` field on the conversation `PaneContent` (`'structured'` or `'raw'`) determines which branch renders.
 
 ### Mount
 
@@ -59,16 +59,16 @@ xterm.onData → lock check → sendInput(data) → WebSocket → server → PTY
 
 **Problem:** When QuestionCard says "Switch to Terminal view", both the view switch and terminal focus must happen — but the producer (QuestionCard) is unmounting while the consumer (Terminal) hasn't mounted yet.
 
-**Solution:** Flag-and-consume pattern in `stores/instances.ts`:
+**Solution:** Per-pane flag-and-consume pattern in `stores/layout.ts`:
 
 ```
-setTerminalMode(true)                    Terminal.svelte
-  ├─ showTerminal = true                   $effect watching isReady:
-  └─ pendingTerminalFocus = true             consumeTerminalFocus() → true
+setPaneViewMode(paneId, 'raw')           Terminal.svelte
+  ├─ content.viewMode = 'raw'              $effect watching isReady:
+  └─ requestTerminalFocus(paneId)            consumeTerminalFocus(paneId) → true
                                              terminal.focus()
 ```
 
-Deterministic: no timeouts, no polling. The `$effect` fires synchronously on `isReady` state change. `consumeTerminalFocus()` is idempotent (read-and-clear). Use this same pattern for future cross-view handoffs.
+Deterministic: no timeouts, no polling. The `$effect` fires synchronously on `isReady` state change. `consumeTerminalFocus(paneId)` is idempotent (read-and-clear). Use this same pattern for future cross-view handoffs. The `paneId` is passed to Terminal via props (from PaneConversation or PaneTerminal) and accessed in QuestionCard/PlanCard via Svelte `getContext('paneId')`.
 
 ## Terminal Lock
 

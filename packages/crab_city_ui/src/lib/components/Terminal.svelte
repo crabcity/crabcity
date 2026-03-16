@@ -3,16 +3,18 @@
 	import { get } from 'svelte/store';
 	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence, reconnect, shutdownReason } from '$lib/stores/websocket';
 	import { currentTerminalHasOutput, consumeTerminalOutput, markAwaitingReplay, terminalHasOutputForInstance } from '$lib/stores/terminal';
-	import { currentInstanceId, consumeTerminalFocus } from '$lib/stores/instances';
+	import { currentInstanceId } from '$lib/stores/instances';
+	import { consumeTerminalFocus } from '$lib/stores/layout';
 	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
 	import { theme } from '$lib/stores/settings';
 
 	/** Optional: bind to a specific instance instead of following currentInstanceId */
 	interface Props {
 		instanceId?: string;
+		paneId?: string;
 	}
 
-	let { instanceId: propInstanceId }: Props = $props();
+	let { instanceId: propInstanceId, paneId }: Props = $props();
 
 	const phosphorTheme = {
 		background: '#0a0806',
@@ -74,7 +76,7 @@
 
 	// When the terminal becomes ready, consume any pending focus request
 	$effect(() => {
-		if (isReady && consumeTerminalFocus()) {
+		if (isReady && paneId && consumeTerminalFocus(paneId)) {
 			terminal?.focus();
 		}
 	});

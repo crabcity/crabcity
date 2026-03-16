@@ -1,6 +1,9 @@
 <script lang="ts">
 	import type { ToolCell } from '$lib/types';
-	import { setTerminalMode } from '$lib/stores/instances';
+	import { getContext } from 'svelte';
+	import { setPaneViewMode } from '$lib/stores/layout';
+
+	const paneId = getContext<string>('paneId');
 
 	interface Props {
 		tool: ToolCell;
@@ -194,7 +197,7 @@
 		{/each}
 
 		{#if isPending}
-			<button class="pending-banner" onclick={() => setTerminalMode(true)}>
+			<button class="pending-banner" onclick={() => setPaneViewMode(paneId, 'raw')}>
 				<span class="pending-icon">⌨</span>
 				<span class="pending-text">Switch to the Terminal view to answer this question</span>
 			</button>

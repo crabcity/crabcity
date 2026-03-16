@@ -2,17 +2,17 @@
 	import { onDestroy } from 'svelte';
 	import MainHeader from './main-view/MainHeader.svelte';
 	import LayoutTree from './layout/LayoutTree.svelte';
-	import { currentInstance, currentInstanceId, isClaudeInstance, showTerminal, setTerminalMode, initTerminalModeFromUrl, initViewStateFromUrl } from '$lib/stores/instances';
+	import { currentInstance, currentInstanceId, initViewStateFromUrl } from '$lib/stores/instances';
 	import { connect, disconnect } from '$lib/stores/websocket';
 	import { isActive } from '$lib/stores/claude';
 	import { currentVerb } from '$lib/stores/activity';
 	import { openExplorer, fetchFileContent, openFileFromTool, openFileDiffLoading, setDiffData, setDiffError } from '$lib/stores/files';
 	import { openGitTab, fetchGitDiff, gitDiff } from '$lib/stores/git';
 	import { diffEngine } from '$lib/stores/settings';
-	import { layoutRoot, setupLayoutSync, setupLayoutPersistence, tryRestoreLayout } from '$lib/stores/layout';
+	import { layoutRoot, layoutState, setupLayoutSync, setupLayoutPersistence, tryRestoreLayout, setPaneViewMode } from '$lib/stores/layout';
 	import { get } from 'svelte/store';
 
-	// Keep layout store in sync with showTerminal/currentInstanceId (Phase 1)
+	// Keep layout store in sync with currentInstanceId (one-way flow)
 	setupLayoutSync();
 	// Persist layout to localStorage and restore on load
 	setupLayoutPersistence();
@@ -32,12 +32,12 @@
 				connect(instanceId);
 				if (!hasInitializedFromUrl) {
 					hasInitializedFromUrl = true;
-					const urlTerminalMode = initTerminalModeFromUrl();
+
+					// Handle ?terminal= URL param
 					const url = new URL(window.location.href);
 					if (url.searchParams.has('terminal')) {
-						setTerminalMode(urlTerminalMode);
-					} else {
-						setTerminalMode(!$isClaudeInstance);
+						const wantRaw = url.searchParams.get('terminal') === 'true' || url.searchParams.get('terminal') === '1';
+						setPaneViewMode(get(layoutState).focusedPaneId, wantRaw ? 'raw' : 'structured');
 					}
 
 					const viewState = initViewStateFromUrl();

@@ -57,9 +57,9 @@
 			{:else if needsInstancePicker}
 				<PaneInstancePicker paneId={pane.id} kind={content.kind} />
 			{:else if content.kind === 'terminal' && content.instanceId}
-				<PaneTerminal instanceId={content.instanceId} />
+				<PaneTerminal instanceId={content.instanceId} paneId={pane.id} />
 			{:else if content.kind === 'conversation' && content.instanceId}
-				<PaneConversation instanceId={content.instanceId} />
+				<PaneConversation instanceId={content.instanceId} viewMode={content.viewMode} paneId={pane.id} />
 			{:else if content.kind === 'file-explorer' && 'instanceId' in content}
 				<PaneFileExplorer instanceId={content.instanceId} />
 			{:else if content.kind === 'chat'}

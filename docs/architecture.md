@@ -170,9 +170,9 @@ Multiple clients share a single PTY per instance:
 
 The web UI renders PTY output via **xterm.js** in `components/Terminal.svelte`. Key aspects:
 
-- **Conditional rendering** — Terminal and ConversationView are `{#if}`/`{:else}` branches in MainView; one fully unmounts while the other mounts
+- **Conditional rendering** — Terminal and ConversationView are `{#if}`/`{:else}` branches in PaneConversation, controlled by `PaneContent.viewMode` (`'structured'` or `'raw'`); one fully unmounts while the other mounts
 - **Output buffering** — `stores/terminal.ts` buffers WebSocket output per instance, decoupling the data stream from the xterm component lifecycle
-- **Cross-view focus handoff** — a flag-and-consume pattern in `stores/instances.ts` passes intent (e.g. "focus terminal") across the mount boundary deterministically via `$effect`
+- **Cross-view focus handoff** — a per-pane flag-and-consume pattern in `stores/layout.ts` (`requestTerminalFocus`/`consumeTerminalFocus`) passes intent (e.g. "focus terminal") across the mount boundary deterministically via `$effect`
 - **Multi-user locking** — `stores/terminalLock.ts` gates input when 2+ users share an instance; server is source of truth
 - **Dimension negotiation** — Terminal sends `TerminalVisible`/`TerminalHidden` messages so the server can set PTY size to `min(all active viewports)`
 - **Draft persistence** — `stores/drafts.ts` persists per-instance message drafts to `localStorage` (debounced, flushed on `beforeunload`). Pure map logic lives in `utils/draft-map.ts`. Drafts survive instance switches and page reloads; cleared on send or instance deletion

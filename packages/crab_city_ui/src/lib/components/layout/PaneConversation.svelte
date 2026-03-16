@@ -1,46 +1,38 @@
 <script lang="ts">
+	import { setContext } from 'svelte';
 	import ConversationView from '../ConversationView.svelte';
 	import Terminal from '../Terminal.svelte';
 	import ErrorBoundary from '../ErrorBoundary.svelte';
-	import { instances } from '$lib/stores/instances';
+	import { togglePaneViewMode } from '$lib/stores/layout';
 
 	interface Props {
 		instanceId: string;
+		viewMode: 'structured' | 'raw';
+		paneId: string;
 	}
 
-	let { instanceId }: Props = $props();
+	let { instanceId, viewMode, paneId }: Props = $props();
 
-	const inst = $derived($instances.get(instanceId));
-	const isClaudeInstance = $derived(inst ? inst.kind.type === 'Structured' : true);
-
-	let viewMode = $state<'structured' | 'terminal'>('structured');
-
-	// Default to terminal view for non-Claude instances
-	$effect(() => {
-		if (!isClaudeInstance) {
-			viewMode = 'terminal';
-		}
-	});
+	// Expose paneId via context so deeply-nested components (QuestionCard, PlanCard) can reach it
+	setContext('paneId', paneId);
 </script>
 
 <div class="pane-conversation">
-	{#if isClaudeInstance}
-		<div class="view-toggle-bar">
-			<button
-				class="view-toggle"
-				role="switch"
-				aria-checked={viewMode === 'terminal'}
-				aria-label="Toggle raw view"
-				onclick={() => viewMode = viewMode === 'structured' ? 'terminal' : 'structured'}
-			>
-				<span class="toggle-label" class:active={viewMode === 'structured'}>Structured</span>
-				<span class="toggle-track">
-					<span class="toggle-thumb" class:on={viewMode === 'terminal'}></span>
-				</span>
-				<span class="toggle-label" class:active={viewMode === 'terminal'}>Raw</span>
-			</button>
-		</div>
-	{/if}
+	<div class="view-toggle-bar">
+		<button
+			class="view-toggle"
+			role="switch"
+			aria-checked={viewMode === 'raw'}
+			aria-label="Toggle raw view"
+			onclick={() => togglePaneViewMode(paneId)}
+		>
+			<span class="toggle-label" class:active={viewMode === 'structured'}>Structured</span>
+			<span class="toggle-track">
+				<span class="toggle-thumb" class:on={viewMode === 'raw'}></span>
+			</span>
+			<span class="toggle-label" class:active={viewMode === 'raw'}>Raw</span>
+		</button>
+	</div>
 
 	<div class="pane-content-inner">
 		<ErrorBoundary>
@@ -52,7 +44,7 @@
 				{:else}
 					<div class="pane-terminal">
 						{#key 'terminal-' + instanceId}
-							<Terminal {instanceId} />
+							<Terminal {instanceId} {paneId} />
 						{/key}
 					</div>
 				{/if}

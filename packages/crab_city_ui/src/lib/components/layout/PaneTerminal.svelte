@@ -4,16 +4,17 @@
 
 	interface Props {
 		instanceId: string;
+		paneId: string;
 	}
 
-	let { instanceId }: Props = $props();
+	let { instanceId, paneId }: Props = $props();
 </script>
 
 <div class="pane-terminal">
 	<ErrorBoundary>
 		{#snippet children()}
 			{#key 'terminal-' + instanceId}
-				<Terminal {instanceId} />
+				<Terminal {instanceId} {paneId} />
 			{/key}
 		{/snippet}
 	</ErrorBoundary>
