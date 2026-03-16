@@ -15,16 +15,16 @@ import { updateAvatarMetrics, recordAvatarCacheHit, recordAvatarCacheMiss } from
 // =============================================================================
 
 export interface AvatarConfig {
-	identity: string;
-	type: 'human' | 'agent';
-	variant: 'user' | 'assistant' | 'thinking';
-	size: number;
+  identity: string;
+  type: 'human' | 'agent';
+  variant: 'user' | 'assistant' | 'thinking';
+  size: number;
 }
 
 export interface CachedAvatar {
-	paths: string[];
-	clipId: string;
-	timestamp: number;
+  paths: string[];
+  clipId: string;
+  timestamp: number;
 }
 
 // =============================================================================
@@ -58,7 +58,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const cache = new Map<string, CachedAvatar>();
 
 function hashConfig(config: AvatarConfig): string {
-	return `${config.identity}-${config.type}-${config.variant}-${config.size}`;
+  return `${config.identity}-${config.type}-${config.variant}-${config.size}`;
 }
 
 // =============================================================================
@@ -66,33 +66,33 @@ function hashConfig(config: AvatarConfig): string {
 // =============================================================================
 
 function generateContourPaths(config: AvatarConfig): string[] {
-	const isHuman = config.type === 'human';
+  const isHuman = config.type === 'human';
 
-	// Generate noise field
-	const values = isHuman
-		? generateNoiseField(config.identity, GRID_SIZE, GRID_SIZE, 0.04, 1)
-		: generateAngularNoiseField(config.identity, GRID_SIZE, GRID_SIZE, 5);
+  // Generate noise field
+  const values = isHuman
+    ? generateNoiseField(config.identity, GRID_SIZE, GRID_SIZE, 0.04, 1)
+    : generateAngularNoiseField(config.identity, GRID_SIZE, GRID_SIZE, 5);
 
-	// Generate contours
-	const thresholds = isHuman ? HUMAN_THRESHOLDS : AGENT_THRESHOLDS;
-	const contourGenerator = contours().size([GRID_SIZE, GRID_SIZE]).thresholds(thresholds);
+  // Generate contours
+  const thresholds = isHuman ? HUMAN_THRESHOLDS : AGENT_THRESHOLDS;
+  const contourGenerator = contours().size([GRID_SIZE, GRID_SIZE]).thresholds(thresholds);
 
-	const contourData = contourGenerator(values);
+  const contourData = contourGenerator(values);
 
-	// Scale path to fit viewBox (32x32)
-	const scale = 32 / GRID_SIZE;
-	const path = geoPath().projection({
-		stream: (s) => ({
-			point: (x: number, y: number) => s.point(x * scale, y * scale),
-			lineStart: () => s.lineStart(),
-			lineEnd: () => s.lineEnd(),
-			polygonStart: () => s.polygonStart(),
-			polygonEnd: () => s.polygonEnd(),
-			sphere: () => {}
-		})
-	});
+  // Scale path to fit viewBox (32x32)
+  const scale = 32 / GRID_SIZE;
+  const path = geoPath().projection({
+    stream: (s) => ({
+      point: (x: number, y: number) => s.point(x * scale, y * scale),
+      lineStart: () => s.lineStart(),
+      lineEnd: () => s.lineEnd(),
+      polygonStart: () => s.polygonStart(),
+      polygonEnd: () => s.polygonEnd(),
+      sphere: () => {}
+    })
+  });
 
-	return contourData.map((c) => path(c) || '');
+  return contourData.map((c) => path(c) || '');
 }
 
 // =============================================================================
@@ -105,59 +105,59 @@ function generateContourPaths(config: AvatarConfig): string[] {
  * Returns empty avatar on generation failure to prevent crashes.
  */
 export function getAvatarPaths(config: AvatarConfig): CachedAvatar {
-	const key = hashConfig(config);
-	const cached = cache.get(key);
+  const key = hashConfig(config);
+  const cached = cache.get(key);
 
-	// Return cached if fresh
-	if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-		queueMicrotask(recordAvatarCacheHit);
-		return cached;
-	}
-	queueMicrotask(recordAvatarCacheMiss);
+  // Return cached if fresh
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    queueMicrotask(recordAvatarCacheHit);
+    return cached;
+  }
+  queueMicrotask(recordAvatarCacheMiss);
 
-	// Generate new paths with defensive error handling
-	let paths: string[];
-	try {
-		const t0 = performance.now();
-		paths = generateContourPaths(config);
-		const ms = performance.now() - t0;
-		if (ms > 20) {
-			console.warn(`[Avatar] generateContourPaths took ${ms.toFixed(1)}ms for ${config.identity}`);
-		}
-	} catch (e) {
-		console.error('[Avatar] Generation failed:', e, config);
-		// Return empty but valid avatar instead of crashing
-		return { paths: [], clipId: 'error', timestamp: Date.now() };
-	}
+  // Generate new paths with defensive error handling
+  let paths: string[];
+  try {
+    const t0 = performance.now();
+    paths = generateContourPaths(config);
+    const ms = performance.now() - t0;
+    if (ms > 20) {
+      console.warn(`[Avatar] generateContourPaths took ${ms.toFixed(1)}ms for ${config.identity}`);
+    }
+  } catch (e) {
+    console.error('[Avatar] Generation failed:', e, config);
+    // Return empty but valid avatar instead of crashing
+    return { paths: [], clipId: 'error', timestamp: Date.now() };
+  }
 
-	const clipId = `topo-clip-${hashString(config.identity)}`;
+  const clipId = `topo-clip-${hashString(config.identity)}`;
 
-	const avatar: CachedAvatar = {
-		paths,
-		clipId,
-		timestamp: Date.now()
-	};
+  const avatar: CachedAvatar = {
+    paths,
+    clipId,
+    timestamp: Date.now()
+  };
 
-	// Evict oldest if at capacity
-	if (cache.size >= MAX_CACHE_SIZE) {
-		let oldestKey: string | null = null;
-		let oldestTime = Infinity;
+  // Evict oldest if at capacity
+  if (cache.size >= MAX_CACHE_SIZE) {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
 
-		for (const [k, v] of cache.entries()) {
-			if (v.timestamp < oldestTime) {
-				oldestTime = v.timestamp;
-				oldestKey = k;
-			}
-		}
+    for (const [k, v] of cache.entries()) {
+      if (v.timestamp < oldestTime) {
+        oldestTime = v.timestamp;
+        oldestKey = k;
+      }
+    }
 
-		if (oldestKey) {
-			cache.delete(oldestKey);
-		}
-	}
+    if (oldestKey) {
+      cache.delete(oldestKey);
+    }
+  }
 
-	cache.set(key, avatar);
-	queueMicrotask(() => updateAvatarMetrics({ cacheSize: cache.size }));
-	return avatar;
+  cache.set(key, avatar);
+  queueMicrotask(() => updateAvatarMetrics({ cacheSize: cache.size }));
+  return avatar;
 }
 
 /**
@@ -165,15 +165,15 @@ export function getAvatarPaths(config: AvatarConfig): CachedAvatar {
  * Useful for testing or memory pressure situations.
  */
 export function clearAvatarCache(): void {
-	cache.clear();
+  cache.clear();
 }
 
 /**
  * Get current cache statistics.
  */
 export function getAvatarCacheStats(): { size: number; maxSize: number } {
-	return {
-		size: cache.size,
-		maxSize: MAX_CACHE_SIZE
-	};
+  return {
+    size: cache.size,
+    maxSize: MAX_CACHE_SIZE
+  };
 }

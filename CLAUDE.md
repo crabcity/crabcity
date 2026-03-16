@@ -35,6 +35,7 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 - `cd packages/crab_city_ui && pnpm install && pnpm build` — build the web UI
 - `cd packages/crab_city_ui && pnpm dev` — dev server with hot reload
 - `cd packages/crab_city_ui && pnpm test` — run Jest tests
+- `cd packages/crab_city_ui && pnpm format` — format TS/Svelte with Prettier (also runs via `bazel run //tools/format`)
 
 ## TUI Styling
 

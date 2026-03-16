@@ -22,18 +22,18 @@ const verbCache = new Map<string, string>();
  * Used by Sidebar (for all instances) and internally by currentVerb (for focused instance).
  */
 export function getInstanceVerb(instanceId: string, stateType: string): string {
-	const key = `${instanceId}-${stateType}`;
-	if (!verbCache.has(key)) {
-		verbCache.set(key, randomVerb());
-	}
-	return verbCache.get(key)!;
+  const key = `${instanceId}-${stateType}`;
+  if (!verbCache.has(key)) {
+    verbCache.set(key, randomVerb());
+  }
+  return verbCache.get(key)!;
 }
 
 /** Clear cached verbs for an instance (call when a session completes) */
 export function clearInstanceVerbs(instanceId: string): void {
-	verbCache.delete(`${instanceId}-Thinking`);
-	verbCache.delete(`${instanceId}-Responding`);
-	verbCache.delete(`${instanceId}-ToolExecuting`);
+  verbCache.delete(`${instanceId}-Thinking`);
+  verbCache.delete(`${instanceId}-Responding`);
+  verbCache.delete(`${instanceId}-ToolExecuting`);
 }
 
 /**
@@ -41,39 +41,29 @@ export function clearInstanceVerbs(instanceId: string): void {
  * Derived from current instance ID and Claude state.
  * Cached per-instance so switching between instances shows stable verbs.
  */
-export const currentVerb = derived(
-	[currentInstanceId, claudeState],
-	([$instanceId, $state]) => {
-		if (!$instanceId) return 'Thinking';
-		if ($state.type === 'Initializing') return 'Init';
-		if ($state.type === 'Starting') return 'Boot';
-		if (
-			$state.type === 'Thinking' ||
-			$state.type === 'Responding' ||
-			$state.type === 'ToolExecuting'
-		) {
-			return getInstanceVerb($instanceId, $state.type);
-		}
-		return 'Thinking';
-	}
-);
+export const currentVerb = derived([currentInstanceId, claudeState], ([$instanceId, $state]) => {
+  if (!$instanceId) return 'Thinking';
+  if ($state.type === 'Initializing') return 'Init';
+  if ($state.type === 'Starting') return 'Boot';
+  if ($state.type === 'Thinking' || $state.type === 'Responding' || $state.type === 'ToolExecuting') {
+    return getInstanceVerb($instanceId, $state.type);
+  }
+  return 'Thinking';
+});
 
 // Auto-clear verbs for focused instance on active→inactive transitions
 let lastActiveState: string | null = null;
 claudeState.subscribe(($state) => {
-	const instanceId = get(currentInstanceId);
-	if (!instanceId) return;
+  const instanceId = get(currentInstanceId);
+  if (!instanceId) return;
 
-	const isNowActive =
-		$state.type === 'Thinking' ||
-		$state.type === 'Responding' ||
-		$state.type === 'ToolExecuting';
+  const isNowActive = $state.type === 'Thinking' || $state.type === 'Responding' || $state.type === 'ToolExecuting';
 
-	if (!isNowActive && lastActiveState) {
-		clearInstanceVerbs(instanceId);
-	}
+  if (!isNowActive && lastActiveState) {
+    clearInstanceVerbs(instanceId);
+  }
 
-	lastActiveState = isNowActive ? $state.type : null;
+  lastActiveState = isNowActive ? $state.type : null;
 });
 
 // =============================================================================
@@ -110,65 +100,65 @@ const _activityLevel = writable<number>(0);
  * remember cleanup, which historically caused leaks.
  */
 function createActivityStore() {
-	let subscriberCount = 0;
-	let decayInterval: ReturnType<typeof setInterval> | null = null;
+  let subscriberCount = 0;
+  let decayInterval: ReturnType<typeof setInterval> | null = null;
 
-	function startDecay() {
-		if (decayInterval) return;
-		decayInterval = setInterval(() => {
-			const now = Date.now();
-			const cutoff = now - SAMPLE_WINDOW_MS;
+  function startDecay() {
+    if (decayInterval) return;
+    decayInterval = setInterval(() => {
+      const now = Date.now();
+      const cutoff = now - SAMPLE_WINDOW_MS;
 
-			// Remove stale samples
-			while (outputSamples.length > 0 && outputSamples[0].time < cutoff) {
-				outputSamples.shift();
-			}
+      // Remove stale samples
+      while (outputSamples.length > 0 && outputSamples[0].time < cutoff) {
+        outputSamples.shift();
+      }
 
-			// Calculate and update rate
-			if (outputSamples.length === 0) {
-				_baudRate.set(0);
-				_activityLevel.set(0);
-			} else {
-				const totalBytes = outputSamples.reduce((sum, s) => sum + s.bytes, 0);
-				const windowMs = now - outputSamples[0].time;
-				const rate = windowMs > 0 ? (totalBytes / windowMs) * 1000 : 0;
-				_baudRate.set(Math.round(rate));
-				_activityLevel.set(Math.min(1, rate / MAX_BAUD_RATE));
-			}
-		}, DECAY_INTERVAL_MS);
-	}
+      // Calculate and update rate
+      if (outputSamples.length === 0) {
+        _baudRate.set(0);
+        _activityLevel.set(0);
+      } else {
+        const totalBytes = outputSamples.reduce((sum, s) => sum + s.bytes, 0);
+        const windowMs = now - outputSamples[0].time;
+        const rate = windowMs > 0 ? (totalBytes / windowMs) * 1000 : 0;
+        _baudRate.set(Math.round(rate));
+        _activityLevel.set(Math.min(1, rate / MAX_BAUD_RATE));
+      }
+    }, DECAY_INTERVAL_MS);
+  }
 
-	function stopDecay() {
-		if (decayInterval) {
-			clearInterval(decayInterval);
-			decayInterval = null;
-		}
-	}
+  function stopDecay() {
+    if (decayInterval) {
+      clearInterval(decayInterval);
+      decayInterval = null;
+    }
+  }
 
-	// Wrap the internal store with subscription tracking
-	return {
-		subscribe: (handler: (value: number) => void) => {
-			subscriberCount++;
+  // Wrap the internal store with subscription tracking
+  return {
+    subscribe: (handler: (value: number) => void) => {
+      subscriberCount++;
 
-			// Start decay on first subscriber
-			if (subscriberCount === 1) {
-				startDecay();
-			}
+      // Start decay on first subscriber
+      if (subscriberCount === 1) {
+        startDecay();
+      }
 
-			const unsubscribe = _baudRate.subscribe(handler);
+      const unsubscribe = _baudRate.subscribe(handler);
 
-			// Return cleanup function
-			return () => {
-				unsubscribe();
-				subscriberCount--;
+      // Return cleanup function
+      return () => {
+        unsubscribe();
+        subscriberCount--;
 
-				// Stop decay on last unsubscribe
-				if (subscriberCount === 0) {
-					stopDecay();
-				}
-			};
-		}
-	};
+        // Stop decay on last unsubscribe
+        if (subscriberCount === 0) {
+          stopDecay();
+        }
+      };
+    }
+  };
 }
 
 /** Current output rate (characters per second) - self-managing */
@@ -176,54 +166,52 @@ export const baudRate = createActivityStore();
 
 /** Normalized activity level (0-1) for visual indicators */
 export const activityLevel = {
-	subscribe: (handler: (value: number) => void) => {
-		// Activity level piggybacks on baudRate's lifecycle management
-		// by ensuring baudRate is subscribed when activityLevel is
-		const unsubBaud = baudRate.subscribe(() => {});
-		const unsubLevel = _activityLevel.subscribe(handler);
+  subscribe: (handler: (value: number) => void) => {
+    // Activity level piggybacks on baudRate's lifecycle management
+    // by ensuring baudRate is subscribed when activityLevel is
+    const unsubBaud = baudRate.subscribe(() => {});
+    const unsubLevel = _activityLevel.subscribe(handler);
 
-		return () => {
-			unsubLevel();
-			unsubBaud();
-		};
-	}
+    return () => {
+      unsubLevel();
+      unsubBaud();
+    };
+  }
 };
 
 /** Record output bytes for rate calculation */
 export function trackOutput(bytes: number): void {
-	const now = Date.now();
-	outputSamples.push({ time: now, bytes });
+  const now = Date.now();
+  outputSamples.push({ time: now, bytes });
 
-	// Remove samples outside the window
-	const cutoff = now - SAMPLE_WINDOW_MS;
-	while (outputSamples.length > 0 && outputSamples[0].time < cutoff) {
-		outputSamples.shift();
-	}
+  // Remove samples outside the window
+  const cutoff = now - SAMPLE_WINDOW_MS;
+  while (outputSamples.length > 0 && outputSamples[0].time < cutoff) {
+    outputSamples.shift();
+  }
 
-	// Immediate update for responsiveness
-	const totalBytes = outputSamples.reduce((sum, s) => sum + s.bytes, 0);
-	const windowMs =
-		outputSamples.length > 1
-			? outputSamples[outputSamples.length - 1].time - outputSamples[0].time
-			: SAMPLE_WINDOW_MS;
-	const rate = windowMs > 0 ? (totalBytes / windowMs) * 1000 : 0;
+  // Immediate update for responsiveness
+  const totalBytes = outputSamples.reduce((sum, s) => sum + s.bytes, 0);
+  const windowMs =
+    outputSamples.length > 1 ? outputSamples[outputSamples.length - 1].time - outputSamples[0].time : SAMPLE_WINDOW_MS;
+  const rate = windowMs > 0 ? (totalBytes / windowMs) * 1000 : 0;
 
-	_baudRate.set(Math.round(rate));
-	_activityLevel.set(Math.min(1, rate / MAX_BAUD_RATE));
+  _baudRate.set(Math.round(rate));
+  _activityLevel.set(Math.min(1, rate / MAX_BAUD_RATE));
 }
 
 /** Clear output samples (call when switching instances) */
 export function clearOutputSamples(): void {
-	outputSamples.length = 0;
-	_baudRate.set(0);
-	_activityLevel.set(0);
+  outputSamples.length = 0;
+  _baudRate.set(0);
+  _activityLevel.set(0);
 }
 
 // Clear samples when switching instances to prevent phantom activity
 let lastInstanceId: string | null = null;
 currentInstanceId.subscribe(($id) => {
-	if ($id !== lastInstanceId) {
-		lastInstanceId = $id;
-		clearOutputSamples();
-	}
+  if ($id !== lastInstanceId) {
+    lastInstanceId = $id;
+    clearOutputSamples();
+  }
 });

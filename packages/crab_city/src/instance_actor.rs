@@ -954,6 +954,7 @@ impl InstanceHandle {
             name: "test".to_string(),
             custom_name: None,
             command: "echo test".to_string(),
+            kind: InstanceKind::infer("echo test"),
             working_dir: "/tmp".to_string(),
             running: true,
             created_at: "2024-01-01T00:00:00Z".to_string(),

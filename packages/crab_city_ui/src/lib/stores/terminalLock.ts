@@ -16,9 +16,9 @@ import type { PresenceUser } from '$lib/types';
 // =============================================================================
 
 export interface TerminalLockState {
-	holder: PresenceUser | null;
-	lastActivity: string | null;
-	expiresInSecs: number | null;
+  holder: PresenceUser | null;
+  lastActivity: string | null;
+  expiresInSecs: number | null;
 }
 
 // =============================================================================
@@ -29,32 +29,23 @@ export interface TerminalLockState {
 export const instanceTerminalLock = writable<Map<string, TerminalLockState>>(new Map());
 
 /** Terminal lock state for the currently focused instance */
-export const currentTerminalLock = derived(
-	[instanceTerminalLock, currentInstanceId],
-	([$locks, $instanceId]) => {
-		if (!$instanceId) return null;
-		return $locks.get($instanceId) ?? null;
-	}
-);
+export const currentTerminalLock = derived([instanceTerminalLock, currentInstanceId], ([$locks, $instanceId]) => {
+  if (!$instanceId) return null;
+  return $locks.get($instanceId) ?? null;
+});
 
 /** Whether the current user holds the lock for the focused instance */
-export const iHoldLock = derived(
-	[currentTerminalLock, currentUser],
-	([$lock, $user]) => {
-		if (!$lock?.holder || !$user) return false;
-		return $lock.holder.user_id === $user.id;
-	}
-);
+export const iHoldLock = derived([currentTerminalLock, currentUser], ([$lock, $user]) => {
+  if (!$lock?.holder || !$user) return false;
+  return $lock.holder.user_id === $user.id;
+});
 
 /** Whether another user holds the lock (and it's not me) */
-export const isLockedByOther = derived(
-	[currentTerminalLock, currentUser],
-	([$lock, $user]) => {
-		if (!$lock?.holder) return false;
-		if (!$user) return true; // Not authenticated, someone else has it
-		return $lock.holder.user_id !== $user.id;
-	}
-);
+export const isLockedByOther = derived([currentTerminalLock, currentUser], ([$lock, $user]) => {
+  if (!$lock?.holder) return false;
+  if (!$user) return true; // Not authenticated, someone else has it
+  return $lock.holder.user_id !== $user.id;
+});
 
 // =============================================================================
 // Actions
@@ -62,17 +53,17 @@ export const isLockedByOther = derived(
 
 /** Handle a TerminalLockUpdate message from the server */
 export function handleTerminalLockUpdate(
-	instanceId: string,
-	holder: PresenceUser | null,
-	lastActivity: string | null,
-	expiresInSecs: number | null
+  instanceId: string,
+  holder: PresenceUser | null,
+  lastActivity: string | null,
+  expiresInSecs: number | null
 ): void {
-	instanceTerminalLock.update((map) => {
-		if (!holder) {
-			map.delete(instanceId);
-		} else {
-			map.set(instanceId, { holder, lastActivity, expiresInSecs });
-		}
-		return new Map(map);
-	});
+  instanceTerminalLock.update((map) => {
+    if (!holder) {
+      map.delete(instanceId);
+    } else {
+      map.set(instanceId, { holder, lastActivity, expiresInSecs });
+    }
+    return new Map(map);
+  });
 }

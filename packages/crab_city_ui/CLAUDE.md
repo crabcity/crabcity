@@ -110,6 +110,10 @@ Follow the amber phosphor CRT design system documented in `BRAND_BOOK.md`:
 
 Components with subcomponents live in directories (e.g. `file-explorer/`, `chat-panel/`, `layout/`). Top-level components in `src/lib/components/` are the main views. The `layout/` directory contains the pane tree renderer and all pane wrapper components.
 
+### Formatting
+
+Prettier formats all TS and Svelte files. Config is in `.prettierrc` (spaces, not tabs; single quotes; 120 print width). Run `pnpm format` or `bazel run //tools/format`. CI checks formatting via `bazel test //tools/format:format_test`.
+
 ### Testing
 
 Test files sit alongside source: `foo.test.ts` next to `foo.ts`. Run with `pnpm test`.

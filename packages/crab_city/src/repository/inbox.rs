@@ -80,29 +80,6 @@ impl ConversationRepository {
         }
     }
 
-    /// Get the inbox item for an instance, if any.
-    pub async fn get_inbox_item(&self, instance_id: &str) -> Result<Option<InboxItem>> {
-        let row: Option<(String, String, i32, i64, i64, Option<String>)> = sqlx::query_as(
-            "SELECT instance_id, event_type, turn_count, created_at, updated_at, metadata_json FROM instance_inbox WHERE instance_id = ?",
-        )
-        .bind(instance_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(
-            |(instance_id, event_type, turn_count, created_at, updated_at, metadata_json)| {
-                InboxItem {
-                    instance_id,
-                    event_type,
-                    turn_count,
-                    created_at,
-                    updated_at,
-                    metadata_json,
-                }
-            },
-        ))
-    }
-
     /// List all active inbox items.
     pub async fn list_inbox(&self) -> Result<Vec<InboxItem>> {
         let rows: Vec<(String, String, i32, i64, i64, Option<String>)> = sqlx::query_as(

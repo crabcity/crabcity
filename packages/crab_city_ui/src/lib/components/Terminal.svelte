@@ -1,580 +1,599 @@
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
-	import { get } from 'svelte/store';
-	import { sendInput, sendResize, sendTerminalVisible, sendTerminalHidden, hasPendingInput, connectionStatus, requestTerminalLock, releaseTerminalLock, instancePresence, reconnect, shutdownReason } from '$lib/stores/websocket';
-	import { currentTerminalHasOutput, consumeTerminalOutput, markAwaitingReplay, terminalHasOutputForInstance } from '$lib/stores/terminal';
-	import { currentInstanceId } from '$lib/stores/instances';
-	import { consumeTerminalFocus } from '$lib/stores/layout';
-	import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
-	import { theme, userSettings } from '$lib/stores/settings';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import { get } from 'svelte/store';
+  import {
+    sendInput,
+    sendResize,
+    sendTerminalVisible,
+    sendTerminalHidden,
+    hasPendingInput,
+    connectionStatus,
+    requestTerminalLock,
+    releaseTerminalLock,
+    instancePresence,
+    reconnect,
+    shutdownReason
+  } from '$lib/stores/websocket';
+  import {
+    currentTerminalHasOutput,
+    consumeTerminalOutput,
+    markAwaitingReplay,
+    terminalHasOutputForInstance
+  } from '$lib/stores/terminal';
+  import { currentInstanceId } from '$lib/stores/instances';
+  import { consumeTerminalFocus } from '$lib/stores/layout';
+  import { currentTerminalLock, iHoldLock, isLockedByOther } from '$lib/stores/terminalLock';
+  import { theme, userSettings } from '$lib/stores/settings';
 
-	/** Optional: bind to a specific instance instead of following currentInstanceId */
-	interface Props {
-		instanceId?: string;
-		paneId?: string;
-	}
+  /** Optional: bind to a specific instance instead of following currentInstanceId */
+  interface Props {
+    instanceId?: string;
+    paneId?: string;
+  }
 
-	let { instanceId: propInstanceId, paneId }: Props = $props();
+  let { instanceId: propInstanceId, paneId }: Props = $props();
 
-	const phosphorTheme = {
-		background: '#0a0806',
-		foreground: '#fdba74',
-		cursor: '#fb923c',
-		cursorAccent: '#0a0806',
-		selectionBackground: 'rgba(251, 146, 60, 0.3)',
-		black: '#15110d',
-		red: '#ef4444',
-		green: '#22c55e',
-		yellow: '#fbbf24',
-		blue: '#60a5fa',
-		magenta: '#a78bfa',
-		cyan: '#22d3ee',
-		white: '#fdba74'
-	};
+  const phosphorTheme = {
+    background: '#0a0806',
+    foreground: '#fdba74',
+    cursor: '#fb923c',
+    cursorAccent: '#0a0806',
+    selectionBackground: 'rgba(251, 146, 60, 0.3)',
+    black: '#15110d',
+    red: '#ef4444',
+    green: '#22c55e',
+    yellow: '#fbbf24',
+    blue: '#60a5fa',
+    magenta: '#a78bfa',
+    cyan: '#22d3ee',
+    white: '#fdba74'
+  };
 
-	const analogTheme = {
-		background: '#faf7f0',
-		foreground: '#1a1714',
-		cursor: '#6e3b1a',
-		cursorAccent: '#faf7f0',
-		selectionBackground: 'rgba(220, 190, 100, 0.3)',
-		black: '#1a1714',
-		red: '#943030',
-		green: '#2a6e3a',
-		yellow: '#7a6520',
-		blue: '#2e4a6e',
-		magenta: '#5a3060',
-		cyan: '#2a5a5a',
-		white: '#faf7f0'
-	};
+  const analogTheme = {
+    background: '#faf7f0',
+    foreground: '#1a1714',
+    cursor: '#6e3b1a',
+    cursorAccent: '#faf7f0',
+    selectionBackground: 'rgba(220, 190, 100, 0.3)',
+    black: '#1a1714',
+    red: '#943030',
+    green: '#2a6e3a',
+    yellow: '#7a6520',
+    blue: '#2e4a6e',
+    magenta: '#5a3060',
+    cyan: '#2a5a5a',
+    white: '#faf7f0'
+  };
 
-	let terminalEl: HTMLDivElement;
-	let terminal: import('@xterm/xterm').Terminal | null = null;
-	let fitAddon: import('@xterm/addon-fit').FitAddon | null = null;
-	let resizeObserver: ResizeObserver | null = null;
-	let outputUnsubscribe: (() => void) | null = null;
-	let isReady = $state(false);
-	let error = $state<string | null>(null);
+  let terminalEl: HTMLDivElement;
+  let terminal: import('@xterm/xterm').Terminal | null = null;
+  let fitAddon: import('@xterm/addon-fit').FitAddon | null = null;
+  let resizeObserver: ResizeObserver | null = null;
+  let outputUnsubscribe: (() => void) | null = null;
+  let isReady = $state(false);
+  let error = $state<string | null>(null);
 
-	// Capture instance ID at mount time so onDestroy targets the correct instance
-	// (currentInstanceId store may have already changed by the time onDestroy fires)
-	let mountedInstanceId: string | null = null;
+  // Capture instance ID at mount time so onDestroy targets the correct instance
+  // (currentInstanceId store may have already changed by the time onDestroy fires)
+  let mountedInstanceId: string | null = null;
 
-	// Resolve which instanceId to use: prop or global
-	const resolvedInstanceId = $derived(propInstanceId ?? $currentInstanceId);
+  // Resolve which instanceId to use: prop or global
+  const resolvedInstanceId = $derived(propInstanceId ?? $currentInstanceId);
 
-	// Derived state for showing status banner
-	let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
-	let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
-	let isServerGone = $derived($connectionStatus === 'server_gone');
-	let showStatusBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
+  // Derived state for showing status banner
+  let isDisconnected = $derived($connectionStatus === 'disconnected' || $connectionStatus === 'error');
+  let isReconnecting = $derived($connectionStatus === 'connecting' || $connectionStatus === 'reconnecting');
+  let isServerGone = $derived($connectionStatus === 'server_gone');
+  let showStatusBanner = $derived(isDisconnected || isReconnecting || isServerGone || $hasPendingInput);
 
-	// Multi-user lock state
-	let presence = $derived(resolvedInstanceId ? $instancePresence.get(resolvedInstanceId) ?? [] : []);
-	let isMultiUser = $derived(presence.length > 1);
-	let showLockBanner = $derived(isMultiUser && ($isLockedByOther || $iHoldLock));
+  // Multi-user lock state
+  let presence = $derived(resolvedInstanceId ? ($instancePresence.get(resolvedInstanceId) ?? []) : []);
+  let isMultiUser = $derived(presence.length > 1);
+  let showLockBanner = $derived(isMultiUser && ($isLockedByOther || $iHoldLock));
 
-	// When the terminal becomes ready, consume any pending focus request
-	$effect(() => {
-		if (isReady && paneId && consumeTerminalFocus(paneId)) {
-			terminal?.focus();
-		}
-	});
+  // When the terminal becomes ready, consume any pending focus request
+  $effect(() => {
+    if (isReady && paneId && consumeTerminalFocus(paneId)) {
+      terminal?.focus();
+    }
+  });
 
-	// Set up output subscription after terminal is ready
-	function setupOutputSubscription() {
-		if (outputUnsubscribe) return;
+  // Set up output subscription after terminal is ready
+  function setupOutputSubscription() {
+    if (outputUnsubscribe) return;
 
-		// Use prop-bound or global output signal
-		const outputStore = mountedInstanceId
-			? terminalHasOutputForInstance(mountedInstanceId)
-			: currentTerminalHasOutput;
+    // Use prop-bound or global output signal
+    const outputStore = mountedInstanceId ? terminalHasOutputForInstance(mountedInstanceId) : currentTerminalHasOutput;
 
-		// Subscribe to the derived store that signals when output is available
-		outputUnsubscribe = outputStore.subscribe((hasOutput) => {
-			if (!hasOutput || !terminal) return;
+    // Subscribe to the derived store that signals when output is available
+    outputUnsubscribe = outputStore.subscribe((hasOutput) => {
+      if (!hasOutput || !terminal) return;
 
-			const instanceId = mountedInstanceId ?? get(currentInstanceId);
-			if (!instanceId) return;
+      const instanceId = mountedInstanceId ?? get(currentInstanceId);
+      if (!instanceId) return;
 
-			const buffer = consumeTerminalOutput(instanceId);
+      const buffer = consumeTerminalOutput(instanceId);
 
-			if (buffer.shouldClear) {
-				// Full replay incoming — nuke all state so the replay starts
-				// from a clean (0,0) cursor.  terminal.clear() alone preserves
-				// the cursor row, which garbles the first scrollback line if
-				// the cursor wasn't at column 0.
-				terminal.clear();
-				terminal.write('\x1b[H\x1b[2J');
-			}
+      if (buffer.shouldClear) {
+        // Full replay incoming — nuke all state so the replay starts
+        // from a clean (0,0) cursor.  terminal.clear() alone preserves
+        // the cursor row, which garbles the first scrollback line if
+        // the cursor wasn't at column 0.
+        terminal.clear();
+        terminal.write('\x1b[H\x1b[2J');
+      }
 
-			// Check viewport position BEFORE writing so writes don't change the answer
-			const wasAtBottom = isAtBottom();
+      // Check viewport position BEFORE writing so writes don't change the answer
+      const wasAtBottom = isAtBottom();
 
-			for (const chunk of buffer.chunks) {
-				terminal.write(chunk);
-			}
+      for (const chunk of buffer.chunks) {
+        terminal.write(chunk);
+      }
 
-			// Auto-scroll only if the viewport was already at the bottom
-			if (wasAtBottom) {
-				terminal.scrollToBottom();
-			}
-		});
-	}
+      // Auto-scroll only if the viewport was already at the bottom
+      if (wasAtBottom) {
+        terminal.scrollToBottom();
+      }
+    });
+  }
 
-	// Check if terminal is scrolled to bottom
-	function isAtBottom(): boolean {
-		if (!terminal) return true;
-		const viewport = terminal.element?.querySelector('.xterm-viewport');
-		if (!viewport) return true;
-		const { scrollTop, scrollHeight, clientHeight } = viewport;
-		// Consider "at bottom" if within 5px
-		return scrollHeight - scrollTop - clientHeight < 5;
-	}
+  // Check if terminal is scrolled to bottom
+  function isAtBottom(): boolean {
+    if (!terminal) return true;
+    const viewport = terminal.element?.querySelector('.xterm-viewport');
+    if (!viewport) return true;
+    const { scrollTop, scrollHeight, clientHeight } = viewport;
+    // Consider "at bottom" if within 5px
+    return scrollHeight - scrollTop - clientHeight < 5;
+  }
 
-	onMount(() => {
-		initTerminal();
-	});
+  onMount(() => {
+    initTerminal();
+  });
 
-	async function initTerminal() {
-		try {
-			// Capture the instance ID NOW — before any async work — so that
-			// onDestroy always targets the correct instance even if the user
-			// switches instances while this component is still alive.
-			mountedInstanceId = propInstanceId ?? get(currentInstanceId);
+  async function initTerminal() {
+    try {
+      // Capture the instance ID NOW — before any async work — so that
+      // onDestroy always targets the correct instance even if the user
+      // switches instances while this component is still alive.
+      mountedInstanceId = propInstanceId ?? get(currentInstanceId);
 
-			// Wait for DOM to be ready - retry a few times as bind:this is async in Svelte 5
-			let attempts = 0;
-			while (!terminalEl && attempts < 10) {
-				await tick();
-				await new Promise((resolve) => setTimeout(resolve, 50));
-				attempts++;
-			}
+      // Wait for DOM to be ready - retry a few times as bind:this is async in Svelte 5
+      let attempts = 0;
+      while (!terminalEl && attempts < 10) {
+        await tick();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        attempts++;
+      }
 
-			if (!terminalEl) {
-				throw new Error('Terminal container not available after retries');
-			}
+      if (!terminalEl) {
+        throw new Error('Terminal container not available after retries');
+      }
 
-			const { Terminal } = await import('@xterm/xterm');
-			const { FitAddon } = await import('@xterm/addon-fit');
-			const { WebLinksAddon } = await import('@xterm/addon-web-links');
-			const { ClipboardAddon } = await import('@xterm/addon-clipboard');
-			await import('@xterm/xterm/css/xterm.css');
+      const { Terminal } = await import('@xterm/xterm');
+      const { FitAddon } = await import('@xterm/addon-fit');
+      const { WebLinksAddon } = await import('@xterm/addon-web-links');
+      const { ClipboardAddon } = await import('@xterm/addon-clipboard');
+      await import('@xterm/xterm/css/xterm.css');
 
-			const currentTheme = get(theme);
-			const settings = get(userSettings);
+      const currentTheme = get(theme);
+      const settings = get(userSettings);
 
-			terminal = new Terminal({
-				cursorBlink: true,
-				fontSize: settings.terminalFontSize,
-				fontFamily: settings.terminalFontFamily,
-				allowProposedApi: true, // Required for clipboard addon
-				theme: currentTheme === 'analog' ? analogTheme : phosphorTheme
-			});
+      terminal = new Terminal({
+        cursorBlink: true,
+        fontSize: settings.terminalFontSize,
+        fontFamily: settings.terminalFontFamily,
+        allowProposedApi: true, // Required for clipboard addon
+        theme: currentTheme === 'analog' ? analogTheme : phosphorTheme
+      });
 
-			fitAddon = new FitAddon();
-			terminal.loadAddon(fitAddon);
-			terminal.loadAddon(new WebLinksAddon());
-			terminal.loadAddon(new ClipboardAddon());
+      fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(new WebLinksAddon());
+      terminal.loadAddon(new ClipboardAddon());
 
-			terminal.open(terminalEl);
+      terminal.open(terminalEl);
 
-			// Delay fit to ensure container has dimensions
-			requestAnimationFrame(() => {
-				fitAddon?.fit();
-				isReady = true;
+      // Delay fit to ensure container has dimensions
+      requestAnimationFrame(() => {
+        fitAddon?.fit();
+        isReady = true;
 
-				// Discard any Output accumulated while the terminal was hidden
-				// and block new Output until the full replay (OutputHistory)
-				// arrives.  Without this, stale Output enters xterm.js's async
-				// write queue before the replay, and terminal.clear() can't
-				// remove queued-but-unprocessed writes — causing duplicated
-				// scrollback content on view switch / reload.
-				markAwaitingReplay(mountedInstanceId!);
+        // Discard any Output accumulated while the terminal was hidden
+        // and block new Output until the full replay (OutputHistory)
+        // arrives.  Without this, stale Output enters xterm.js's async
+        // write queue before the replay, and terminal.clear() can't
+        // remove queued-but-unprocessed writes — causing duplicated
+        // scrollback content on view switch / reload.
+        markAwaitingReplay(mountedInstanceId!);
 
-				// Now that terminal is ready, set up output subscription
-				setupOutputSubscription();
+        // Now that terminal is ready, set up output subscription
+        setupOutputSubscription();
 
-				// Register this terminal in server-side dimension negotiation
-				if (terminal) {
-					sendTerminalVisible(terminal.rows, terminal.cols, mountedInstanceId!);
-				}
-			});
+        // Register this terminal in server-side dimension negotiation
+        if (terminal) {
+          sendTerminalVisible(terminal.rows, terminal.cols, mountedInstanceId!);
+        }
+      });
 
-			terminal.onData((data) => {
-				// Terminal lock gating: only allow input when appropriate
-				if (isMultiUser) {
-					if ($isLockedByOther) {
-						// Blocked — another user holds the lock
-						return;
-					}
-					if (!$iHoldLock && !$currentTerminalLock?.holder) {
-						// Lock unclaimed — auto-acquire on first keystroke
-						requestTerminalLock();
-					}
-				}
-				sendInput(data);
-				// Scroll to bottom when user types
-				terminal?.scrollToBottom();
-			});
+      terminal.onData((data) => {
+        // Terminal lock gating: only allow input when appropriate
+        if (isMultiUser) {
+          if ($isLockedByOther) {
+            // Blocked — another user holds the lock
+            return;
+          }
+          if (!$iHoldLock && !$currentTerminalLock?.holder) {
+            // Lock unclaimed — auto-acquire on first keystroke
+            requestTerminalLock();
+          }
+        }
+        sendInput(data);
+        // Scroll to bottom when user types
+        terminal?.scrollToBottom();
+      });
 
-			resizeObserver = new ResizeObserver(() => {
-				if (fitAddon && terminal && isReady && document.visibilityState === 'visible') {
-					fitAddon.fit();
-					sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
-				}
-			});
-			resizeObserver.observe(terminalEl);
+      resizeObserver = new ResizeObserver(() => {
+        if (fitAddon && terminal && isReady && document.visibilityState === 'visible') {
+          fitAddon.fit();
+          sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
+        }
+      });
+      resizeObserver.observe(terminalEl);
 
-			// Write welcome message
-			terminal.writeln('\x1b[90m--- Terminal connected ---\x1b[0m');
-			terminal.writeln('');
-		} catch (e) {
-			console.error('Failed to initialize terminal:', e);
-			error = e instanceof Error ? e.message : 'Failed to load terminal';
-		}
-	}
+      // Write welcome message
+      terminal.writeln('\x1b[90m--- Terminal connected ---\x1b[0m');
+      terminal.writeln('');
+    } catch (e) {
+      console.error('Failed to initialize terminal:', e);
+      error = e instanceof Error ? e.message : 'Failed to load terminal';
+    }
+  }
 
-	// React to theme changes — swap xterm color palette
-	const themeUnsubscribe = theme.subscribe((t) => {
-		if (!terminal) return;
-		terminal.options.theme = t === 'analog' ? analogTheme : phosphorTheme;
-	});
+  // React to theme changes — swap xterm color palette
+  const themeUnsubscribe = theme.subscribe((t) => {
+    if (!terminal) return;
+    terminal.options.theme = t === 'analog' ? analogTheme : phosphorTheme;
+  });
 
-	// React to font setting changes
-	const settingsUnsubscribe = userSettings.subscribe((s) => {
-		if (!terminal) return;
-		let changed = false;
-		if (terminal.options.fontSize !== s.terminalFontSize) {
-			terminal.options.fontSize = s.terminalFontSize;
-			changed = true;
-		}
-		if (terminal.options.fontFamily !== s.terminalFontFamily) {
-			terminal.options.fontFamily = s.terminalFontFamily;
-			changed = true;
-		}
-		if (changed && fitAddon && isReady) {
-			fitAddon.fit();
-			sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
-		}
-	});
+  // React to font setting changes
+  const settingsUnsubscribe = userSettings.subscribe((s) => {
+    if (!terminal) return;
+    let changed = false;
+    if (terminal.options.fontSize !== s.terminalFontSize) {
+      terminal.options.fontSize = s.terminalFontSize;
+      changed = true;
+    }
+    if (terminal.options.fontFamily !== s.terminalFontFamily) {
+      terminal.options.fontFamily = s.terminalFontFamily;
+      changed = true;
+    }
+    if (changed && fitAddon && isReady) {
+      fitAddon.fit();
+      sendResize(terminal.rows, terminal.cols, mountedInstanceId!);
+    }
+  });
 
-	onDestroy(() => {
-		// Unregister from server-side dimension negotiation before cleanup.
-		// Use the captured mountedInstanceId — NOT the store — because
-		// currentInstanceId may have already changed to the next instance.
-		if (mountedInstanceId) {
-			sendTerminalHidden(mountedInstanceId);
-		}
+  onDestroy(() => {
+    // Unregister from server-side dimension negotiation before cleanup.
+    // Use the captured mountedInstanceId — NOT the store — because
+    // currentInstanceId may have already changed to the next instance.
+    if (mountedInstanceId) {
+      sendTerminalHidden(mountedInstanceId);
+    }
 
-		themeUnsubscribe();
-		settingsUnsubscribe();
-		outputUnsubscribe?.();
-		resizeObserver?.disconnect();
-		terminal?.dispose();
-		terminal = null;
-		fitAddon = null;
-	});
+    themeUnsubscribe();
+    settingsUnsubscribe();
+    outputUnsubscribe?.();
+    resizeObserver?.disconnect();
+    terminal?.dispose();
+    terminal = null;
+    fitAddon = null;
+  });
 
-	export function clear() {
-		terminal?.clear();
-	}
+  export function clear() {
+    terminal?.clear();
+  }
 
-	export function write(data: string) {
-		terminal?.write(data);
-	}
+  export function write(data: string) {
+    terminal?.write(data);
+  }
 </script>
 
 <div class="terminal-wrapper">
-	{#if error}
-		<div class="error">
-			<span class="error-icon">!</span>
-			{error}
-		</div>
-	{:else if !isReady}
-		<div class="loading">
-			<span class="spinner"></span>
-			Loading terminal...
-		</div>
-	{/if}
-	{#if showStatusBanner && isReady}
-		<div class="status-banner" class:warning={isDisconnected || isServerGone} class:info={isReconnecting && !isDisconnected && !isServerGone}>
-			{#if isServerGone}
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
-				</svg>
-				<span>{$shutdownReason || 'Server is offline'} — will reconnect automatically when it restarts</span>
-				<button class="retry-btn" onclick={() => reconnect()}>Retry Now</button>
-			{:else if isDisconnected}
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
-				</svg>
-				<span>Disconnected</span>
-			{:else if isReconnecting}
-				<svg class="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path
-						d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83"
-					/>
-				</svg>
-				<span>Reconnecting...</span>
-			{/if}
-			{#if $hasPendingInput}
-				<span class="pending-badge">Input queued</span>
-			{/if}
-		</div>
-	{/if}
-	{#if showLockBanner && isReady}
-		<div class="lock-banner" class:locked-by-other={$isLockedByOther} class:i-hold={$iHoldLock}>
-			{#if $isLockedByOther}
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-					<path d="M7 11V7a5 5 0 0110 0v4" />
-				</svg>
-				<span>Terminal controlled by <strong>{$currentTerminalLock?.holder?.display_name}</strong></span>
-				<button class="lock-action-btn" onclick={requestTerminalLock}>Take Control</button>
-			{:else if $iHoldLock}
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-					<path d="M7 11V7a5 5 0 0110 0v4" />
-				</svg>
-				<span>You have terminal control</span>
-				<button class="lock-action-btn release" onclick={releaseTerminalLock}>Release</button>
-			{/if}
-		</div>
-	{/if}
-	<div class="terminal-container" class:hidden={!isReady || error} bind:this={terminalEl}></div>
+  {#if error}
+    <div class="error">
+      <span class="error-icon">!</span>
+      {error}
+    </div>
+  {:else if !isReady}
+    <div class="loading">
+      <span class="spinner"></span>
+      Loading terminal...
+    </div>
+  {/if}
+  {#if showStatusBanner && isReady}
+    <div
+      class="status-banner"
+      class:warning={isDisconnected || isServerGone}
+      class:info={isReconnecting && !isDisconnected && !isServerGone}
+    >
+      {#if isServerGone}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
+        </svg>
+        <span>{$shutdownReason || 'Server is offline'} — will reconnect automatically when it restarts</span>
+        <button class="retry-btn" onclick={() => reconnect()}>Retry Now</button>
+      {:else if isDisconnected}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18.364 5.636a9 9 0 11-12.728 0M12 9v4m0 4h.01" />
+        </svg>
+        <span>Disconnected</span>
+      {:else if isReconnecting}
+        <svg class="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path
+            d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48 8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83"
+          />
+        </svg>
+        <span>Reconnecting...</span>
+      {/if}
+      {#if $hasPendingInput}
+        <span class="pending-badge">Input queued</span>
+      {/if}
+    </div>
+  {/if}
+  {#if showLockBanner && isReady}
+    <div class="lock-banner" class:locked-by-other={$isLockedByOther} class:i-hold={$iHoldLock}>
+      {#if $isLockedByOther}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0110 0v4" />
+        </svg>
+        <span>Terminal controlled by <strong>{$currentTerminalLock?.holder?.display_name}</strong></span>
+        <button class="lock-action-btn" onclick={requestTerminalLock}>Take Control</button>
+      {:else if $iHoldLock}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+          <path d="M7 11V7a5 5 0 0110 0v4" />
+        </svg>
+        <span>You have terminal control</span>
+        <button class="lock-action-btn release" onclick={releaseTerminalLock}>Release</button>
+      {/if}
+    </div>
+  {/if}
+  <div class="terminal-container" class:hidden={!isReady || error} bind:this={terminalEl}></div>
 </div>
 
 <style>
-	.terminal-wrapper {
-		width: 100%;
-		height: 100%;
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		background: var(--surface-900);
-	}
+  .terminal-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-900);
+  }
 
-	.loading,
-	.error {
-		position: absolute;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 12px;
-		color: var(--text-muted);
-		font-size: 12px;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-	}
+  .loading,
+  .error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
 
-	.error {
-		color: var(--status-red);
-	}
+  .error {
+    color: var(--status-red);
+  }
 
-	.error-icon {
-		width: 24px;
-		height: 24px;
-		background: var(--status-red-strong);
-		border: 1px solid var(--status-red-border);
-		border-radius: 4px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-weight: bold;
-		color: var(--status-red);
-	}
+  .error-icon {
+    width: 24px;
+    height: 24px;
+    background: var(--status-red-strong);
+    border: 1px solid var(--status-red-border);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: var(--status-red);
+  }
 
-	.spinner {
-		width: 14px;
-		height: 14px;
-		border: 2px solid var(--surface-border);
-		border-top-color: var(--amber-500);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
+  .spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--surface-border);
+    border-top-color: var(--amber-500);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
 
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
 
-	.terminal-container {
-		width: 100%;
-		flex: 1;
-		min-height: 0;
-	}
+  .terminal-container {
+    width: 100%;
+    flex: 1;
+    min-height: 0;
+  }
 
-	.terminal-container.hidden {
-		visibility: hidden;
-	}
+  .terminal-container.hidden {
+    visibility: hidden;
+  }
 
-	.status-banner {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 14px;
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		flex-shrink: 0;
-	}
+  .status-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
 
-	.status-banner.warning {
-		background: var(--status-red-tint);
-		border-bottom: 1px solid var(--status-red-border);
-		color: var(--status-red-text);
-	}
+  .status-banner.warning {
+    background: var(--status-red-tint);
+    border-bottom: 1px solid var(--status-red-border);
+    color: var(--status-red-text);
+  }
 
-	.status-banner.info {
-		background: var(--tint-active-strong);
-		border-bottom: 1px solid var(--tint-focus);
-		color: var(--amber-400);
-	}
+  .status-banner.info {
+    background: var(--tint-active-strong);
+    border-bottom: 1px solid var(--tint-focus);
+    color: var(--amber-400);
+  }
 
-	.status-banner svg {
-		width: 14px;
-		height: 14px;
-		flex-shrink: 0;
-	}
+  .status-banner svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
 
-	.spinner-icon {
-		animation: spin 1s linear infinite;
-	}
+  .spinner-icon {
+    animation: spin 1s linear infinite;
+  }
 
-	.retry-btn {
-		margin-left: auto;
-		padding: 4px 10px;
-		background: var(--tint-focus);
-		border: 1px solid var(--status-red-border);
-		border-radius: 4px;
-		font-size: 10px;
-		font-weight: 600;
-		font-family: inherit;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		color: var(--status-red-text);
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
+  .retry-btn {
+    margin-left: auto;
+    padding: 4px 10px;
+    background: var(--tint-focus);
+    border: 1px solid var(--status-red-border);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: inherit;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--status-red-text);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
 
-	.retry-btn:hover {
-		background: var(--status-red-tint);
-		border-color: var(--status-red);
-	}
+  .retry-btn:hover {
+    background: var(--status-red-tint);
+    border-color: var(--status-red);
+  }
 
-	.pending-badge {
-		margin-left: auto;
-		padding: 4px 10px;
-		background: var(--tint-focus);
-		border: 1px solid var(--tint-selection);
-		border-radius: 4px;
-		font-size: 10px;
-		font-weight: 600;
-		color: var(--amber-400);
-	}
+  .pending-badge {
+    margin-left: auto;
+    padding: 4px 10px;
+    background: var(--tint-focus);
+    border: 1px solid var(--tint-selection);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--amber-400);
+  }
 
-	.lock-banner {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 8px 14px;
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		flex-shrink: 0;
-	}
+  .lock-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
 
-	.lock-banner.locked-by-other {
-		background: var(--status-red-tint);
-		border-bottom: 1px solid var(--status-red-border);
-		color: var(--status-red-text);
-	}
+  .lock-banner.locked-by-other {
+    background: var(--status-red-tint);
+    border-bottom: 1px solid var(--status-red-border);
+    color: var(--status-red-text);
+  }
 
-	.lock-banner.i-hold {
-		background: var(--status-green-tint);
-		border-bottom: 1px solid var(--status-green-border);
-		color: var(--status-green-text);
-	}
+  .lock-banner.i-hold {
+    background: var(--status-green-tint);
+    border-bottom: 1px solid var(--status-green-border);
+    color: var(--status-green-text);
+  }
 
-	.lock-banner svg {
-		width: 14px;
-		height: 14px;
-		flex-shrink: 0;
-	}
+  .lock-banner svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
 
-	.lock-action-btn {
-		margin-left: auto;
-		padding: 4px 10px;
-		background: var(--tint-focus);
-		border: 1px solid var(--tint-selection);
-		border-radius: 4px;
-		font-size: 10px;
-		font-weight: 600;
-		font-family: inherit;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		color: var(--amber-400);
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
+  .lock-action-btn {
+    margin-left: auto;
+    padding: 4px 10px;
+    background: var(--tint-focus);
+    border: 1px solid var(--tint-selection);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: inherit;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--amber-400);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
 
-	.lock-action-btn:hover {
-		background: var(--tint-selection);
-		border-color: var(--tint-selection);
-	}
+  .lock-action-btn:hover {
+    background: var(--tint-selection);
+    border-color: var(--tint-selection);
+  }
 
-	.lock-action-btn.release {
-		background: var(--status-green-tint);
-		border-color: var(--status-green-border);
-		color: var(--status-green-text);
-	}
+  .lock-action-btn.release {
+    background: var(--status-green-tint);
+    border-color: var(--status-green-border);
+    color: var(--status-green-text);
+  }
 
-	.lock-action-btn.release:hover {
-		background: var(--status-green-border);
-		border-color: var(--status-green);
-	}
+  .lock-action-btn.release:hover {
+    background: var(--status-green-border);
+    border-color: var(--status-green);
+  }
 
-	.terminal-container :global(.xterm) {
-		padding: 10px;
-		height: 100%;
-	}
+  .terminal-container :global(.xterm) {
+    padding: 10px;
+    height: 100%;
+  }
 
-	.terminal-container :global(.xterm-viewport) {
-		background-color: transparent !important;
-	}
+  .terminal-container :global(.xterm-viewport) {
+    background-color: transparent !important;
+  }
 
-	/* Terminal cursor glow */
-	.terminal-container :global(.xterm-cursor-block) {
-		box-shadow: 0 0 8px var(--amber-500);
-	}
+  /* Terminal cursor glow */
+  .terminal-container :global(.xterm-cursor-block) {
+    box-shadow: 0 0 8px var(--amber-500);
+  }
 
-	/* Mobile responsive */
-	@media (max-width: 639px) {
-		.terminal-container :global(.xterm) {
-			padding: 6px;
-		}
+  /* Mobile responsive */
+  @media (max-width: 639px) {
+    .terminal-container :global(.xterm) {
+      padding: 6px;
+    }
 
-		.status-banner {
-			padding: 8px 12px;
-			font-size: 10px;
-			flex-wrap: wrap;
-		}
+    .status-banner {
+      padding: 8px 12px;
+      font-size: 10px;
+      flex-wrap: wrap;
+    }
 
-		.pending-badge {
-			margin-left: 0;
-			margin-top: 6px;
-			width: 100%;
-			text-align: center;
-		}
+    .pending-badge {
+      margin-left: 0;
+      margin-top: 6px;
+      width: 100%;
+      text-align: center;
+    }
 
-		.loading,
-		.error {
-			font-size: 11px;
-			gap: 10px;
-		}
-	}
+    .loading,
+    .error {
+      font-size: 11px;
+      gap: 10px;
+    }
+  }
 </style>

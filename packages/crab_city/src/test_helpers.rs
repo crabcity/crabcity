@@ -162,6 +162,7 @@ pub async fn create_test_instance(
             Arc::new(RwLock::new(HashMap::new())),
             Arc::new(RwLock::new(HashMap::new())),
             None,
+            None,
         )
         .await
 }
