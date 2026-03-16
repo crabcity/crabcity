@@ -1,4 +1,5 @@
-import { writable, derived, get } from 'svelte/store';
+import { writable, derived, get, readonly } from 'svelte/store';
+import type { Readable } from 'svelte/store';
 import type { Instance, CreateInstanceRequest, CreateInstanceResponse, ConversationTurn } from '$lib/types';
 import { api } from '$lib/utils/api';
 import { updateUrl } from '$lib/utils/url';
@@ -13,6 +14,21 @@ const deleteHooks: CleanupFn[] = [];
 /** Register a hook to run when an instance is deleted. */
 export function onInstanceDelete(fn: CleanupFn): void {
 	deleteHooks.push(fn);
+}
+
+type InstanceListFn = (validIds: Set<string>) => void;
+const instanceListHooks: InstanceListFn[] = [];
+
+/** Register a hook to run when the authoritative instance list arrives. */
+export function onInstanceListReceived(fn: InstanceListFn): void {
+	instanceListHooks.push(fn);
+}
+
+/** Fire instance-list hooks (called from ws-handlers on InstanceList). */
+export function fireInstanceListReceived(validIds: Set<string>): void {
+	for (const hook of instanceListHooks) {
+		hook(validIds);
+	}
 }
 
 // =============================================================================
@@ -44,8 +60,29 @@ export { updateUrl } from '$lib/utils/url';
 /** All known instances (metadata from backend) */
 export const instances = writable<Map<string, Instance>>(new Map());
 
-/** Currently selected instance ID */
-export const currentInstanceId = writable<string | null>(null);
+/**
+ * Currently selected instance ID — driven one-way by focusedPaneInstanceId.
+ *
+ * The writable is private; only driveCurrentInstanceId() writes to it.
+ * All external consumers get the Readable export (no .set() available).
+ * To change the current instance, use setFocusedInstance() from layout.ts
+ * or selectInstance() from this module.
+ */
+const _currentInstanceId = writable<string | null>(null);
+export const currentInstanceId: Readable<string | null> = readonly(_currentInstanceId);
+
+/**
+ * Connect currentInstanceId to the focused pane's instance ID.
+ * Called once from layout.ts during setupLayoutSync(). The source store
+ * pushes values into _currentInstanceId (one-way: focusedPaneInstanceId → _currentInstanceId).
+ */
+export function driveCurrentInstanceId(source: { subscribe: (fn: (val: string | null) => void) => (() => void) }): void {
+	source.subscribe(($id) => {
+		if ($id !== get(_currentInstanceId)) {
+			_currentInstanceId.set($id);
+		}
+	});
+}
 
 /** Per-instance state (conversation, pending input, etc.) */
 export const instanceStates = writable<Map<string, InstanceState>>(new Map());
@@ -71,9 +108,9 @@ export const instanceList = derived(instances, ($instances) => {
 	);
 });
 
-/** Check if current instance is a Claude instance */
+/** Check if current instance is a structured (conversation-capable) instance */
 export const isClaudeInstance = derived(currentInstance, ($instance) => {
-	return $instance?.command.includes('claude') ?? false;
+	return $instance?.kind.type === 'Structured' || false;
 });
 
 /** Get current instance's state */
@@ -230,16 +267,32 @@ export async function deleteInstance(id: string): Promise<boolean> {
 		});
 
 		if (response.ok) {
-			let wasSelected = false;
-			currentInstanceId.update((current) => {
-				if (current === id) {
-					wasSelected = true;
-					return null;
-				}
-				return current;
-			});
+			const wasSelected = get(_currentInstanceId) === id;
 			if (wasSelected) {
-				updateUrl({ instance: null });
+				// Find the best replacement: prefer same project, fall back to any instance
+				const allInstances = get(instances);
+				const deleted = allInstances.get(id);
+				let replacement: string | null = null;
+				if (deleted) {
+					// Same working_dir first (same project)
+					for (const inst of allInstances.values()) {
+						if (inst.id !== id && inst.working_dir === deleted.working_dir) {
+							replacement = inst.id;
+							break;
+						}
+					}
+				}
+				// Fall back to any other instance
+				if (!replacement) {
+					for (const inst of allInstances.values()) {
+						if (inst.id !== id) {
+							replacement = inst.id;
+							break;
+						}
+					}
+				}
+				_focusInstance?.(replacement);
+				updateUrl({ instance: replacement });
 			}
 			// Clean up instance state
 			instanceStates.update((states) => {
@@ -282,14 +335,30 @@ export async function setCustomName(id: string, name: string | null): Promise<bo
 	}
 }
 
+// =============================================================================
+// Instance Focus — delegates to layout.ts via callback to avoid circular imports
+// =============================================================================
+
+type FocusInstanceFn = (id: string | null) => void;
+let _focusInstance: FocusInstanceFn | null = null;
+
+/**
+ * Register the layout system's setFocusedInstance function.
+ * Called once from layout.ts during setupLayoutSync().
+ */
+export function registerFocusInstance(fn: FocusInstanceFn): void {
+	_focusInstance = fn;
+}
+
 export function selectInstance(id: string, updateHistory = true): void {
-	const previousId = get(currentInstanceId);
-	currentInstanceId.set(id);
+	const previousId = get(_currentInstanceId);
 
 	// Reset to conversation view when switching instances
 	if (previousId !== id) {
 		showTerminal.set(false);
 	}
+
+	_focusInstance?.(id);
 
 	if (updateHistory) {
 		// Clear terminal param when switching instances (default to conversation view)
@@ -298,7 +367,7 @@ export function selectInstance(id: string, updateHistory = true): void {
 }
 
 export function clearSelection(updateHistory = true): void {
-	currentInstanceId.set(null);
+	_focusInstance?.(null);
 	if (updateHistory) {
 		updateUrl({ instance: null });
 	}

@@ -687,6 +687,9 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             .route("/api/browse/worktree", post(handlers::create_worktree))
             .route("/api/browse/mkdir", post(handlers::create_directory))
             .route("/api/browse/git-info", get(handlers::git_detailed_info))
+            // Inbox endpoints
+            .route("/api/inbox", get(handlers::list_inbox_handler))
+            .route("/api/inbox/{instance_id}/dismiss", post(handlers::dismiss_inbox_handler))
             // Health endpoints
             .route("/health", get(handlers::health_handler))
             .route("/health/live", get(handlers::health_live_handler))

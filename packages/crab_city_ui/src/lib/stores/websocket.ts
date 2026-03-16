@@ -558,7 +558,6 @@ function sendFocus(instanceId: string): void {
 
 	console.log('[WebSocket] Focusing on instance:', instanceId);
 	currentFocusedId = instanceId;
-	setConnecting(instanceId);
 
 	socket.send(JSON.stringify({ type: 'Focus', instance_id: instanceId } as MuxClientMessage));
 

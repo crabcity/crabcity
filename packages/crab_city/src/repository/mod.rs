@@ -10,6 +10,7 @@ mod auth;
 mod chat;
 mod conversations;
 mod entries;
+mod inbox;
 mod search;
 mod settings;
 mod tasks;

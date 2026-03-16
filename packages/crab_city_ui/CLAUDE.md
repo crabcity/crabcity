@@ -62,7 +62,7 @@ Components in `src/lib/components/layout/`:
 
 **Toast notifications**: `stores/toasts.ts` provides `addToast(message, type?, duration?)`. Max 3 visible (FIFO). `ToastStack.svelte` renders fixed bottom-right with slide-up animation.
 
-**Cross-view focus**: When focus changes between panes, `focusedPaneInstanceId` syncs to `currentInstanceId` so the sidebar highlights the correct instance. The flag-and-consume pattern in `stores/instances.ts` still handles focus handoff on view switch — see [docs/web-terminal.md](../../docs/web-terminal.md#view-switching-and-focus-handoff).
+**Cross-view focus**: `currentInstanceId` is driven one-way from `focusedPaneInstanceId` via `driveCurrentInstanceId()` (set up in `setupLayoutSync()`). To change the current instance, always use `setFocusedInstance(id)` or `selectInstance(id)` — never write to `currentInstanceId` directly. `setFocusedInstance()` routes through the layout bridge: it finds a pane already showing the instance and focuses it, or binds the focused pane to the new instance. The flag-and-consume pattern in `stores/instances.ts` still handles focus handoff on view switch — see [docs/web-terminal.md](../../docs/web-terminal.md#view-switching-and-focus-handoff).
 
 ### Project & Instance Hierarchy
 
@@ -75,10 +75,18 @@ Instances are grouped into **projects** client-side by `working_dir` (`stores/pr
 
 **MainHeader** (`main-view/MainHeader.svelte`): Project control center with three zones:
 - Left: project name + connection status
-- Center: instance fleet chips (`InstanceChip.svelte`) — status LED, name, state label; click to focus pane showing that instance
-- Right: action buttons (layout presets, files, refresh, tasks, chat)
+- Center: `FleetStrip.svelte` — adaptive fleet visualization using `ResizeObserver`. Rendering modes: `detail` (≥200px/cell: icon, name, state+duration, tool), `compact` (80-199px: icon, truncated name, LED), `column` (30-79px: colored bars with attention pips), `aggregate` (<30px: proportional bar + counts). Inbox summary text right-aligned. Expand chevron opens FleetPanel.
+- Right: action buttons (layout presets, files, tasks, chat)
 
-**Instance state utility** (`utils/instance-state.ts`): `getStateInfo()` extracts display state (label, color, animation) from instance + claude state. Shared by Sidebar rail and InstanceChip.
+**FleetPanel** (`main-view/FleetPanel.svelte`): Expanded fleet control panel (replaces FleetDrawer). Three tiers sorted by attention:
+- **Inbox**: items from `stores/inbox.ts` — `needs_input` (respond button), `completed_turn` (review/dismiss), `error` (dismiss). Auto-sorted by priority.
+- **Active**: instances currently Thinking/Responding/ToolExecuting/Starting, with state + duration
+- **Idle**: collapsible when >4, compact chip grid when collapsed
+Search filter, keyboard nav (arrows/Enter/Escape), right-click → `InstancePopover.svelte`. Hidden on mobile.
+
+**Instance state utility** (`utils/instance-state.ts`): `getStateInfo()` extracts display state (label, color, animation) from instance + claude state. Shared by Sidebar rail, FleetStrip, and FleetPanel. `InstanceKind` drives the kind icon (brain for Structured, terminal prompt for Unstructured).
+
+**Inbox store** (`stores/inbox.ts`): Server-side inbox model — `inboxItems` (Map by instance_id), `inboxSorted` (priority-sorted), `inboxCount`. Pure utilities: `getAttentionLevel()` (critical/warning/active/idle/booting), `formatDuration()`. Browser notifications for `needs_input` events. WS messages: `InboxUpdate` (single upsert/delete), `InboxList` (initial load). HTTP: `POST /api/inbox/{id}/dismiss`.
 
 ### API Calls
 
@@ -87,6 +95,8 @@ Use `src/lib/utils/api.ts` for all HTTP requests. It handles auth headers, base 
 ### Types
 
 Domain types are defined in `src/lib/types.ts`. Keep them in sync with the Rust `models.rs` types. The JSON serialization from the server is the contract.
+
+**`InstanceKind`** — discriminated union (`{ type: 'Structured'; provider: string } | { type: 'Unstructured'; label?: string | null }`). Computed by the backend at creation time, sent in the wire protocol on every `Instance` payload. Frontend checks `inst.kind.type === 'Structured'` instead of `command.includes('claude')`. The `isClaudeInstance` derived store wraps this check for the current instance.
 
 ### Styling
 

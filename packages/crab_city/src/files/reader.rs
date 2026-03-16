@@ -123,6 +123,7 @@ mod tests {
                 Some("reader-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -183,6 +184,7 @@ mod tests {
                 Some("read-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -224,6 +226,7 @@ mod tests {
                 Some("notfound-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -262,6 +265,7 @@ mod tests {
                 Some("dir-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -301,6 +305,7 @@ mod tests {
                 Some("large-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();

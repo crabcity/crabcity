@@ -13,6 +13,7 @@ use crate::inference::{
     ClaudeState, StateManagerConfig, StateSignal, StateUpdate, spawn_state_manager,
 };
 use crate::instance_actor::InstanceHandle;
+use crate::instance_manager::InstanceKind;
 use crate::models::{attribution_content_matches, normalize_attribution_content};
 use crate::repository::ConversationRepository;
 
@@ -108,7 +109,7 @@ pub(crate) struct InstanceTracker {
     pub handle: InstanceHandle,
     pub working_dir: String,
     pub created_at: DateTime<Utc>,
-    pub is_claude: bool,
+    pub kind: InstanceKind,
     /// Sender for state signals to this instance's state manager
     signal_tx: Option<mpsc::Sender<StateSignal>>,
     /// Cancellation token to stop background tasks when instance is unregistered
@@ -125,7 +126,7 @@ impl InstanceTracker {
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
-        is_claude: bool,
+        kind: InstanceKind,
     ) -> Self {
         let (conversation_tx, _) = broadcast::channel(64);
         Self {
@@ -133,7 +134,7 @@ impl InstanceTracker {
             handle,
             working_dir,
             created_at,
-            is_claude,
+            kind,
             signal_tx: None,
             cancel: CancellationToken::new(),
             conversation_turns: Arc::new(RwLock::new(Vec::new())),
@@ -148,7 +149,7 @@ impl InstanceTracker {
         global_state_manager: Arc<GlobalStateManager>,
         repository: Option<Arc<ConversationRepository>>,
     ) {
-        if !self.is_claude {
+        if !self.kind.is_structured() {
             return;
         }
 
@@ -161,7 +162,10 @@ impl InstanceTracker {
         // Forward state changes to broadcast and instance actor
         let instance_id = self.instance_id.clone();
         let handle = self.handle.clone();
+        let gsm = global_state_manager.clone();
+        let repo_fwd = repository.clone();
         tokio::spawn(async move {
+            let mut prev_state: Option<ClaudeState> = None;
             while let Some(update) = state_rx.recv().await {
                 info!(
                     "[STATE-FWD {}] State changed to {:?} (stale={})",
@@ -171,9 +175,110 @@ impl InstanceTracker {
                 if let Err(e) = handle.set_claude_state(update.state.clone()).await {
                     debug!("Failed to update instance state: {}", e);
                 }
+
+                // Track state_entered_at: record timestamp when state type changes
+                let state_type_changed = prev_state
+                    .as_ref()
+                    .map(|p| std::mem::discriminant(p) != std::mem::discriminant(&update.state))
+                    .unwrap_or(true);
+
+                if state_type_changed {
+                    let now = Utc::now();
+                    gsm.set_state_entered_at(&instance_id, now).await;
+                }
+
+                // Inbox logic: detect state transitions and upsert/clear inbox items
+                if let Some(ref repo) = repo_fwd {
+                    if let Some(ref prev) = prev_state {
+                        let prev_active = matches!(
+                            prev,
+                            ClaudeState::Thinking
+                                | ClaudeState::Responding
+                                | ClaudeState::ToolExecuting { .. }
+                        );
+                        let now_idle = matches!(update.state, ClaudeState::Idle);
+                        let now_waiting = matches!(
+                            update.state,
+                            ClaudeState::WaitingForInput { .. }
+                        );
+                        let now_active = matches!(
+                            update.state,
+                            ClaudeState::Thinking
+                                | ClaudeState::Responding
+                                | ClaudeState::ToolExecuting { .. }
+                        );
+
+                        // Active → Idle: completed a turn
+                        if prev_active && now_idle {
+                            match repo.upsert_inbox_item(&instance_id, "completed_turn", None).await {
+                                Ok(item) => {
+                                    gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                        instance_id: instance_id.clone(),
+                                        item: Some(item),
+                                    });
+                                }
+                                Err(e) => warn!("[INBOX] Failed to upsert completed_turn: {}", e),
+                            }
+                        }
+
+                        // → WaitingForInput: needs user action
+                        if now_waiting && !matches!(prev, ClaudeState::WaitingForInput { .. }) {
+                            let metadata = match &update.state {
+                                ClaudeState::WaitingForInput { prompt: Some(p) } => {
+                                    Some(serde_json::json!({"prompt": p}).to_string())
+                                }
+                                _ => None,
+                            };
+                            match repo.upsert_inbox_item(
+                                &instance_id,
+                                "needs_input",
+                                metadata.as_deref(),
+                            ).await {
+                                Ok(item) => {
+                                    gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                        instance_id: instance_id.clone(),
+                                        item: Some(item),
+                                    });
+                                }
+                                Err(e) => warn!("[INBOX] Failed to upsert needs_input: {}", e),
+                            }
+                        }
+
+                        // Was WaitingForInput, now isn't: user responded, clear needs_input
+                        if matches!(prev, ClaudeState::WaitingForInput { .. }) && !now_waiting {
+                            match repo.clear_inbox_by_type(&instance_id, "needs_input").await {
+                                Ok(true) => {
+                                    gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                        instance_id: instance_id.clone(),
+                                        item: None,
+                                    });
+                                }
+                                Ok(false) => {} // No item to clear
+                                Err(e) => warn!("[INBOX] Failed to clear needs_input: {}", e),
+                            }
+                        }
+
+                        // Was Idle, now active: user sent new work, clear completed_turn
+                        if !prev_active && now_active {
+                            match repo.clear_inbox_by_type(&instance_id, "completed_turn").await {
+                                Ok(true) => {
+                                    gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                        instance_id: instance_id.clone(),
+                                        item: None,
+                                    });
+                                }
+                                Ok(false) => {} // No item to clear
+                                Err(e) => warn!("[INBOX] Failed to clear completed_turn: {}", e),
+                            }
+                        }
+                    }
+                }
+
                 // Broadcast to all connected clients (include staleness)
                 let _ =
-                    broadcast_tx.send((instance_id.clone(), update.state, update.terminal_stale));
+                    broadcast_tx.send((instance_id.clone(), update.state.clone(), update.terminal_stale));
+
+                prev_state = Some(update.state);
             }
             warn!("[STATE-FWD {}] State receiver closed", instance_id);
         });
@@ -300,6 +405,8 @@ pub struct GlobalStateManager {
     pending_attributions: RwLock<HashMap<String, VecDeque<PendingAttribution>>>,
     /// Terminal locks: instance_id -> lock holder info
     terminal_locks: RwLock<HashMap<String, TerminalLock>>,
+    /// Timestamp when each instance entered its current state
+    state_entered_at: RwLock<HashMap<String, DateTime<Utc>>>,
 }
 
 impl GlobalStateManager {
@@ -314,7 +421,25 @@ impl GlobalStateManager {
             presence: RwLock::new(HashMap::new()),
             pending_attributions: RwLock::new(HashMap::new()),
             terminal_locks: RwLock::new(HashMap::new()),
+            state_entered_at: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Get the timestamp when an instance entered its current state.
+    pub async fn get_state_entered_at(&self, instance_id: &str) -> Option<DateTime<Utc>> {
+        self.state_entered_at
+            .read()
+            .await
+            .get(instance_id)
+            .copied()
+    }
+
+    /// Record when an instance entered its current state.
+    pub async fn set_state_entered_at(&self, instance_id: &str, timestamp: DateTime<Utc>) {
+        self.state_entered_at
+            .write()
+            .await
+            .insert(instance_id.to_string(), timestamp);
     }
 
     /// Try to claim a session for an instance. Returns true if successful.
@@ -662,16 +787,11 @@ impl GlobalStateManager {
         handle: InstanceHandle,
         working_dir: String,
         created_at: DateTime<Utc>,
-        is_claude: bool,
+        kind: InstanceKind,
         repository: Option<Arc<ConversationRepository>>,
     ) {
-        let mut tracker = InstanceTracker::new(
-            instance_id.clone(),
-            handle,
-            working_dir,
-            created_at,
-            is_claude,
-        );
+        let mut tracker =
+            InstanceTracker::new(instance_id.clone(), handle, working_dir, created_at, kind);
         tracker.start_state_manager(self.broadcast_tx.clone(), Arc::clone(self), repository);
 
         self.trackers.write().await.insert(instance_id, tracker);
@@ -691,6 +811,8 @@ impl GlobalStateManager {
         self.pending_attributions.write().await.remove(instance_id);
         // Clean up terminal lock
         self.terminal_locks.write().await.remove(instance_id);
+        // Clean up state_entered_at
+        self.state_entered_at.write().await.remove(instance_id);
     }
 
     /// Get a handle for an instance
@@ -716,13 +838,13 @@ impl GlobalStateManager {
     pub async fn get_tracker_info(
         &self,
         instance_id: &str,
-    ) -> Option<(InstanceHandle, String, DateTime<Utc>, bool)> {
+    ) -> Option<(InstanceHandle, String, DateTime<Utc>, InstanceKind)> {
         self.trackers.read().await.get(instance_id).map(|t| {
             (
                 t.handle.clone(),
                 t.working_dir.clone(),
                 t.created_at,
-                t.is_claude,
+                t.kind.clone(),
             )
         })
     }
@@ -906,7 +1028,9 @@ impl GlobalStateManager {
             handle,
             "/tmp/test".to_string(),
             Utc::now(),
-            true,
+            InstanceKind::Structured {
+                provider: "claude".into(),
+            },
         );
         self.trackers
             .write()

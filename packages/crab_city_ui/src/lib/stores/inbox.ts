@@ -1,0 +1,186 @@
+/**
+ * Inbox Store
+ *
+ * Server-side inbox model: one item per instance, surfacing state transitions
+ * that need attention (completed turns, waiting for input, errors).
+ *
+ * Items arrive via WebSocket (InboxUpdate, InboxList) and are dismissed via
+ * HTTP POST. The server is the single source of truth — clients never create
+ * inbox items locally.
+ */
+
+import { writable, derived, get } from 'svelte/store';
+import type { Instance } from '$lib/types';
+import { currentInstanceId } from './instances';
+import { api } from '$lib/utils/api';
+
+// =============================================================================
+// Types (match Rust wire format — snake_case field names)
+// =============================================================================
+
+export interface InboxItem {
+	instance_id: string;
+	event_type: 'completed_turn' | 'needs_input' | 'error';
+	turn_count: number;
+	created_at: number;
+	updated_at: number;
+	metadata_json?: string | null;
+}
+
+export type AttentionLevel = 'critical' | 'warning' | 'active' | 'idle' | 'booting';
+
+// =============================================================================
+// Stores
+// =============================================================================
+
+/** All active inbox items, keyed by instance_id (one per instance) */
+export const inboxItems = writable<Map<string, InboxItem>>(new Map());
+
+/** Total count of inbox items */
+export const inboxCount = derived(inboxItems, ($items) => $items.size);
+
+/** Sorted inbox items: needs_input first, then error, then completed_turn; oldest first within tier */
+export const inboxSorted = derived(inboxItems, ($items) => {
+	const priorityOrder: Record<string, number> = {
+		needs_input: 0,
+		error: 1,
+		completed_turn: 2
+	};
+
+	return Array.from($items.values()).sort((a, b) => {
+		const pa = priorityOrder[a.event_type] ?? 3;
+		const pb = priorityOrder[b.event_type] ?? 3;
+		if (pa !== pb) return pa - pb;
+		return a.updated_at - b.updated_at;
+	});
+});
+
+// =============================================================================
+// WebSocket Handlers (called from ws-handlers.ts)
+// =============================================================================
+
+/** Handle an InboxUpdate message — upsert or delete a single item */
+export function handleInboxUpdate(instanceId: string, item: InboxItem | null): void {
+	inboxItems.update((map) => {
+		if (item) {
+			map.set(instanceId, item);
+		} else {
+			map.delete(instanceId);
+		}
+		return new Map(map);
+	});
+
+	// Browser notification for needs_input on non-focused instances
+	if (item?.event_type === 'needs_input') {
+		const focusedId = get(currentInstanceId);
+		if (instanceId !== focusedId) {
+			notifyNeedsInput(instanceId, item);
+		}
+	}
+}
+
+/** Handle an InboxList message — replace the entire map (initial load on connect) */
+export function handleInboxList(items: InboxItem[]): void {
+	const map = new Map<string, InboxItem>();
+	for (const item of items) {
+		map.set(item.instance_id, item);
+	}
+	inboxItems.set(map);
+}
+
+// =============================================================================
+// API Actions
+// =============================================================================
+
+/** Dismiss an inbox item via HTTP POST */
+export async function dismissInboxItem(instanceId: string): Promise<boolean> {
+	try {
+		const response = await api(`/api/inbox/${instanceId}/dismiss`, {
+			method: 'POST'
+		});
+		if (response.ok) {
+			// Optimistic update — broadcast will also arrive via WS
+			inboxItems.update((map) => {
+				map.delete(instanceId);
+				return new Map(map);
+			});
+			return true;
+		}
+		return false;
+	} catch (error) {
+		console.error('[Inbox] Failed to dismiss:', error);
+		return false;
+	}
+}
+
+// =============================================================================
+// Pure Utilities
+// =============================================================================
+
+/** Compute attention level from instance state + inbox item */
+export function getAttentionLevel(instance: Instance, inboxItem?: InboxItem): AttentionLevel {
+	if (inboxItem) {
+		if (inboxItem.event_type === 'needs_input' || inboxItem.event_type === 'error') {
+			return 'critical';
+		}
+		if (inboxItem.event_type === 'completed_turn') {
+			return 'warning';
+		}
+	}
+
+	const state = instance.claude_state;
+	if (state) {
+		if (
+			state.type === 'Thinking' ||
+			state.type === 'Responding' ||
+			state.type === 'ToolExecuting'
+		) {
+			return 'active';
+		}
+		if (state.type === 'Initializing' || state.type === 'Starting') {
+			return 'booting';
+		}
+	}
+
+	return 'idle';
+}
+
+/** Format elapsed duration from a unix timestamp (seconds) to a human string */
+export function formatDuration(enteredAtSecs: number): string {
+	const elapsed = Math.floor(Date.now() / 1000) - enteredAtSecs;
+	if (elapsed < 5) return 'just now';
+	if (elapsed < 60) return `${elapsed}s`;
+	if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m`;
+	if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h`;
+	return `${Math.floor(elapsed / 86400)}d`;
+}
+
+// =============================================================================
+// Browser Notifications (moved from Sidebar.svelte)
+// =============================================================================
+
+/** Request notification permission — call once on mount */
+export function requestNotificationPermission(): void {
+	if ('Notification' in window && Notification.permission === 'default') {
+		Notification.requestPermission();
+	}
+}
+
+function notifyNeedsInput(instanceId: string, item: InboxItem): void {
+	if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+	// Try to extract a display name from metadata
+	let metadata: Record<string, unknown> | undefined;
+	if (item.metadata_json) {
+		try {
+			metadata = JSON.parse(item.metadata_json);
+		} catch { /* ignore parse errors */ }
+	}
+	const name = metadata?.instance_name as string | undefined;
+	new Notification(`${name ?? instanceId} is ready`, {
+		body: 'Claude is waiting for input',
+		icon: '/favicon.png',
+		tag: `ready-${instanceId}`,
+		silent: false
+	});
+}

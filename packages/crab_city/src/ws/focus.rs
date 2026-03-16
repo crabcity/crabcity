@@ -193,7 +193,7 @@ pub async fn handle_focus(
     }
 
     // Get the instance info
-    let (handle, working_dir, created_at, is_claude) = match state_manager
+    let (handle, working_dir, created_at, kind) = match state_manager
         .get_tracker_info(&instance_id)
         .await
     {
@@ -235,7 +235,7 @@ pub async fn handle_focus(
     // Conversation data: get snapshot from server-owned watcher, subscribe for updates.
     // If the session hasn't been discovered yet and this is Claude, run session discovery
     // (handles the ambiguous multi-session case by asking the user).
-    let discovery_task = if is_claude {
+    let discovery_task = if kind.is_structured() {
         // Check if session already discovered
         let has_session = handle.get_session_id().await.is_some();
 
@@ -271,7 +271,7 @@ pub async fn handle_focus(
     let mut convo_rx = state_manager.subscribe_conversation(&instance_id).await;
 
     // Send current conversation snapshot from server store.
-    if is_claude {
+    if kind.is_structured() {
         let turns = state_manager.get_conversation_snapshot(&instance_id).await;
         if !turns.is_empty() {
             info!(

@@ -5,6 +5,7 @@ export interface Instance {
 	name: string;
 	custom_name?: string | null;
 	command: string;
+	kind: InstanceKind;
 	working_dir: string;
 	wrapper_port: number;
 	running: boolean;
@@ -12,6 +13,7 @@ export interface Instance {
 	session_id?: string;
 	claude_state?: ClaudeState;
 	claude_state_stale?: boolean; // True if terminal output is stale
+	state_entered_at?: number; // Unix timestamp when current state started
 }
 
 export interface CreateInstanceRequest {
@@ -83,6 +85,11 @@ export interface PollResponse {
 	waiting?: boolean;
 	error?: string;
 }
+
+// Instance kind — structured (conversation-capable) vs unstructured (terminal-only)
+export type InstanceKind =
+	| { type: 'Structured'; provider: string }
+	| { type: 'Unstructured'; label?: string | null };
 
 // Claude state types (from server-side inference)
 

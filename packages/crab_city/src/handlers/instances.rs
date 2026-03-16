@@ -62,13 +62,12 @@ pub async fn create_instance(
 ) -> Result<Json<CreateInstanceResponse>, (StatusCode, String)> {
     match state
         .instance_manager
-        .create(req.name, req.working_dir, req.command)
+        .create(req.name, req.working_dir, req.command, None)
         .await
     {
         Ok(instance) => {
             state.metrics.instance_created();
 
-            let is_claude = instance.command.contains("claude");
             let created_at: DateTime<Utc> =
                 instance.created_at.parse().unwrap_or_else(|_| Utc::now());
 
@@ -80,7 +79,7 @@ pub async fn create_instance(
                         handle,
                         instance.working_dir.clone(),
                         created_at,
-                        is_claude,
+                        instance.kind.clone(),
                         Some(state.repository.clone()),
                     )
                     .await;
@@ -101,7 +100,7 @@ pub async fn create_instance(
                 }
             }
 
-            if is_claude {
+            if instance.kind.is_structured() {
                 let persistor = Arc::new(InstancePersistor::new(
                     instance.id.clone(),
                     instance.working_dir.clone(),

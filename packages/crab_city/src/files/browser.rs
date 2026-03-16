@@ -186,6 +186,7 @@ mod tests {
                 Some("browser-test".to_string()),
                 Some(project_dir.to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -236,6 +237,7 @@ mod tests {
                 Some("hidden-test".to_string()),
                 Some(project_dir.to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -283,6 +285,7 @@ mod tests {
                 Some("sort-test".to_string()),
                 Some(project_dir.to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -324,6 +327,7 @@ mod tests {
                 Some("nopath-test".to_string()),
                 Some(tmp.path().to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();
@@ -371,6 +375,7 @@ mod tests {
                 Some("meta-test".to_string()),
                 Some(project_dir.to_string_lossy().to_string()),
                 Some("echo hello".to_string()),
+                None,
             )
             .await
             .unwrap();

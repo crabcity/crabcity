@@ -50,12 +50,12 @@ pub async fn websocket_handler(
         instance.created_at.parse().unwrap_or_else(|_| Utc::now());
 
     let instance_id = id.clone();
-    let is_claude = instance.command.contains("claude");
-    let convo_config = if is_claude {
+    let is_structured = instance.kind.is_structured();
+    let convo_config = if is_structured {
         Some(crate::websocket_proxy::ConversationConfig {
             working_dir: instance.working_dir.clone(),
             session_id: instance.session_id.clone(),
-            is_claude,
+            is_structured,
             instance_created_at,
         })
     } else {

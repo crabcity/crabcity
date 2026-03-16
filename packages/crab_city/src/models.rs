@@ -457,6 +457,20 @@ pub struct Task {
     pub conversation_id: Option<String>,
 }
 
+/// An inbox item for the fleet attention model.
+/// One per instance — represents the current actionable event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxItem {
+    pub instance_id: String,
+    /// Event type: "completed_turn", "needs_input", or "error"
+    pub event_type: String,
+    /// Number of accumulated turns (incremented for repeated completed_turn events)
+    pub turn_count: i32,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub metadata_json: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDispatch {
     pub id: Option<i64>,

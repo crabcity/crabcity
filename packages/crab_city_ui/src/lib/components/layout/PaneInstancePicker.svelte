@@ -26,11 +26,11 @@
 		}
 	});
 
-	// Terminal panes show only non-Claude (shell) instances;
-	// all other pane kinds show only Claude instances.
+	// Terminal panes show only unstructured (shell) instances;
+	// all other pane kinds show only structured (conversation-capable) instances.
 	const filteredInstances = $derived(
 		$instanceList.filter((inst) =>
-			isTerminal ? !inst.command.includes('claude') : inst.command.includes('claude')
+			isTerminal ? inst.kind.type === 'Unstructured' : inst.kind.type === 'Structured'
 		)
 	);
 

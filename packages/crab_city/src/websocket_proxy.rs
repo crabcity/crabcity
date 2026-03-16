@@ -61,7 +61,7 @@ pub struct SessionCandidate {
 pub struct ConversationConfig {
     pub working_dir: String,
     pub session_id: Option<String>,
-    pub is_claude: bool,
+    pub is_structured: bool,
     /// When the instance was created - used to narrow down candidate sessions
     pub instance_created_at: DateTime<Utc>,
 }
@@ -86,7 +86,10 @@ pub async fn handle_proxy(
     // Create a channel for sending messages to the WebSocket
     let (tx, mut rx) = mpsc::channel::<WsMessage>(100);
 
-    let is_claude = convo_config.as_ref().map(|c| c.is_claude).unwrap_or(false);
+    let is_structured = convo_config
+        .as_ref()
+        .map(|c| c.is_structured)
+        .unwrap_or(false);
 
     // Subscribe to global state broadcast for state changes
     // (the server-owned conversation watcher feeds the global state manager)
@@ -94,7 +97,7 @@ pub async fn handle_proxy(
         global_state_manager.as_ref().map(|gsm| gsm.subscribe());
 
     // Subscribe to conversation broadcast from the server-owned watcher
-    let mut convo_rx: Option<broadcast::Receiver<ConversationEvent>> = if is_claude {
+    let mut convo_rx: Option<broadcast::Receiver<ConversationEvent>> = if is_structured {
         if let Some(ref gsm) = global_state_manager {
             gsm.subscribe_conversation(&instance_id).await
         } else {
@@ -105,7 +108,7 @@ pub async fn handle_proxy(
     };
 
     // Send current conversation snapshot from server store
-    if is_claude && let Some(ref gsm) = global_state_manager {
+    if is_structured && let Some(ref gsm) = global_state_manager {
         let turns = gsm.get_conversation_snapshot(&instance_id).await;
         if !turns.is_empty() {
             let _ = tx.send(WsMessage::ConversationFull { turns }).await;
@@ -113,7 +116,7 @@ pub async fn handle_proxy(
     }
 
     // Send current Claude state so newly-connecting clients don't start at Initializing
-    if is_claude && let Some(state) = handle.get_info().await.claude_state {
+    if is_structured && let Some(state) = handle.get_info().await.claude_state {
         let _ = tx
             .send(WsMessage::StateChange {
                 state,

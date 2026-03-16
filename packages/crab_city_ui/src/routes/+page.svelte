@@ -15,9 +15,10 @@
 	import { isFileViewerOpen, closeFileViewer } from '$lib/stores/files';
 	import { claudeState } from '$lib/stores/claude';
 	import { connectionStatus } from '$lib/stores/websocket';
-	import { instanceList, selectInstance, showTerminal, setTerminalMode } from '$lib/stores/instances';
+	import { showTerminal, setTerminalMode } from '$lib/stores/instances';
+	import { currentProject } from '$lib/stores/projects';
 	import { toggleTheme } from '$lib/stores/settings';
-	import { layoutState, splitPane, closePane, paneCount, moveFocus } from '$lib/stores/layout';
+	import { layoutState, splitPane, closePane, paneCount, moveFocus, focusPane, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
 	import type { PaneContentKind } from '$lib/stores/layout';
 
 	let showBoot = $state(true);
@@ -129,13 +130,25 @@
 			e.preventDefault();
 			toggleTaskPanel();
 		}
-		// 1-9 to switch instances
+		// 1-9 to switch instances (indexes into current project's instances)
+		// Focus-if-visible, insert-if-not (matches drawer behavior)
 		const num = parseInt(e.key);
 		if (num >= 1 && num <= 9) {
-			const list = $instanceList;
-			if (num <= list.length) {
+			const project = $currentProject;
+			if (project && num <= project.instances.length) {
 				e.preventDefault();
-				selectInstance(list[num - 1].id);
+				const targetId = project.instances[num - 1].id;
+
+				// If a pane already shows this instance, focus it
+				for (const [paneId, pane] of $layoutState.panes) {
+					if (getPaneInstanceId(pane.content) === targetId) {
+						focusPane(paneId);
+						return;
+					}
+				}
+
+				// Not in any pane — insert as a new split
+				splitPane($layoutState.focusedPaneId, 'vertical', defaultContentForKind('conversation', targetId));
 			}
 		}
 	}

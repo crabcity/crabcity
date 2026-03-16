@@ -6,15 +6,18 @@
 	 */
 
 	import { currentInstanceId } from '$lib/stores/instances';
+	import { paneCount } from '$lib/stores/layout';
 
 	let active = $state(false);
 	let phase = $state<'noise' | 'lines' | 'fade'>('noise');
 	let prevInstanceId: string | null = null;
 
-	// Watch for instance switches
+	// Watch for instance switches — only in single-pane mode.
+	// In multi-pane, clicking between panes changes currentInstanceId
+	// but all panes are visible so there's no "channel switch".
 	$effect(() => {
 		const id = $currentInstanceId;
-		if (prevInstanceId !== null && id !== prevInstanceId && id !== null) {
+		if (prevInstanceId !== null && id !== prevInstanceId && id !== null && $paneCount <= 1) {
 			triggerEffect();
 		}
 		prevInstanceId = id;
