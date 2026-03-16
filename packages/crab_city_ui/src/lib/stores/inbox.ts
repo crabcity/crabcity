@@ -11,7 +11,9 @@
 
 import { writable, derived, get } from 'svelte/store';
 import type { Instance } from '$lib/types';
-import { currentInstanceId } from './instances';
+import { currentInstanceId, instances } from './instances';
+import { userSettings } from './settings';
+import { addToast } from './toasts';
 import { api } from '$lib/utils/api';
 
 // =============================================================================
@@ -70,11 +72,13 @@ export function handleInboxUpdate(instanceId: string, item: InboxItem | null): v
 		return new Map(map);
 	});
 
-	// Browser notification for needs_input on non-focused instances
-	if (item?.event_type === 'needs_input') {
+	// Browser notification for actionable inbox events
+	if (item?.event_type === 'needs_input' || item?.event_type === 'completed_turn') {
 		const focusedId = get(currentInstanceId);
-		if (instanceId !== focusedId) {
-			notifyNeedsInput(instanceId, item);
+		const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+		// Notify if the instance isn't focused, or the tab is hidden (user in another app)
+		if (instanceId !== focusedId || isHidden) {
+			notifyInboxEvent(instanceId, item);
 		}
 	}
 }
@@ -159,28 +163,60 @@ export function formatDuration(enteredAtSecs: number): string {
 // Browser Notifications (moved from Sidebar.svelte)
 // =============================================================================
 
-/** Request notification permission — call once on mount */
-export function requestNotificationPermission(): void {
-	if ('Notification' in window && Notification.permission === 'default') {
-		Notification.requestPermission();
-	}
+/**
+ * Request notification permission — must be called from a user gesture (click)
+ * for Chrome to show the permission dialog. Returns the resulting permission.
+ */
+export async function requestNotificationPermission(): Promise<NotificationPermission | null> {
+	if (!('Notification' in window)) return null;
+	if (Notification.permission !== 'default') return Notification.permission;
+	return Notification.requestPermission();
 }
 
-function notifyNeedsInput(instanceId: string, item: InboxItem): void {
-	if (!('Notification' in window) || Notification.permission !== 'granted') return;
+let permissionNudgeShown = false;
 
-	// Try to extract a display name from metadata
-	let metadata: Record<string, unknown> | undefined;
-	if (item.metadata_json) {
-		try {
-			metadata = JSON.parse(item.metadata_json);
-		} catch { /* ignore parse errors */ }
+function notifyInboxEvent(instanceId: string, item: InboxItem): void {
+	if (!('Notification' in window)) return;
+
+	// If permission was never requested, nudge the user once
+	if (Notification.permission === 'default' && !permissionNudgeShown) {
+		permissionNudgeShown = true;
+		addToast('Enable desktop notifications in Settings', 'info', 5000);
+		return;
 	}
-	const name = metadata?.instance_name as string | undefined;
-	new Notification(`${name ?? instanceId} is ready`, {
-		body: 'Claude is waiting for input',
+
+	if (Notification.permission !== 'granted') return;
+
+	// Respect user setting
+	if (!get(userSettings).showNotifications) return;
+
+	// Look up instance display name from the live instances store
+	const inst = get(instances).get(instanceId);
+	const name = inst?.custom_name ?? inst?.name;
+	const displayName = name ?? instanceId;
+
+	let title: string;
+	let body: string;
+
+	if (item.event_type === 'needs_input') {
+		title = `${displayName} needs input`;
+		body = 'Waiting for input';
+		if (item.metadata_json) {
+			try {
+				const metadata = JSON.parse(item.metadata_json);
+				if (metadata?.prompt) body = metadata.prompt;
+			} catch { /* ignore parse errors */ }
+		}
+	} else {
+		// completed_turn
+		title = `${displayName} finished`;
+		body = item.turn_count > 1 ? `Completed ${item.turn_count} turns` : 'Turn complete';
+	}
+
+	new Notification(title, {
+		body,
 		icon: '/favicon.png',
-		tag: `ready-${instanceId}`,
+		tag: `inbox-${instanceId}`,
 		silent: false
 	});
 }

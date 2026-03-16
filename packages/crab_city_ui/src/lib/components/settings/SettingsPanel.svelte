@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { userSettings, updateSetting, toggleTheme, DEFAULT_SETTINGS, type UserSettings } from '$lib/stores/settings';
 	import { connectionStatus } from '$lib/stores/websocket';
+	import { requestNotificationPermission } from '$lib/stores/inbox';
 
 	interface Props {
 		embedded?: boolean;
@@ -8,6 +9,9 @@
 	}
 
 	let { embedded = false, onback }: Props = $props();
+	let notificationDenied = $state(
+		typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'denied'
+	);
 
 	function handleThemeToggle() {
 		toggleTheme();
@@ -33,8 +37,17 @@
 		updateSetting('terminalFontSize', value);
 	}
 
-	function handleNotificationsToggle() {
-		updateSetting('showNotifications', !$userSettings.showNotifications);
+	async function handleNotificationsToggle() {
+		const enabling = !$userSettings.showNotifications;
+		if (enabling) {
+			// Request permission on user gesture — Chrome requires this
+			const result = await requestNotificationPermission();
+			if (result === 'denied') {
+				notificationDenied = true;
+				return; // Don't enable the setting if permission was denied
+			}
+		}
+		updateSetting('showNotifications', enabling);
 	}
 </script>
 
@@ -149,16 +162,17 @@
 			<div class="setting-row">
 				<div class="setting-info">
 					<span class="setting-label">Notifications</span>
-					<span class="setting-desc">Browser alerts when instances are ready</span>
+					<span class="setting-desc">{notificationDenied ? 'Blocked by browser — reset in site settings' : 'Browser alerts when instances are ready'}</span>
 				</div>
 				<button
 					class="indicator-btn"
-					class:on={$userSettings.showNotifications}
+					class:on={$userSettings.showNotifications && !notificationDenied}
+					disabled={notificationDenied}
 					onclick={handleNotificationsToggle}
 					aria-label="Toggle notifications"
 				>
 					<span class="indicator-dot"></span>
-					<span class="indicator-label">{$userSettings.showNotifications ? 'ON' : 'OFF'}</span>
+					<span class="indicator-label">{notificationDenied ? 'BLOCKED' : $userSettings.showNotifications ? 'ON' : 'OFF'}</span>
 				</button>
 			</div>
 		</section>

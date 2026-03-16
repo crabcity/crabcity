@@ -86,11 +86,7 @@ pub async fn handle_multiplexed_ws(
     if let Some(ref repo) = repository {
         match repo.list_inbox().await {
             Ok(items) if !items.is_empty() => {
-                if tx
-                    .send(ServerMessage::InboxList { items })
-                    .await
-                    .is_err()
-                {
+                if tx.send(ServerMessage::InboxList { items }).await.is_err() {
                     warn!(conn_id = %connection_id, "Failed to send initial inbox list - channel closed");
                 }
             }

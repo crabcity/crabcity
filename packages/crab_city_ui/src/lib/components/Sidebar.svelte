@@ -1,12 +1,10 @@
 <script lang="ts">
 	import { base } from '$app/paths';
-	import { onMount } from 'svelte';
 	import {
 		selectInstance
 	} from '$lib/stores/instances';
 	import { projects, currentProject } from '$lib/stores/projects';
 	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
-	import { requestNotificationPermission } from '$lib/stores/inbox';
 	import QuickSettings from './settings/QuickSettings.svelte';
 	import CreateInstanceModal from './CreateInstanceModal.svelte';
 	import CloseProjectModal from './CloseProjectModal.svelte';
@@ -20,11 +18,6 @@
 		await logout();
 		window.location.href = `${base}/login`;
 	}
-
-	// Request notification permission on mount (notifications now handled by inbox store)
-	onMount(() => {
-		requestNotificationPermission();
-	});
 
 	function handleSelectProject(workingDir: string) {
 		const project = $projects.find(p => p.workingDir === workingDir);

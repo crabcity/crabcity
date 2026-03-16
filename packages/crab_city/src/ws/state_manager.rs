@@ -193,10 +193,7 @@ impl GlobalStateManager {
     /// Spawn a background task that subscribes to state broadcasts and:
     /// 1. Tracks `state_entered_at` timestamps (when state type changes)
     /// 2. Detects state transitions for inbox (completed_turn, needs_input, etc.)
-    pub fn start_inbox_watcher(
-        self: &Arc<Self>,
-        repository: Arc<ConversationRepository>,
-    ) {
+    pub fn start_inbox_watcher(self: &Arc<Self>, repository: Arc<ConversationRepository>) {
         let mut state_rx = self.broadcast_tx.subscribe();
         let gsm = Arc::clone(self);
         tokio::spawn(async move {
@@ -224,8 +221,7 @@ impl GlobalStateManager {
                                     | ClaudeState::ToolExecuting { .. }
                             );
                             let now_idle = matches!(state, ClaudeState::Idle);
-                            let now_waiting =
-                                matches!(state, ClaudeState::WaitingForInput { .. });
+                            let now_waiting = matches!(state, ClaudeState::WaitingForInput { .. });
                             let now_active = matches!(
                                 state,
                                 ClaudeState::Thinking
@@ -252,9 +248,7 @@ impl GlobalStateManager {
                             }
 
                             // → WaitingForInput: needs user action
-                            if now_waiting
-                                && !matches!(prev, ClaudeState::WaitingForInput { .. })
-                            {
+                            if now_waiting && !matches!(prev, ClaudeState::WaitingForInput { .. }) {
                                 let metadata = match &state {
                                     ClaudeState::WaitingForInput { prompt: Some(p) } => {
                                         Some(serde_json::json!({"prompt": p}).to_string())
@@ -282,9 +276,7 @@ impl GlobalStateManager {
                             }
 
                             // Was WaitingForInput, now isn't: user responded, clear needs_input
-                            if matches!(prev, ClaudeState::WaitingForInput { .. })
-                                && !now_waiting
-                            {
+                            if matches!(prev, ClaudeState::WaitingForInput { .. }) && !now_waiting {
                                 match repository
                                     .clear_inbox_by_type(&instance_id, "needs_input")
                                     .await
@@ -338,11 +330,7 @@ impl GlobalStateManager {
 
     /// Get the timestamp when an instance entered its current state.
     pub async fn get_state_entered_at(&self, instance_id: &str) -> Option<DateTime<Utc>> {
-        self.state_entered_at
-            .read()
-            .await
-            .get(instance_id)
-            .copied()
+        self.state_entered_at.read().await.get(instance_id).copied()
     }
 
     /// Record when an instance entered its current state.

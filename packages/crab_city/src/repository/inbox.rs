@@ -130,28 +130,22 @@ impl ConversationRepository {
 
     /// Dismiss (delete) an inbox item. Returns true if a row was deleted.
     pub async fn dismiss_inbox_item(&self, instance_id: &str) -> Result<bool> {
-        let result =
-            sqlx::query("DELETE FROM instance_inbox WHERE instance_id = ?")
-                .bind(instance_id)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query("DELETE FROM instance_inbox WHERE instance_id = ?")
+            .bind(instance_id)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
     /// Clear inbox item only if it matches the given event_type.
     /// Returns true if a row was deleted.
-    pub async fn clear_inbox_by_type(
-        &self,
-        instance_id: &str,
-        event_type: &str,
-    ) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM instance_inbox WHERE instance_id = ? AND event_type = ?",
-        )
-        .bind(instance_id)
-        .bind(event_type)
-        .execute(&self.pool)
-        .await?;
+    pub async fn clear_inbox_by_type(&self, instance_id: &str, event_type: &str) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM instance_inbox WHERE instance_id = ? AND event_type = ?")
+                .bind(instance_id)
+                .bind(event_type)
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected() > 0)
     }
 }
