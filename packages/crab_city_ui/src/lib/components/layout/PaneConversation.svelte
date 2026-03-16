@@ -11,7 +11,7 @@
 	let { instanceId }: Props = $props();
 
 	const inst = $derived($instances.get(instanceId));
-	const isClaudeInstance = $derived(inst ? inst.command.includes('claude') : true);
+	const isClaudeInstance = $derived(inst ? inst.kind.type === 'Structured' : true);
 
 	let viewMode = $state<'structured' | 'terminal'>('structured');
 

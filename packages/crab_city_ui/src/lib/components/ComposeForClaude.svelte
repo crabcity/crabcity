@@ -38,7 +38,7 @@
 			.map((inst) => ({
 				id: inst.id,
 				label: inst.custom_name ?? inst.name,
-				isClaude: inst.command.includes('claude')
+				isClaude: inst.kind.type === 'Structured'
 			}))
 	);
 

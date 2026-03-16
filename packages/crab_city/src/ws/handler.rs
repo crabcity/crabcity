@@ -67,8 +67,13 @@ pub async fn handle_multiplexed_ws(
     let (session_select_tx, session_select_rx) = mpsc::channel::<String>(1);
     let session_select_rx = Arc::new(tokio::sync::Mutex::new(session_select_rx));
 
-    // Send initial instance list with states
-    let instances = instance_manager.list().await;
+    // Send initial instance list with states (enriched with state_entered_at)
+    let mut instances = instance_manager.list().await;
+    for inst in &mut instances {
+        if let Some(ts) = state_manager.get_state_entered_at(&inst.id).await {
+            inst.state_entered_at = Some(ts.timestamp());
+        }
+    }
     if tx
         .send(ServerMessage::InstanceList { instances })
         .await
@@ -77,20 +82,45 @@ pub async fn handle_multiplexed_ws(
         warn!(conn_id = %connection_id, "Failed to send initial instance list - channel closed");
     }
 
+    // Send initial inbox state
+    if let Some(ref repo) = repository {
+        match repo.list_inbox().await {
+            Ok(items) if !items.is_empty() => {
+                if tx
+                    .send(ServerMessage::InboxList { items })
+                    .await
+                    .is_err()
+                {
+                    warn!(conn_id = %connection_id, "Failed to send initial inbox list - channel closed");
+                }
+            }
+            Err(e) => {
+                warn!(conn_id = %connection_id, "Failed to load inbox: {}", e);
+            }
+            _ => {} // Empty inbox, nothing to send
+        }
+    }
+
     // Subscribe to state broadcasts from all instances
     let mut state_rx = state_manager.subscribe();
     let tx_state = tx.clone();
     let stats_state = stats.clone();
+    let state_manager_for_broadcast = state_manager.clone();
     let state_broadcast_task = async move {
         loop {
             match state_rx.recv().await {
                 Ok((instance_id, state, stale)) => {
                     stats_state.record_state_send(1); // At least 1 receiver (us)
+                    let entered_at = state_manager_for_broadcast
+                        .get_state_entered_at(&instance_id)
+                        .await
+                        .map(|ts| ts.timestamp());
                     if tx_state
                         .send(ServerMessage::StateChange {
                             instance_id,
                             state,
                             stale,
+                            entered_at,
                         })
                         .await
                         .is_err()

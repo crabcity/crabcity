@@ -10,7 +10,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { currentInstanceId, showTerminal, onInstanceDelete } from './instances';
+import { currentInstanceId, showTerminal, onInstanceDelete, onInstanceListReceived, driveCurrentInstanceId, registerFocusInstance } from './instances';
 import { addToast } from './toasts';
 
 // =============================================================================
@@ -179,11 +179,57 @@ export const terminalPaneCount = derived(layoutState, ($s) => {
 });
 
 // =============================================================================
-// Sync: showTerminal / currentInstanceId → layout (Phase 1 compatibility)
+// Instance Focus — the canonical way to change which instance is "current"
+// =============================================================================
+
+export type FocusResult = 'focused' | 'swapped' | 'no-pane';
+
+/**
+ * Route an instance ID through the layout system.
+ *
+ * Returns a discriminant so callers can decide what to do next:
+ *  - 'focused'  — a pane already showed this instance; we focused it
+ *  - 'swapped'  — no pane showed it; we replaced the focused pane's content
+ *  - 'no-pane'  — multi-pane and no pane has an instanceId slot (shouldn't happen)
+ */
+export function setFocusedInstance(id: string | null): FocusResult {
+	if (id === null) {
+		const focusedId = get(layoutState).focusedPaneId;
+		setPaneContent(focusedId, { kind: 'landing' });
+		return 'swapped';
+	}
+
+	const state = get(layoutState);
+
+	// Try to find a pane already showing this instance → focus it
+	for (const [paneId, pane] of state.panes) {
+		if (getPaneInstanceId(pane.content) === id) {
+			focusPane(paneId);
+			return 'focused';
+		}
+	}
+
+	// No pane shows this instance — bind focused pane to it
+	const focusedId = state.focusedPaneId;
+	const focusedPane = state.panes.get(focusedId);
+	if (focusedPane) {
+		if (focusedPane.content.kind === 'landing') {
+			setPaneContent(focusedId, { kind: 'conversation', instanceId: id });
+		} else if ('instanceId' in focusedPane.content) {
+			setPaneContent(focusedId, { ...focusedPane.content, instanceId: id });
+		}
+		return 'swapped';
+	}
+
+	return 'no-pane';
+}
+
+// =============================================================================
+// Sync: showTerminal → layout (single-pane compatibility)
 //
-// In Phase 1, the layout is always a single leaf. We keep it in sync with the
-// existing showTerminal and currentInstanceId stores so the layout reflects
-// whatever MainView used to show.
+// In single-pane mode, toggling showTerminal swaps the pane between
+// terminal ↔ conversation. currentInstanceId is now derived from
+// focusedPaneInstanceId (one-way data flow).
 // =============================================================================
 
 let _syncSetup = false;
@@ -192,7 +238,13 @@ export function setupLayoutSync(): void {
 	if (_syncSetup) return;
 	_syncSetup = true;
 
-	// When showTerminal or currentInstanceId changes, update the single pane
+	// Drive currentInstanceId from focusedPaneInstanceId (one-way flow)
+	driveCurrentInstanceId(focusedPaneInstanceId);
+
+	// Register so selectInstance/clearSelection can reach setFocusedInstance
+	registerFocusInstance(setFocusedInstance);
+
+	// When showTerminal changes, update the single pane between terminal ↔ conversation
 	showTerminal.subscribe(($show) => {
 		layoutState.update((s) => {
 			if (s.panes.size !== 1) return s; // Only sync in single-pane mode
@@ -209,40 +261,6 @@ export function setupLayoutSync(): void {
 			});
 			return { ...s, panes: newPanes };
 		});
-	});
-
-	currentInstanceId.subscribe(($id) => {
-		layoutState.update((s) => {
-			if (s.panes.size !== 1) return s;
-			const pane = Array.from(s.panes.values())[0];
-			// Landing → conversation when an instance is selected
-			if (pane.content.kind === 'landing' && $id) {
-				const newPanes = new Map(s.panes);
-				newPanes.set(pane.id, {
-					...pane,
-					content: { kind: 'conversation', instanceId: $id }
-				});
-				return { ...s, panes: newPanes };
-			}
-			const currentPaneInstanceId = getPaneInstanceId(pane.content);
-			if (currentPaneInstanceId === $id) return s;
-			// Only update panes that carry instanceId
-			if (!('instanceId' in pane.content)) return s;
-			const newPanes = new Map(s.panes);
-			newPanes.set(pane.id, {
-				...pane,
-				content: { ...pane.content, instanceId: $id }
-			});
-			return { ...s, panes: newPanes };
-		});
-	});
-
-	// When focused pane changes, sync its instanceId → currentInstanceId
-	// so sidebar highlight follows focus.
-	focusedPaneInstanceId.subscribe(($id) => {
-		if ($id && $id !== get(currentInstanceId)) {
-			currentInstanceId.set($id);
-		}
 	});
 }
 
@@ -444,6 +462,39 @@ export function pruneInstancePanes(deletedInstanceId: string): void {
 }
 
 onInstanceDelete(pruneInstancePanes);
+
+/**
+ * Validate all pane instanceId references against the authoritative instance list.
+ * Stale references (from a previous server session) are nulled out so PaneHost
+ * shows the instance picker instead of a broken view.
+ */
+export function validatePaneInstances(validIds: Set<string>): void {
+	layoutState.update((s) => {
+		let changed = false;
+		const newPanes = new Map(s.panes);
+		for (const [id, pane] of newPanes) {
+			const paneInstanceId = getPaneInstanceId(pane.content);
+			if (paneInstanceId && !validIds.has(paneInstanceId)) {
+				if ('instanceId' in pane.content) {
+					newPanes.set(id, {
+						...pane,
+						content: { ...pane.content, instanceId: null }
+					});
+				} else if (pane.content.kind === 'chat' && pane.content.scope !== 'global') {
+					newPanes.set(id, {
+						...pane,
+						content: { kind: 'chat', scope: 'global' }
+					});
+				}
+				changed = true;
+			}
+		}
+		if (!changed) return s;
+		return { ...s, panes: newPanes };
+	});
+}
+
+onInstanceListReceived(validatePaneInstances);
 
 // =============================================================================
 // Tree Helpers

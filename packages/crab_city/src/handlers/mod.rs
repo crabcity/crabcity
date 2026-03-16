@@ -2,6 +2,7 @@ pub mod admin;
 pub mod browse;
 pub mod conversations;
 pub mod health;
+pub mod inbox;
 pub mod instances;
 pub mod notes;
 pub mod settings;
@@ -21,6 +22,7 @@ pub use conversations::{
     get_shared_conversation, list_conversations, poll_conversation, search_conversations_handler,
 };
 pub use health::{health_handler, health_live_handler, health_ready_handler, metrics_handler};
+pub use inbox::{dismiss_inbox_handler, list_inbox_handler};
 pub use instances::{
     accept_invitation, create_instance, create_invitation, delete_instance, get_instance,
     get_instance_output, list_instances, remove_collaborator, set_custom_name,

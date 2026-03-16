@@ -2,17 +2,14 @@
 	import { base } from '$app/paths';
 	import { onMount } from 'svelte';
 	import {
-		instanceList,
-		currentInstanceId,
 		selectInstance
 	} from '$lib/stores/instances';
 	import { projects, currentProject } from '$lib/stores/projects';
-	import { clearInstanceVerbs } from '$lib/stores/activity';
 	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
+	import { requestNotificationPermission } from '$lib/stores/inbox';
 	import QuickSettings from './settings/QuickSettings.svelte';
 	import CreateInstanceModal from './CreateInstanceModal.svelte';
 	import CloseProjectModal from './CloseProjectModal.svelte';
-	import type { Instance } from '$lib/types';
 	import type { Project } from '$lib/stores/projects';
 
 	let showQuickSettings = $state(false);
@@ -24,44 +21,9 @@
 		window.location.href = `${base}/login`;
 	}
 
-	// Track previous states for notifications
-	const previousStates = new Map<string, string>();
-
-	// Request notification permission on mount
+	// Request notification permission on mount (notifications now handled by inbox store)
 	onMount(() => {
-		if ('Notification' in window && Notification.permission === 'default') {
-			Notification.requestPermission();
-		}
-	});
-
-	// Send browser notification when instance becomes ready
-	function notifyReady(instance: Instance) {
-		if ('Notification' in window && Notification.permission === 'granted') {
-			if (instance.id === $currentInstanceId) return;
-			new Notification(`${instance.custom_name ?? instance.name} is ready`, {
-				body: 'Claude is waiting for input',
-				icon: '/favicon.png',
-				tag: `ready-${instance.id}`,
-				silent: false
-			});
-		}
-	}
-
-	// Check for state transitions and notify
-	$effect(() => {
-		for (const instance of $instanceList) {
-			const prevState = previousStates.get(instance.id);
-			const currentState = instance.claude_state?.type;
-
-			if (prevState && currentState === 'WaitingForInput' && prevState !== 'WaitingForInput') {
-				notifyReady(instance);
-				clearInstanceVerbs(instance.id);
-			}
-
-			if (currentState) {
-				previousStates.set(instance.id, currentState);
-			}
-		}
+		requestNotificationPermission();
 	});
 
 	function handleSelectProject(workingDir: string) {

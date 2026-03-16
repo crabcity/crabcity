@@ -1,17 +1,18 @@
 <script lang="ts">
-	import { currentInstanceId, instanceList, selectInstance } from '$lib/stores/instances';
+	import type { Instance } from '$lib/types';
+	import { currentInstanceId } from '$lib/stores/instances';
 	import { connectionStatus } from '$lib/stores/websocket';
 	import { currentProject, projects } from '$lib/stores/projects';
 	import { getStateInfo } from '$lib/utils/instance-state';
-	import { isMobile, isDesktop } from '$lib/stores/ui';
+
 	import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
 	import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
 	import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
-	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, setPaneContent, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
+	import { paneCount, splitPane, layoutState, applyPreset, resetLayout, focusPane, getPaneInstanceId, defaultContentForKind, setFocusedInstance } from '$lib/stores/layout';
 	import type { PaneContentKind, LayoutPreset } from '$lib/stores/layout';
 
-	import { activityLevel } from '$lib/stores/activity';
-	import InstanceChip from './InstanceChip.svelte';
+	import FleetCommandCenter from './FleetCommandCenter.svelte';
+	import InstancePopover from './InstancePopover.svelte';
 	import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
 	const isMultiPane = $derived($paneCount > 1);
@@ -48,28 +49,54 @@
 		prevConnectionStatus = status;
 	});
 
-	/** Focus the first pane showing this instance, or bind the focused pane to it */
-	function handleChipClick(instanceId: string) {
-		const state = $layoutState;
-		// Try to find a pane already showing this instance
-		for (const [paneId, pane] of state.panes) {
-			const paneInstId = getPaneInstanceId(pane.content);
-			if (paneInstId === instanceId) {
+	// =========================================================================
+	// Fleet panel
+	// =========================================================================
+
+	let panelOpen = $state(false);
+	let showCreateModal = $state(false);
+
+	// Instance fleet for the current project (only shown when a project is selected)
+	const fleetInstances = $derived($currentProject?.instances ?? []);
+
+	// Set of instance IDs visible in at least one pane (for pane-presence indicator)
+	const paneInstanceIds = $derived.by(() => {
+		const ids = new Set<string>();
+		for (const pane of $layoutState.panes.values()) {
+			const id = getPaneInstanceId(pane.content);
+			if (id) ids.add(id);
+		}
+		return ids;
+	});
+
+	/** Close all popovers/dropdowns — ensures mutual exclusion */
+	function dismissAllPopovers() {
+		panelOpen = false;
+		popoverTarget = null;
+		showPresetMenu = false;
+	}
+
+	function togglePanel() {
+		const opening = !panelOpen;
+		if (opening) dismissAllPopovers();
+		panelOpen = opening;
+	}
+
+	function handleFleetSelect(instanceId: string) {
+		panelOpen = false;
+
+		// If a pane already shows this instance, just focus it
+		for (const [paneId, pane] of $layoutState.panes) {
+			if (getPaneInstanceId(pane.content) === instanceId) {
 				focusPane(paneId);
-				selectInstance(instanceId, false);
 				return;
 			}
 		}
-		// No pane shows this instance — bind focused pane to it
-		const focusedId = state.focusedPaneId;
-		const focusedPane = state.panes.get(focusedId);
-		if (focusedPane && 'instanceId' in focusedPane.content) {
-			setPaneContent(focusedId, { ...focusedPane.content, instanceId });
-		}
-		selectInstance(instanceId, false);
-	}
 
-	let showCreateModal = $state(false);
+		// Not in any pane — insert as a new split (non-destructive)
+		const focusedId = $layoutState.focusedPaneId;
+		splitPane(focusedId, 'vertical', defaultContentForKind('conversation', instanceId));
+	}
 
 	/** In multi-pane mode, open a panel type as a new split pane */
 	function openAsSplit(kind: PaneContentKind) {
@@ -101,15 +128,20 @@
 	}
 
 	function togglePresetMenu() {
-		showPresetMenu = !showPresetMenu;
+		const opening = !showPresetMenu;
+		if (opening) dismissAllPopovers();
+		showPresetMenu = opening;
 	}
 
 	function handlePresetMenuBlur() {
 		setTimeout(() => { showPresetMenu = false; }, 150);
 	}
 
-	// Instance fleet for the current project (only shown when a project is selected)
-	const fleetInstances = $derived($currentProject?.instances ?? []);
+	// =========================================================================
+	// Right-click / contextmenu popover
+	// =========================================================================
+
+	let popoverTarget = $state<{ instance: Instance; anchorRect: DOMRect } | null>(null);
 </script>
 
 <header class="main-header">
@@ -132,26 +164,20 @@
 		></span>
 	</div>
 
-	<!-- Center: Instance fleet chips (only when a project is selected) -->
+	<!-- Center: Fleet command center -->
 	{#if $currentProject}
 		<div class="header-fleet">
-			{#each fleetInstances as instance (instance.id)}
-				{@const stateInfo = getStateInfo(instance.id, instance.claude_state, instance.claude_state_stale)}
-				<InstanceChip
-					{instance}
-					isFocused={$currentInstanceId === instance.id}
-					{stateInfo}
-					onclick={() => handleChipClick(instance.id)}
-				/>
-			{/each}
-			<button
-				class="fleet-add"
-				onclick={() => showCreateModal = true}
-				title="New instance"
-				aria-label="Create new instance"
-			>
-				+
-			</button>
+			<FleetCommandCenter
+				instances={fleetInstances}
+				currentInstanceId={$currentInstanceId}
+				{paneInstanceIds}
+				expanded={panelOpen}
+				onselect={handleFleetSelect}
+				onexpand={togglePanel}
+				onclose={() => panelOpen = false}
+				oncontextmenu={(inst, rect) => { popoverTarget = { instance: inst, anchorRect: rect }; }}
+				oncreate={() => { panelOpen = false; showCreateModal = true; }}
+			/>
 		</div>
 	{:else}
 		<div class="header-fleet"></div>
@@ -251,6 +277,16 @@
 	</div>
 </header>
 
+{#if popoverTarget}
+	{@const stateInfo = getStateInfo(popoverTarget.instance.id, popoverTarget.instance.claude_state, popoverTarget.instance.claude_state_stale)}
+	<InstancePopover
+		instance={popoverTarget.instance}
+		{stateInfo}
+		anchorRect={popoverTarget.anchorRect}
+		onclose={() => popoverTarget = null}
+	/>
+{/if}
+
 {#if showCreateModal}
 	<CreateInstanceModal onclose={() => showCreateModal = false} />
 {/if}
@@ -321,37 +357,10 @@
 	.header-fleet {
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: 6px;
 		flex: 1;
 		min-width: 0;
-		overflow-x: auto;
 		padding: 2px 0;
-	}
-
-	.header-fleet::-webkit-scrollbar { height: 0; }
-
-
-	.fleet-add {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		background: var(--surface-600);
-		border: 1px dashed var(--surface-border);
-		border-radius: 3px;
-		color: var(--text-muted);
-		font-size: 14px;
-		font-family: inherit;
-		cursor: pointer;
-		flex-shrink: 0;
-		transition: all 0.15s ease;
-	}
-
-	.fleet-add:hover:not(:disabled) {
-		border-color: var(--amber-600);
-		color: var(--amber-400);
-		background: var(--tint-active);
 	}
 
 	/* Right: Actions */
@@ -437,6 +446,11 @@
 		}
 
 		.header-project {
+			display: none;
+		}
+
+		/* Hide fleet on mobile — bottom tab bar in LayoutTree handles instance switching */
+		.header-fleet {
 			display: none;
 		}
 
@@ -558,4 +572,5 @@
 		animation: none;
 		box-shadow: 0 0 2px rgba(42, 31, 24, 0.2);
 	}
+
 </style>

@@ -160,6 +160,8 @@ pub struct GlobalStateManager {
     pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
     /// Terminal locks: instance_id -> lock holder info
     terminal_locks: RwLock<HashMap<String, TerminalLock>>,
+    /// Timestamp when each instance entered its current state
+    state_entered_at: RwLock<HashMap<String, DateTime<Utc>>>,
 }
 
 impl GlobalStateManager {
@@ -174,6 +176,7 @@ impl GlobalStateManager {
             presence: RwLock::new(HashMap::new()),
             pending_attributions: Arc::new(RwLock::new(HashMap::new())),
             terminal_locks: RwLock::new(HashMap::new()),
+            state_entered_at: RwLock::new(HashMap::new()),
         }
     }
 
@@ -185,6 +188,169 @@ impl GlobalStateManager {
     /// Expose the lifecycle broadcast sender (for passing to drivers via SpawnOptions).
     pub fn lifecycle_tx(&self) -> &LifecycleBroadcast {
         &self.lifecycle_tx
+    }
+
+    /// Spawn a background task that subscribes to state broadcasts and:
+    /// 1. Tracks `state_entered_at` timestamps (when state type changes)
+    /// 2. Detects state transitions for inbox (completed_turn, needs_input, etc.)
+    pub fn start_inbox_watcher(
+        self: &Arc<Self>,
+        repository: Arc<ConversationRepository>,
+    ) {
+        let mut state_rx = self.broadcast_tx.subscribe();
+        let gsm = Arc::clone(self);
+        tokio::spawn(async move {
+            // Track previous state per instance for transition detection
+            let mut prev_states: HashMap<String, ClaudeState> = HashMap::new();
+            loop {
+                match state_rx.recv().await {
+                    Ok((instance_id, state, _stale)) => {
+                        let prev = prev_states.get(&instance_id);
+
+                        // Track state_entered_at: record timestamp when state type changes
+                        let state_type_changed = prev
+                            .map(|p| std::mem::discriminant(p) != std::mem::discriminant(&state))
+                            .unwrap_or(true);
+                        if state_type_changed {
+                            gsm.set_state_entered_at(&instance_id, Utc::now()).await;
+                        }
+
+                        // Inbox logic: detect state transitions and upsert/clear inbox items
+                        if let Some(prev) = prev {
+                            let prev_active = matches!(
+                                prev,
+                                ClaudeState::Thinking
+                                    | ClaudeState::Responding
+                                    | ClaudeState::ToolExecuting { .. }
+                            );
+                            let now_idle = matches!(state, ClaudeState::Idle);
+                            let now_waiting =
+                                matches!(state, ClaudeState::WaitingForInput { .. });
+                            let now_active = matches!(
+                                state,
+                                ClaudeState::Thinking
+                                    | ClaudeState::Responding
+                                    | ClaudeState::ToolExecuting { .. }
+                            );
+
+                            // Active → Idle: completed a turn
+                            if prev_active && now_idle {
+                                match repository
+                                    .upsert_inbox_item(&instance_id, "completed_turn", None)
+                                    .await
+                                {
+                                    Ok(item) => {
+                                        gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                            instance_id: instance_id.clone(),
+                                            item: Some(item),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        warn!("[INBOX] Failed to upsert completed_turn: {}", e)
+                                    }
+                                }
+                            }
+
+                            // → WaitingForInput: needs user action
+                            if now_waiting
+                                && !matches!(prev, ClaudeState::WaitingForInput { .. })
+                            {
+                                let metadata = match &state {
+                                    ClaudeState::WaitingForInput { prompt: Some(p) } => {
+                                        Some(serde_json::json!({"prompt": p}).to_string())
+                                    }
+                                    _ => None,
+                                };
+                                match repository
+                                    .upsert_inbox_item(
+                                        &instance_id,
+                                        "needs_input",
+                                        metadata.as_deref(),
+                                    )
+                                    .await
+                                {
+                                    Ok(item) => {
+                                        gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                            instance_id: instance_id.clone(),
+                                            item: Some(item),
+                                        });
+                                    }
+                                    Err(e) => {
+                                        warn!("[INBOX] Failed to upsert needs_input: {}", e)
+                                    }
+                                }
+                            }
+
+                            // Was WaitingForInput, now isn't: user responded, clear needs_input
+                            if matches!(prev, ClaudeState::WaitingForInput { .. })
+                                && !now_waiting
+                            {
+                                match repository
+                                    .clear_inbox_by_type(&instance_id, "needs_input")
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                            instance_id: instance_id.clone(),
+                                            item: None,
+                                        });
+                                    }
+                                    Ok(false) => {} // No item to clear
+                                    Err(e) => {
+                                        warn!("[INBOX] Failed to clear needs_input: {}", e)
+                                    }
+                                }
+                            }
+
+                            // Was Idle, now active: user sent new work, clear completed_turn
+                            if !prev_active && now_active {
+                                match repository
+                                    .clear_inbox_by_type(&instance_id, "completed_turn")
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        gsm.broadcast_lifecycle(ServerMessage::InboxUpdate {
+                                            instance_id: instance_id.clone(),
+                                            item: None,
+                                        });
+                                    }
+                                    Ok(false) => {} // No item to clear
+                                    Err(e) => {
+                                        warn!("[INBOX] Failed to clear completed_turn: {}", e)
+                                    }
+                                }
+                            }
+                        }
+
+                        prev_states.insert(instance_id, state);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("[INBOX] State broadcast lagged by {} messages", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("[INBOX] State broadcast channel closed, stopping inbox watcher");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Get the timestamp when an instance entered its current state.
+    pub async fn get_state_entered_at(&self, instance_id: &str) -> Option<DateTime<Utc>> {
+        self.state_entered_at
+            .read()
+            .await
+            .get(instance_id)
+            .copied()
+    }
+
+    /// Record when an instance entered its current state.
+    pub async fn set_state_entered_at(&self, instance_id: &str, timestamp: DateTime<Utc>) {
+        self.state_entered_at
+            .write()
+            .await
+            .insert(instance_id.to_string(), timestamp);
     }
 
     /// Try to claim a session for an instance. Returns true if successful.
@@ -567,6 +733,8 @@ impl GlobalStateManager {
         self.pending_attributions.write().await.remove(instance_id);
         // Clean up terminal lock
         self.terminal_locks.write().await.remove(instance_id);
+        // Clean up state_entered_at
+        self.state_entered_at.write().await.remove(instance_id);
     }
 
     /// Get a handle for an instance

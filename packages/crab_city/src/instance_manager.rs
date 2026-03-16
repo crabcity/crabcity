@@ -12,6 +12,42 @@ use crate::process_driver::ProcessDriver;
 use crate::repository::ConversationRepository;
 use crate::ws::{FirstInputData, PendingAttribution, StateBroadcast};
 
+/// Whether an instance is a structured conversation provider (e.g. Claude, Codex)
+/// or an unstructured terminal session (e.g. bash, zsh).
+///
+/// Computed by the backend at creation time and sent in the wire protocol.
+/// Frontend never guesses — it reads `kind` from the instance payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum InstanceKind {
+    Structured { provider: String },
+    Unstructured { label: Option<String> },
+}
+
+impl InstanceKind {
+    pub fn is_structured(&self) -> bool {
+        matches!(self, InstanceKind::Structured { .. })
+    }
+
+    pub fn infer(command: &str) -> Self {
+        if command.contains("claude") {
+            InstanceKind::Structured {
+                provider: "claude".into(),
+            }
+        } else {
+            let basename = command
+                .split_whitespace()
+                .next()
+                .and_then(|w| std::path::Path::new(w).file_name())
+                .and_then(|f| f.to_str())
+                .unwrap_or(command);
+            InstanceKind::Unstructured {
+                label: Some(basename.into()),
+            }
+        }
+    }
+}
+
 // This is for API compatibility - we'll remove the fake "port" concept later
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeInstance {
@@ -22,12 +58,16 @@ pub struct ClaudeInstance {
     pub wrapper_port: u16, // This is fake now - just for UI compatibility
     pub working_dir: String,
     pub command: String,
+    pub kind: InstanceKind,
     pub running: bool,
     pub created_at: String,
     /// The Claude conversation session ID (detected after instance starts)
     pub session_id: Option<String>,
     /// Current Claude state (for status indicator in sidebar)
     pub claude_state: Option<ClaudeState>,
+    /// Unix timestamp (seconds) when the current state was entered
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_entered_at: Option<i64>,
 }
 
 pub struct InstanceManager {
@@ -119,6 +159,7 @@ impl InstanceManager {
         first_input_data: Arc<RwLock<HashMap<String, FirstInputData>>>,
         pending_attributions: Arc<RwLock<HashMap<String, VecDeque<PendingAttribution>>>>,
         repository: Option<Arc<ConversationRepository>>,
+        kind: Option<InstanceKind>,
     ) -> Result<ClaudeInstance> {
         // Generate unique name if not provided
         let name = if let Some(provided_name) = name {
@@ -169,6 +210,8 @@ impl InstanceManager {
             (resolved_path, Vec::new())
         };
 
+        let kind = kind.unwrap_or_else(|| InstanceKind::infer(&command_line));
+
         info!(
             "Creating instance '{}' with command '{}' (program: '{}' args: {:?})",
             name, command_line, program, args
@@ -181,6 +224,7 @@ impl InstanceManager {
             actual_command: program,
             args,
             working_dir: working_dir.clone(),
+            kind: kind.clone(),
             max_buffer_bytes: self.max_buffer_bytes,
             scrollback_lines: self.scrollback_lines,
             vt_record_dir: self.vt_record_dir.clone(),
@@ -211,10 +255,12 @@ impl InstanceManager {
             wrapper_port: 0, // Fake port for backward compatibility
             working_dir,
             command: command_line,
+            kind,
             running: true,
             created_at,
             session_id: None, // Will be detected when conversation is accessed
             claude_state: None,
+            state_entered_at: None,
         })
     }
 
@@ -231,10 +277,12 @@ impl InstanceManager {
                 wrapper_port: 0, // Fake port
                 working_dir: info.working_dir,
                 command: info.command,
+                kind: info.kind,
                 running: info.running,
                 created_at: info.created_at,
                 session_id: info.session_id,
                 claude_state: info.claude_state,
+                state_entered_at: None, // Populated by handler from GlobalStateManager
             });
         }
 
@@ -253,10 +301,12 @@ impl InstanceManager {
                 wrapper_port: 0, // Fake port
                 working_dir: info.working_dir,
                 command: info.command,
+                kind: info.kind,
                 running: info.running,
                 created_at: info.created_at,
                 session_id: info.session_id,
                 claude_state: info.claude_state,
+                state_entered_at: None, // Populated by handler from GlobalStateManager
             })
         } else {
             None
@@ -409,6 +459,69 @@ mod tests {
     }
 
     #[test]
+    fn instance_kind_infer_claude() {
+        let kind = InstanceKind::infer("claude");
+        assert!(kind.is_structured());
+        assert_eq!(
+            kind,
+            InstanceKind::Structured {
+                provider: "claude".into()
+            }
+        );
+    }
+
+    #[test]
+    fn instance_kind_infer_shell() {
+        let kind = InstanceKind::infer("bash");
+        assert!(!kind.is_structured());
+        assert_eq!(
+            kind,
+            InstanceKind::Unstructured {
+                label: Some("bash".into())
+            }
+        );
+    }
+
+    #[test]
+    fn instance_kind_infer_complex_command() {
+        let kind = InstanceKind::infer("/usr/bin/zsh -l");
+        assert!(!kind.is_structured());
+        assert_eq!(
+            kind,
+            InstanceKind::Unstructured {
+                label: Some("zsh".into())
+            }
+        );
+    }
+
+    #[test]
+    fn instance_kind_infer_claude_in_path() {
+        let kind = InstanceKind::infer("pnpm run claude");
+        assert!(kind.is_structured());
+    }
+
+    #[test]
+    fn instance_kind_serde_roundtrip() {
+        let structured = InstanceKind::Structured {
+            provider: "claude".into(),
+        };
+        let json = serde_json::to_value(&structured).unwrap();
+        assert_eq!(json["type"], "Structured");
+        assert_eq!(json["provider"], "claude");
+        let rt: InstanceKind = serde_json::from_value(json).unwrap();
+        assert_eq!(rt, structured);
+
+        let unstructured = InstanceKind::Unstructured {
+            label: Some("bash".into()),
+        };
+        let json = serde_json::to_value(&unstructured).unwrap();
+        assert_eq!(json["type"], "Unstructured");
+        assert_eq!(json["label"], "bash");
+        let rt: InstanceKind = serde_json::from_value(json).unwrap();
+        assert_eq!(rt, unstructured);
+    }
+
+    #[test]
     fn claude_instance_serde() {
         let inst = ClaudeInstance {
             id: "inst-1".to_string(),
@@ -417,10 +530,14 @@ mod tests {
             wrapper_port: 0,
             working_dir: "/tmp".to_string(),
             command: "claude".to_string(),
+            kind: InstanceKind::Structured {
+                provider: "claude".into(),
+            },
             running: true,
             created_at: "2025-01-01T00:00:00Z".to_string(),
             session_id: Some("sess-abc".to_string()),
             claude_state: None,
+            state_entered_at: None,
         };
         let json = serde_json::to_value(&inst).unwrap();
         assert_eq!(json["id"], "inst-1");
@@ -442,10 +559,14 @@ mod tests {
             wrapper_port: 0,
             working_dir: "/tmp".to_string(),
             command: "echo".to_string(),
+            kind: InstanceKind::Unstructured {
+                label: Some("echo".into()),
+            },
             running: false,
             created_at: "2025-01-01T00:00:00Z".to_string(),
             session_id: None,
             claude_state: None,
+            state_entered_at: None,
         };
         let json = serde_json::to_value(&inst).unwrap();
         assert!(json["custom_name"].is_null());

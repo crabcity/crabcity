@@ -36,12 +36,12 @@
 
 	const paneInstanceId = $derived(getPaneInstanceId(pane.content));
 
-	// Terminal panes show only shell instances; other kinds show only Claude instances
+	// Terminal panes show only shell instances; other kinds show only structured instances
 	const filteredInstances = $derived(
 		$instanceList.filter((inst) =>
 			pane.content.kind === 'terminal'
-				? !inst.command.includes('claude')
-				: inst.command.includes('claude')
+				? inst.kind.type === 'Unstructured'
+				: inst.kind.type === 'Structured'
 		)
 	);
 

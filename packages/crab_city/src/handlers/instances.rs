@@ -88,13 +88,13 @@ pub async fn create_instance(
             gsm.first_input_data_arc(),
             gsm.pending_attributions_arc(),
             Some(state.repository.clone()),
+            None,
         )
         .await
     {
         Ok(instance) => {
             state.metrics.instance_created();
 
-            let is_claude = instance.command.contains("claude");
             let created_at: DateTime<Utc> =
                 instance.created_at.parse().unwrap_or_else(|_| Utc::now());
 
@@ -106,7 +106,7 @@ pub async fn create_instance(
                         handle,
                         instance.working_dir.clone(),
                         created_at,
-                        is_claude,
+                        instance.kind.is_structured(),
                     )
                     .await;
             }
@@ -126,7 +126,7 @@ pub async fn create_instance(
                 }
             }
 
-            if is_claude {
+            if instance.kind.is_structured() {
                 let persistor = Arc::new(InstancePersistor::new(
                     instance.id.clone(),
                     instance.working_dir.clone(),

@@ -8,7 +8,7 @@
 
 import { get } from 'svelte/store';
 import type { WsMessage, ClaudeState, Instance, PresenceUser, Task } from '$lib/types';
-import { instances } from './instances';
+import { instances, fireInstanceListReceived } from './instances';
 import { setConversation, appendTurns } from './conversation';
 import { trackOutput } from './activity';
 import { writeTerminalOutput, writeTerminalHistory } from './terminal';
@@ -22,6 +22,7 @@ import {
 } from './chat';
 import { handleTaskUpdate, handleTaskDeleted } from './tasks';
 import { handleUserSettingsUpdate } from './settings';
+import { handleInboxUpdate, handleInboxList, type InboxItem } from './inbox';
 
 // =============================================================================
 // Multiplexed Message Types
@@ -61,7 +62,7 @@ export type MuxServerMessage =
 	| { type: 'ConversationFull'; instance_id: string; turns: unknown[] }
 	| { type: 'ConversationUpdate'; instance_id: string; turns: unknown[] }
 	| { type: 'SessionAmbiguous'; instance_id: string; candidates: SessionCandidate[] }
-	| { type: 'StateChange'; instance_id: string; state: ClaudeState; stale?: boolean }
+	| { type: 'StateChange'; instance_id: string; state: ClaudeState; stale?: boolean; entered_at?: number }
 	| { type: 'InstanceCreated'; instance: Instance }
 	| { type: 'InstanceStopped'; instance_id: string }
 	| { type: 'InstanceRenamed'; instance_id: string; custom_name: string | null }
@@ -78,6 +79,8 @@ export type MuxServerMessage =
 	| { type: 'TaskUpdate'; task: Task }
 	| { type: 'TaskDeleted'; task_id: number }
 	| { type: 'UserSettingsUpdate'; user_id: string; settings: Record<string, string> }
+	| { type: 'InboxUpdate'; instance_id: string; item: InboxItem | null }
+	| { type: 'InboxList'; items: InboxItem[] }
 	| { type: 'Shutdown'; reason: string };
 
 // =============================================================================
@@ -131,6 +134,7 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 			case 'InstanceList':
 				console.log('[WebSocket] Received instance list:', msg.instances.length, 'instances');
 				updateInstancesWithStates(msg.instances);
+				fireInstanceListReceived(new Set(msg.instances.map((i: Instance) => i.id)));
 				break;
 
 			case 'StateChange':
@@ -140,7 +144,8 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 						map.set(msg.instance_id, {
 							...instance,
 							claude_state: msg.state,
-							claude_state_stale: msg.stale ?? false
+							claude_state_stale: msg.stale ?? false,
+							state_entered_at: msg.entered_at ?? instance.state_entered_at
 						});
 					}
 					return new Map(map);
@@ -298,6 +303,14 @@ export function createMessageHandler(ctx: HandlerContext): (msg: MuxServerMessag
 
 			case 'UserSettingsUpdate':
 				handleUserSettingsUpdate(msg.settings);
+				break;
+
+			case 'InboxUpdate':
+				handleInboxUpdate(msg.instance_id, msg.item);
+				break;
+
+			case 'InboxList':
+				handleInboxList(msg.items);
 				break;
 
 			case 'Shutdown':

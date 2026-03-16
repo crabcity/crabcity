@@ -10,6 +10,7 @@ use uuid::Uuid;
 use pty_manager::{PtyConfig, PtyHandle};
 
 use crate::inference::ClaudeState;
+use crate::instance_manager::InstanceKind;
 use crate::process_driver::{DriverContext, DriverSignal, ProcessDriver};
 use crate::repository::ConversationRepository;
 use crate::virtual_terminal::{ClientType, VirtualTerminal, VtRecorder};
@@ -109,6 +110,7 @@ pub struct InstanceInfo {
     /// User-set display name (e.g. "Auth refactor"). Falls back to `name` if None.
     pub custom_name: Option<String>,
     pub command: String,
+    pub kind: InstanceKind,
     pub working_dir: String,
     pub running: bool,
     pub created_at: String,
@@ -367,6 +369,7 @@ pub struct SpawnOptions {
     pub actual_command: String,
     pub args: Vec<String>,
     pub working_dir: String,
+    pub kind: InstanceKind,
     /// Maximum output ring buffer size in bytes
     pub max_buffer_bytes: usize,
     /// Number of scrollback lines the server-side vt100 parser retains
@@ -502,6 +505,7 @@ impl InstanceActor {
             name: opts.name.clone(),
             custom_name: None,
             command: opts.display_command.clone(),
+            kind: opts.kind,
             working_dir: opts.working_dir,
             running: true,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -837,6 +841,9 @@ impl InstanceHandle {
             name: "test".to_string(),
             custom_name: None,
             command: "echo test".to_string(),
+            kind: InstanceKind::Unstructured {
+                label: Some("echo".into()),
+            },
             working_dir: "/tmp".to_string(),
             running: true,
             created_at: "2024-01-01T00:00:00Z".to_string(),
