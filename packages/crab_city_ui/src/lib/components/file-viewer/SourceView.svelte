@@ -139,7 +139,8 @@
     font-size: 12px;
     line-height: 1;
     tab-size: 4;
-    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
   }
 
   .code-block code {
