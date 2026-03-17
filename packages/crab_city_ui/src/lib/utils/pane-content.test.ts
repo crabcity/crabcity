@@ -48,7 +48,7 @@ describe('getPaneInstanceId', () => {
   });
 
   it('returns null for file-viewer', () => {
-    expect(getPaneInstanceId({ kind: 'file-viewer', filePath: '/x.ts' })).toBeNull();
+    expect(getPaneInstanceId({ kind: 'file-viewer', filePath: '/x.ts', workingDir: null })).toBeNull();
   });
 
   it('returns null for picker', () => {
@@ -100,6 +100,16 @@ describe('getPaneWorkingDir', () => {
 
   it('returns null for terminal with null instanceId', () => {
     expect(getPaneWorkingDir({ kind: 'terminal', instanceId: null }, instances)).toBeNull();
+  });
+
+  it('returns workingDir directly for file-viewer', () => {
+    expect(getPaneWorkingDir({ kind: 'file-viewer', filePath: '/x.ts', workingDir: '/proj' }, emptyInstances)).toBe(
+      '/proj'
+    );
+  });
+
+  it('returns null for file-viewer with null workingDir', () => {
+    expect(getPaneWorkingDir({ kind: 'file-viewer', filePath: '/x.ts', workingDir: null }, emptyInstances)).toBeNull();
   });
 
   it('returns null for landing', () => {
@@ -198,8 +208,20 @@ describe('defaultContentForKind', () => {
     expect(defaultContentForKind('chat', null)).toEqual({ kind: 'chat', scope: 'global' });
   });
 
-  it('creates file-viewer with null filePath', () => {
-    expect(defaultContentForKind('file-viewer', null)).toEqual({ kind: 'file-viewer', filePath: null });
+  it('creates file-viewer with null filePath and workingDir', () => {
+    expect(defaultContentForKind('file-viewer', null)).toEqual({
+      kind: 'file-viewer',
+      filePath: null,
+      workingDir: null
+    });
+  });
+
+  it('creates file-viewer with workingDir', () => {
+    expect(defaultContentForKind('file-viewer', null, '/proj')).toEqual({
+      kind: 'file-viewer',
+      filePath: null,
+      workingDir: '/proj'
+    });
   });
 
   it('creates settings', () => {
@@ -252,5 +274,20 @@ describe('migratePaneContentV3toV4', () => {
 
   it('returns null for settings', () => {
     expect(migratePaneContentV3toV4({ kind: 'settings' })).toBeNull();
+  });
+
+  it('migrates file-viewer without workingDir', () => {
+    const legacy = { kind: 'file-viewer', filePath: '/x.ts', lineNumber: 10 };
+    expect(migratePaneContentV3toV4(legacy)).toEqual({
+      kind: 'file-viewer',
+      filePath: '/x.ts',
+      lineNumber: 10,
+      workingDir: null
+    });
+  });
+
+  it('returns null for already-migrated file-viewer', () => {
+    const current = { kind: 'file-viewer', filePath: '/x.ts', workingDir: '/proj' };
+    expect(migratePaneContentV3toV4(current)).toBeNull();
   });
 });

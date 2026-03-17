@@ -10,6 +10,8 @@
     getFileIcon,
     formatFileSize,
     pendingSearchQuery,
+    filePickerRequest,
+    closeExplorer,
     type FileEntry,
     openFileFromTool
   } from '$lib/stores/files';
@@ -229,12 +231,19 @@ This may be due to file permissions or security restrictions.`;
       navigateToDirectory(entry.path);
       searchQuery = '';
     } else {
-      try {
-        const content = await fetchFileContent(entry.path);
-        openFileFromTool(entry.path, content);
-      } catch (error) {
-        console.error('Failed to fetch file:', error);
-        openFileFromTool(entry.path, formatFileError(error));
+      const picker = $filePickerRequest;
+      if (picker) {
+        // Picker mode — invoke the caller's callback, then close
+        picker.onSelect(entry.path);
+        closeExplorer();
+      } else {
+        try {
+          const content = await fetchFileContent(entry.path);
+          openFileFromTool(entry.path, content);
+        } catch (error) {
+          console.error('Failed to fetch file:', error);
+          openFileFromTool(entry.path, formatFileError(error));
+        }
       }
     }
   }

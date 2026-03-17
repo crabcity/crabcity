@@ -27,7 +27,7 @@ export type PaneContent =
   | { kind: 'landing' }
   | { kind: 'terminal'; instanceId: string | null }
   | { kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }
-  | { kind: 'file-viewer'; filePath: string | null; lineNumber?: number }
+  | { kind: 'file-viewer'; filePath: string | null; lineNumber?: number; workingDir: string | null }
   | { kind: 'file-explorer'; workingDir: string | null }
   | { kind: 'chat'; scope: 'global' | string }
   | { kind: 'tasks'; workingDir: string | null }
@@ -86,7 +86,7 @@ export function defaultContentForKind(
     case 'conversation':
       return { kind: 'conversation', instanceId, viewMode: 'structured' };
     case 'file-viewer':
-      return { kind: 'file-viewer', filePath: null };
+      return { kind: 'file-viewer', filePath: null, workingDir };
     case 'chat':
       return { kind: 'chat', scope: instanceId ?? 'global' };
     case 'settings':
@@ -109,6 +109,16 @@ export function migratePaneContentV3toV4(content: Record<string, unknown>): Pane
     !('workingDir' in content)
   ) {
     return { kind: kind as 'file-explorer' | 'tasks' | 'git', workingDir: null };
+  }
+  // v4 → v5: file-viewer gains workingDir
+  if (kind === 'file-viewer' && !('workingDir' in content)) {
+    const lineNumber = content['lineNumber'] as number | undefined;
+    return {
+      kind: 'file-viewer' as const,
+      filePath: (content['filePath'] as string | null) ?? null,
+      ...(lineNumber != null ? { lineNumber } : {}),
+      workingDir: null
+    };
   }
   return null;
 }

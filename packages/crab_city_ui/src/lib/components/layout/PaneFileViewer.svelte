@@ -2,6 +2,7 @@
   import { apiGet } from '$lib/utils/api';
   import { currentInstance } from '$lib/stores/instances';
   import { setPaneContent } from '$lib/stores/layout';
+  import { openExplorerPicker } from '$lib/stores/files';
   import SourceView from '../file-viewer/SourceView.svelte';
 
   interface Props {
@@ -59,9 +60,11 @@
 
   const filename = $derived(filePath?.split('/').pop() ?? 'File');
 
-  // Fetch file content when filePath changes
+  // Fetch file content when filePath or instance changes
   $effect(() => {
     const path = filePath;
+    const inst = $currentInstance;
+
     if (!path) {
       content = null;
       error = null;
@@ -69,9 +72,11 @@
       return;
     }
 
-    const inst = $currentInstance;
     if (!inst) {
-      error = 'No instance selected';
+      // Instance not yet resolved — stay in loading state; the effect
+      // will re-run when effectiveInstanceId settles.
+      loading = true;
+      error = null;
       return;
     }
 
@@ -88,7 +93,14 @@
       })
       .catch((err) => {
         if (filePath !== path) return;
-        error = err?.message ?? 'Failed to load file';
+        const msg = err?.message ?? '';
+        if (msg.includes('403')) {
+          error = 'File is outside the project directory';
+        } else if (msg.includes('404')) {
+          error = 'File not found';
+        } else {
+          error = msg || 'Failed to load file';
+        }
         loading = false;
       });
   });
@@ -106,18 +118,31 @@
       // fallback
     }
   }
+
+  function browseFiles() {
+    openExplorerPicker((path) => {
+      // Read $currentInstance at selection time, not at open time,
+      // so we pick up the correct instance even if focus shifted.
+      const inst = $currentInstance;
+      setPaneContent(paneId, {
+        kind: 'file-viewer',
+        filePath: path,
+        workingDir: inst?.working_dir ?? null
+      });
+    });
+  }
 </script>
 
 <div class="pane-file-viewer">
   {#if !filePath}
-    <div class="empty-state">
+    <button class="empty-state" onclick={browseFiles}>
       <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
       </svg>
       <span class="empty-label">No file selected</span>
-      <span class="empty-hint">Open a file from the explorer</span>
-    </div>
+      <span class="empty-hint">Click to browse files</span>
+    </button>
   {:else if loading}
     <div class="loading-state">
       <div class="spinner"></div>
@@ -130,7 +155,9 @@
     </div>
   {:else if content !== null}
     <div class="viewer-header">
-      <span class="viewer-filename">{filename}</span>
+      <button class="viewer-filename" onclick={browseFiles} title="Browse files">
+        {filename}
+      </button>
       {#if language}
         <span class="language-badge">{language}</span>
       {/if}
@@ -186,6 +213,20 @@
     flex: 1;
     gap: 8px;
     color: var(--text-muted);
+    background: none;
+    border: none;
+    width: 100%;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s ease;
+  }
+
+  .empty-state:hover {
+    color: var(--text-secondary);
+  }
+
+  .empty-state:hover .empty-icon {
+    opacity: 0.6;
   }
 
   .empty-icon {
@@ -274,6 +315,19 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: background 0.15s ease;
+  }
+
+  .viewer-filename:hover {
+    background: var(--tint-hover);
   }
 
   .language-badge {

@@ -84,6 +84,17 @@ export const fileExplorerState = writable<FileExplorerState>(explorerInitialStat
 /** Pending search query to pre-seed the file browser's search input */
 export const pendingSearchQuery = writable<string>('');
 
+/**
+ * When non-null, the file explorer is in "picker" mode.
+ * File selection invokes `onSelect` instead of opening the global file viewer.
+ * The `label` is shown in the explorer header so the user knows why the panel opened.
+ */
+export interface FilePickerRequest {
+  onSelect: (path: string) => void;
+  label: string;
+}
+export const filePickerRequest = writable<FilePickerRequest | null>(null);
+
 // =============================================================================
 // Explorer Derived Stores
 // =============================================================================
@@ -130,12 +141,24 @@ export function openExplorer(): void {
   updateUrl({ explorer: get(isGitOpen) ? 'git' : 'files' });
 }
 
+/**
+ * Open the file explorer in picker mode.
+ * When the user selects a file, `onSelect` is called with the absolute path
+ * and the explorer closes. The caller owns the action (e.g. setPaneContent).
+ */
+export function openExplorerPicker(onSelect: (path: string) => void, label = 'Select a file'): void {
+  filePickerRequest.set({ onSelect, label });
+  isGitOpen.set(false);
+  openExplorer();
+}
+
 /** Close the file explorer */
 export function closeExplorer(): void {
   fileExplorerState.update((state) => ({
     ...state,
     isOpen: false
   }));
+  filePickerRequest.set(null);
   updateUrl({ explorer: null });
 }
 
@@ -301,6 +324,7 @@ export function navigateExplorerToFile(filePath: string): void {
 /** Reset explorer state (e.g., when switching instances) */
 export function resetExplorer(): void {
   fileExplorerState.set(explorerInitialState);
+  filePickerRequest.set(null);
 }
 
 // =============================================================================

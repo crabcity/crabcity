@@ -18,6 +18,7 @@
     deleteInstance
   } from '$lib/stores/instances';
   import { sendRefresh } from '$lib/stores/websocket';
+  import { openExplorerPicker } from '$lib/stores/files';
   import { userSettings } from '$lib/stores/settings';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
@@ -389,7 +390,18 @@
     <span class="chrome-label">{dirLabel}</span>
   {:else if pane.content.kind === 'file-viewer'}
     <span class="chrome-sep">/</span>
-    <span class="chrome-label">{fileViewerLabel}</span>
+    <button
+      class="chrome-label chrome-label-btn"
+      onclick={() => {
+        const wd = getPaneWorkingDir(pane.content, $instances);
+        openExplorerPicker((path) => {
+          setPaneContent(pane.id, { kind: 'file-viewer', filePath: path, workingDir: wd });
+        });
+      }}
+      title="Browse files"
+    >
+      {fileViewerLabel}
+    </button>
   {:else if pane.content.kind === 'chat'}
     <span class="chrome-sep">/</span>
     <span class="chrome-label">{chatScopeLabel}</span>
@@ -613,6 +625,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 120px;
+  }
+
+  .chrome-label-btn {
+    background: none;
+    border: none;
+    padding: 1px 4px;
+    margin: -1px -4px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: all 0.15s ease;
+  }
+
+  .chrome-label-btn:hover {
+    background: var(--tint-hover);
+    color: var(--amber-400);
   }
 
   .pane-spacer {

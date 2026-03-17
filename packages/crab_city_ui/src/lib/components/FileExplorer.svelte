@@ -3,6 +3,7 @@
     isExplorerOpen,
     closeExplorer,
     fileViewerState,
+    filePickerRequest,
     openFileDiffLoading,
     openFileDiff,
     setDiffData,
@@ -215,8 +216,13 @@
     <!-- Header -->
     <header class="panel-header">
       <div class="header-title">
-        <span class="folder-icon">{$isGitOpen ? '' : ''}</span>
-        <span class="title-text">{$isGitOpen ? 'Git' : 'Files'}</span>
+        {#if $filePickerRequest}
+          <span class="folder-icon"></span>
+          <span class="title-text picker-title">{$filePickerRequest.label}</span>
+        {:else}
+          <span class="folder-icon">{$isGitOpen ? '' : ''}</span>
+          <span class="title-text">{$isGitOpen ? 'Git' : 'Files'}</span>
+        {/if}
       </div>
       {#if !embedded}
         <div class="header-actions">
@@ -233,16 +239,18 @@
       {/if}
     </header>
 
-    <!-- Mode tabs: Files | Git -->
-    <div class="explorer-tabs">
-      <button class="explorer-tab" class:active={!$isGitOpen} onclick={() => closeGitTab()}> Files </button>
-      <button class="explorer-tab" class:active={$isGitOpen} onclick={() => openGitTab()}>
-        Git
-        {#if $statusCounts.total > 0}
-          <span class="git-tab-badge">{$statusCounts.total}</span>
-        {/if}
-      </button>
-    </div>
+    <!-- Mode tabs: Files | Git (hidden in picker mode) -->
+    {#if !$filePickerRequest}
+      <div class="explorer-tabs">
+        <button class="explorer-tab" class:active={!$isGitOpen} onclick={() => closeGitTab()}> Files </button>
+        <button class="explorer-tab" class:active={$isGitOpen} onclick={() => openGitTab()}>
+          Git
+          {#if $statusCounts.total > 0}
+            <span class="git-tab-badge">{$statusCounts.total}</span>
+          {/if}
+        </button>
+      </div>
+    {/if}
 
     {#if $isGitOpen}
       <!-- Git mode -->
@@ -378,6 +386,11 @@
     text-transform: uppercase;
     color: var(--amber-400);
     text-shadow: var(--emphasis);
+  }
+
+  .title-text.picker-title {
+    text-transform: none;
+    letter-spacing: 0.02em;
   }
 
   .close-btn {

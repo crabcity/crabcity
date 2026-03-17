@@ -679,7 +679,7 @@ function deserializeState(data: SerializedLayoutState): LayoutState | null {
       // Migrate legacy flat PaneContent to discriminated union
       const c = pane.content as Record<string, unknown>;
       if (c.kind === 'file-viewer' && !('filePath' in c)) {
-        panes.set(id, { ...pane, content: { kind: 'file-viewer', filePath: null } });
+        panes.set(id, { ...pane, content: { kind: 'file-viewer', filePath: null, workingDir: null } });
       } else if (c.kind === 'chat' && !('scope' in c)) {
         panes.set(id, { ...pane, content: { kind: 'chat', scope: (c.instanceId as string) ?? 'global' } });
       } else if (

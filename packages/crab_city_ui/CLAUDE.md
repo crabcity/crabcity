@@ -33,10 +33,10 @@ The UI uses a **binary split pane** layout (tmux-inspired). Core data lives in `
     - `{ kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }` — conversation view
   - Directory-bound (carry `workingDir`):
     - `{ kind: 'file-explorer'; workingDir: string | null }` — file tree for a project directory
+    - `{ kind: 'file-viewer'; filePath: string | null; lineNumber?: number; workingDir: string | null }` — file content/diff viewer scoped to a directory
     - `{ kind: 'tasks'; workingDir: string | null }` — task panel scoped to a directory
     - `{ kind: 'git'; workingDir: string | null }` — git diff/log view for a directory
   - Other:
-    - `{ kind: 'file-viewer'; filePath: string | null; lineNumber?: number }` — self-contained file viewer
     - `{ kind: 'chat'; scope: 'global' | string }` — chat panel (global or instance-scoped)
     - `{ kind: 'settings' }` — settings panel (no instanceId)
 - Helpers (defined in `utils/pane-content.ts`, re-exported from `stores/layout.ts`): `getPaneInstanceId(content)` extracts instanceId (terminal/conversation only); `getPaneWorkingDir(content, instanceMap)` resolves workingDir from any variant (directory-bound directly, instance-bound via instance lookup — takes an explicit instances map, no hidden store reads); `defaultContentForKind(kind, instanceId, workingDir?)` constructs default config; `migratePaneContentV3toV4(content)` handles persistence migration
@@ -49,13 +49,13 @@ Components in `src/lib/components/layout/`:
 - **SplitHandle.svelte** — drag-to-resize between split children, keyboard accessible (`role="separator"`, arrow keys ±5%/±15%, Home=50%)
 - **Pane\*.svelte** — thin wrappers (PaneTerminal, PaneConversation, PaneFileExplorer, PaneChat, PaneTasks, PaneFileViewer, PaneGit, PaneSettings). Each accepts explicit props from its union variant.
 
-**PaneFileViewer** is self-contained — it fetches file content independently via `apiGet`, has its own loading/error/empty states, and does not read global file viewer state. Two file-viewer panes can show different files simultaneously.
+**PaneFileViewer** is self-contained — it fetches file content independently via `apiGet`, has its own loading/error/empty states, and does not read global file viewer state. Two file-viewer panes can show different files simultaneously. It is directory-bound (carries `workingDir`) so that `effectiveInstanceId` resolves correctly for its API calls.
 
-**Instance-bound vs directory-bound panes**: Terminal and conversation panes carry `instanceId` and show an instance selector in PaneChrome. File-explorer, tasks, and git panes carry `workingDir` and show a project label instead. When a directory-bound pane is focused, `currentInstanceId` is resolved by finding any instance in the same `workingDir` (via `effectiveInstanceId` in `setupLayoutSync`). The instance picker (`PICKER_KINDS`) only shows for terminal/conversation panes. The pane wrapper components (PaneFileExplorer, PaneTasks, PaneGit) are zero-prop wrappers — they read from global stores (`currentInstance`, `currentInstanceId`) which are correctly set by the layout system's `effectiveInstanceId` derivation. The `workingDir` on `PaneContent` is a layout concern (drives `effectiveInstanceId` and `dirLabel`), not a component concern.
+**Instance-bound vs directory-bound panes**: Terminal and conversation panes carry `instanceId` and show an instance selector in PaneChrome. File-explorer, file-viewer, tasks, and git panes carry `workingDir` and show a project label instead (file-viewer shows filename rather than project label in chrome). When a directory-bound pane is focused, `currentInstanceId` is resolved by finding any instance in the same `workingDir` (via `effectiveInstanceId` in `setupLayoutSync`). The instance picker (`PICKER_KINDS`) only shows for terminal/conversation panes. The pane wrapper components (PaneFileExplorer, PaneTasks, PaneGit) are zero-prop wrappers — they read from global stores (`currentInstance`, `currentInstanceId`) which are correctly set by the layout system's `effectiveInstanceId` derivation. The `workingDir` on `PaneContent` is a layout concern (drives `effectiveInstanceId` and `dirLabel`), not a component concern.
 
 **Embedded panel pattern**: FileExplorer, ChatPanel, TaskPanel, FileViewer accept an `embedded` prop. When `true`, they skip the `position: fixed` overlay chrome (backdrop, close button, resize handle) and render inline. Pane wrappers pass `embedded={true}`. In single-pane mode, overlays still work as before.
 
-**Persistence**: Layout serializes to `localStorage` key `crab_city_layout` (schema version 4, debounced 300ms, flushed on `beforeunload`). Deserialization migrates legacy flat format (version 1→2), adds `viewMode` to conversation panes (version 2→3), and converts directory-bound kinds from `instanceId` to `workingDir` (version 3→4). All layouts (including single-pane) are restored from persistence.
+**Persistence**: Layout serializes to `localStorage` key `crab_city_layout` (schema version 4, debounced 300ms, flushed on `beforeunload`). Deserialization migrates legacy flat format (version 1→2), adds `viewMode` to conversation panes (version 2→3), converts directory-bound kinds from `instanceId` to `workingDir` (version 3→4), and adds `workingDir` to file-viewer panes (version 4→5). All layouts (including single-pane) are restored from persistence.
 
 **Presets**: `applyPreset('single' | 'dev-split' | 'side-by-side')` — accessible from MainHeader.
 

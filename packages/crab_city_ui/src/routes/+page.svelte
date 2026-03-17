@@ -23,7 +23,13 @@
     exitSelectionMode
   } from '$lib/stores/chat';
   import { isTaskPanelOpen, closeTaskPanel, toggleTaskPanel } from '$lib/stores/tasks';
-  import { isFileViewerOpen, closeFileViewer } from '$lib/stores/files';
+  import {
+    isFileViewerOpen,
+    closeFileViewer,
+    currentFilePath,
+    currentLineNumber,
+    rootDirectory
+  } from '$lib/stores/files';
   import { claudeState } from '$lib/stores/claude';
   import { connectionStatus } from '$lib/stores/websocket';
   import { currentProject } from '$lib/stores/projects';
@@ -206,7 +212,19 @@
         closeTaskPanel();
       }}
     />
-    <FileViewer />
+    <FileViewer
+      oninset={() => {
+        const filePath = $currentFilePath;
+        const lineNumber = $currentLineNumber ?? undefined;
+        splitPane($layoutState.focusedPaneId, 'vertical', {
+          kind: 'file-viewer',
+          filePath,
+          lineNumber,
+          workingDir: $rootDirectory
+        });
+        closeFileViewer();
+      }}
+    />
   {/if}
 </div>
 

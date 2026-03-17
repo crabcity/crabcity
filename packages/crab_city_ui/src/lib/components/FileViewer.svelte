@@ -25,12 +25,14 @@
   import { updateUrl } from '$lib/utils/url';
   import DiffView from './file-viewer/DiffView.svelte';
   import SourceView from './file-viewer/SourceView.svelte';
+  import InsetButton from './InsetButton.svelte';
 
   interface Props {
     embedded?: boolean;
+    oninset?: () => void;
   }
 
-  let { embedded = false }: Props = $props();
+  let { embedded = false, oninset }: Props = $props();
 
   const isVisible = $derived(embedded || $isFileViewerOpen);
 
@@ -374,6 +376,9 @@
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
+        {#if !embedded && oninset}
+          <InsetButton onclick={oninset} />
+        {/if}
         {#if !embedded}
           <button class="close-btn" onclick={closeFileViewer} aria-label="Close file viewer">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
