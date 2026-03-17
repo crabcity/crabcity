@@ -55,7 +55,7 @@ Components in `src/lib/components/layout/`:
 
 **Embedded panel pattern**: FileExplorer, ChatPanel, TaskPanel, FileViewer accept an `embedded` prop. When `true`, they skip the `position: fixed` overlay chrome (backdrop, close button, resize handle) and render inline. Pane wrappers pass `embedded={true}`. In single-pane mode, overlays still work as before.
 
-**Persistence**: Layout serializes to `localStorage` key `crab_city_layout` (schema version 4, debounced 300ms, flushed on `beforeunload`). Deserialization migrates legacy flat format (version 1→2), adds `viewMode` to conversation panes (version 2→3), converts directory-bound kinds from `instanceId` to `workingDir` (version 3→4), and adds `workingDir` to file-viewer panes (version 4→5). All layouts (including single-pane) are restored from persistence.
+**Persistence**: Per-project layout persistence. Each project gets its own `localStorage` key (`crab_city_layout:<projectId>`) and `crab_city_layout:meta` tracks which project was last active. `switchProject(workingDir, instanceId?)` saves the current layout, loads the target's (or creates a default single-pane), and updates `activeProjectId`. Legacy single-key layouts (`crab_city_layout`) are migrated on first project switch. Schema version 4 with debounced 300ms writes, flushed on `beforeunload`. Deserialization migrates legacy flat format (version 1→2), adds `viewMode` (2→3), converts directory-bound kinds to `workingDir` (3→4), and adds `workingDir` to file-viewer (4→5).
 
 **Presets**: `applyPreset('single' | 'dev-split' | 'side-by-side')` — accessible from MainHeader.
 
@@ -67,16 +67,18 @@ Components in `src/lib/components/layout/`:
 
 **Toast notifications**: `stores/toasts.ts` provides `addToast(message, type?, duration?)`. Max 3 visible (FIFO). `ToastStack.svelte` renders fixed bottom-right with slide-up animation.
 
-**Cross-view focus**: `currentInstanceId` is driven one-way from an `effectiveInstanceId` derived in `setupLayoutSync()`. For instance-bound panes (terminal/conversation), this is the pane's `instanceId`. For directory-bound panes (file-explorer/tasks/git), it resolves the pane's `workingDir` to the first matching instance. This ensures file/git/task stores see the correct context when a directory-bound pane is focused. To change the current instance, always use `setFocusedInstance(id)` or `selectInstance(id)` — never write to `currentInstanceId` directly. `setFocusedInstance()` routes through the layout bridge: it finds a pane already showing the instance and focuses it, or binds the focused pane to the new instance (choosing `conversation` vs `terminal` pane kind based on `InstanceKind`). Terminal focus handoff uses per-pane `requestTerminalFocus(paneId)` / `consumeTerminalFocus(paneId)` in `layout.ts`. There is no global `showTerminal` store — `PaneContent` is the single source of truth for what each pane displays, including the `viewMode` on conversation panes.
+**Cross-view focus**: `currentInstanceId` is driven one-way from an `effectiveInstanceId` derived in `setupLayoutSync()`. For instance-bound panes (terminal/conversation), this is the pane's `instanceId`. For directory-bound panes (file-explorer/tasks/git), it resolves the pane's `workingDir` to the first matching instance. This ensures file/git/task stores see the correct context when a directory-bound pane is focused. To change the current instance, always use `setFocusedInstance(id)` or `selectInstance(id)` — never write to `currentInstanceId` directly. `setFocusedInstance()` routes through the layout bridge: it finds a pane already showing the instance and focuses it, or binds the focused pane to the new instance (choosing `conversation` vs `terminal` pane kind based on `InstanceKind`). `selectInstance()` has a cross-project guard: if the instance belongs to a different project, it delegates to `switchProject()` (via registered callback) which saves the current layout and loads the target project's layout before focusing. Terminal focus handoff uses per-pane `requestTerminalFocus(paneId)` / `consumeTerminalFocus(paneId)` in `layout.ts`. There is no global `showTerminal` store — `PaneContent` is the single source of truth for what each pane displays, including the `viewMode` on conversation panes.
 
 ### Project & Instance Hierarchy
 
 Instances are grouped into **projects** client-side by `working_dir` (`stores/projects.ts`). A `Project` is purely derived — no server changes, no persistence. Projects appear/disappear as instances are created/destroyed.
 
 - **`projects`** — derived store: groups `instanceList` by `working_dir`
-- **`currentProject`** — derived from `currentInstanceId` → find project containing that instance
+- **`currentProject`** — derived from `[projects, activeProjectId]` → find project matching the active layout's project ID
+- **`activeProjectId`** — readable store (from `layout.ts`) tracking which project's layout is loaded. Updated by `switchProject()`
+- **`projectHash()`** / **`projectStorageKey()`** — pure utilities in `utils/project-id.ts` (shared by `layout.ts` and `projects.ts` to avoid import cycles)
 
-**Sidebar** (`Sidebar.svelte`): 48px vertical icon rail showing project abbreviations (2-letter circles). Active project has amber highlight. Bottom: new instance, theme toggle, avatar/logout.
+**Sidebar** (`Sidebar.svelte`): 48px vertical icon rail showing project abbreviations (2-letter circles). Active project has amber highlight. Bottom: new instance, theme toggle, avatar/logout. Project clicks call `switchProject()` directly (explicit project switch, not via `selectInstance`).
 
 **MainHeader** (`main-view/MainHeader.svelte`): Project control center with three zones:
 - Left: project name + connection status

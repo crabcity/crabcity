@@ -339,7 +339,25 @@ export function registerFocusInstance(fn: FocusInstanceFn): void {
   _focusInstance = fn;
 }
 
+type ProjectSwitchFn = (workingDir: string, instanceId?: string | null) => void;
+let _switchProject: ProjectSwitchFn | null = null;
+
+/**
+ * Register the layout system's switchProject function.
+ * Called once from layout.ts during setupLayoutSync().
+ */
+export function registerProjectSwitch(fn: ProjectSwitchFn): void {
+  _switchProject = fn;
+}
+
 export function selectInstance(id: string, updateHistory = true): void {
+  const inst = get(instances).get(id);
+  // Cross-project guard: if the instance is in a different project, switch first.
+  // switchProject loads the saved layout but does NOT focus — the user explicitly
+  // selected this instance, so we always call _focusInstance afterward.
+  if (inst) {
+    _switchProject?.(inst.working_dir, id);
+  }
   _focusInstance?.(id);
 
   if (updateHistory) {

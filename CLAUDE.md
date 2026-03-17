@@ -18,6 +18,12 @@ When adding a crate feature (e.g. `reqwest`'s `blocking`), update **both**:
 
 Always use `bazel run //tools/format` to format code. Do not run `rustfmt` directly.
 
+### Git
+
+All commits **must be GPG-signed**. Never use `--no-gpg-sign`. If signing agent
+errors occur, ask the user to unlock the signing agent or fix the issue rather
+than bypassing signing.
+
 ### Rust Edition 2024
 
 All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check`/`cargo test`, so some edition 2024 errors only surface in Bazel. Known gotcha: `ref mut` in match/if-let patterns is disallowed when the default binding mode is already `ref mut` (e.g. matching on `&mut Option<T>` — use `Some(x)` not `Some(ref mut x)`).

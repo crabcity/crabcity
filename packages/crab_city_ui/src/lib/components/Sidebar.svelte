@@ -1,7 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
-  import { selectInstance } from '$lib/stores/instances';
   import { projects, currentProject } from '$lib/stores/projects';
+  import { switchProject } from '$lib/stores/layout';
   import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
   import { fullscreenView, openFullscreen, closeFullscreen } from '$lib/stores/fullscreen';
   import CloseProjectModal from './CloseProjectModal.svelte';
@@ -17,7 +17,7 @@
   function handleSelectProject(workingDir: string) {
     const project = $projects.find((p) => p.workingDir === workingDir);
     if (project && project.instances.length > 0) {
-      selectInstance(project.instances[0].id);
+      switchProject(workingDir, project.instances[0].id);
     }
   }
 
