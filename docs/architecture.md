@@ -23,7 +23,7 @@ This document covers the internal design of Crab City for contributors and curio
          SQLite (conversations, tasks, auth)
 ```
 
-**Presentation layer** — The web UI (SvelteKit + xterm.js) and TUI (ratatui) are interchangeable frontends. Both connect to the server over WebSocket.
+**Presentation layer** — The web UI (SvelteKit + xterm.js), TUI (ratatui), and Tauri desktop app are interchangeable frontends. The Tauri app wraps the web UI in a native window, connecting to the same daemon over localhost. All connect to the server over WebSocket.
 
 **Server layer** — An axum HTTP server that manages instance lifecycle, multiplexes terminal output, handles auth, and provides REST + WebSocket APIs.
 
@@ -39,6 +39,7 @@ crab_city (server + CLI + TUI)
 
 tty_wrapper            (standalone HTTP-controlled PTY — not depended on by crab_city)
 crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature flag)
+crab_city_desktop      (Tauri native desktop app — discovers/starts daemon, loads web UI)
 ```
 
 ## Instance Lifecycle

@@ -30,6 +30,18 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 - `bazel test //...` — full CI-equivalent (includes format check, edition 2024)
 - `CRAB_CITY_UI_PATH=packages/crab_city_ui/build cargo build -p crab_city_ui` — build embedded UI crate
 
+### Desktop App (Tauri)
+
+- `cargo check -p crab_city_desktop` — quick compile check
+- `cargo test -p crab_city_desktop` — run unit tests
+- `cd packages/crab_city_desktop && cargo tauri dev` — launch desktop app (auto-starts Vite dev server)
+
+**Dev workflow** (two terminals):
+1. `cargo run -p crab_city -- server --port 0` — start daemon
+2. `cd packages/crab_city_desktop && cargo tauri dev` — launches Vite + Tauri window
+
+Note: `crab_city_desktop` is in workspace `members` but NOT in `default-members` (requires Tauri system deps).
+
 ### Frontend (SvelteKit)
 
 - `cd packages/crab_city_ui && pnpm install && pnpm build` — build the web UI
@@ -56,6 +68,7 @@ crab_city (server + CLI + TUI)
 
 tty_wrapper            (standalone HTTP-controlled PTY — not depended on by crab_city)
 crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature flag)
+crab_city_desktop      (Tauri native desktop app — discovers/starts daemon, loads web UI)
 ```
 
 ### Server Internals

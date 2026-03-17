@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crab City</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #002b36;
+      color: #b58900;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      transition: opacity 0.4s ease-out;
+    }
+
+    /* CRT scanline overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.15) 2px,
+        rgba(0, 0, 0, 0.15) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    .container {
+      text-align: center;
+      z-index: 1;
+    }
+
+    h1 {
+      font-size: 2rem;
+      text-transform: uppercase;
+      letter-spacing: 0.3em;
+      margin-bottom: 2rem;
+      text-shadow: 0 0 20px rgba(181, 137, 0, 0.5);
+    }
+
+    .status {
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      opacity: 0.8;
+      transition: opacity 0.2s;
+    }
+
+    .spinner {
+      display: inline-block;
+      margin-bottom: 1.5rem;
+    }
+
+    .spinner::after {
+      content: '';
+      display: block;
+      width: 32px;
+      height: 32px;
+      margin: 0 auto;
+      border: 2px solid transparent;
+      border-top-color: #b58900;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .error {
+      color: #dc322f;
+      display: none;
+    }
+
+    .error.visible {
+      display: block;
+    }
+
+    .error-message {
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+      max-width: 500px;
+      word-wrap: break-word;
+    }
+
+    .error-hint {
+      color: #586e75;
+      font-size: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .retry-btn {
+      padding: 0.5rem 1.5rem;
+      background: transparent;
+      color: #b58900;
+      border: 1px solid #b58900;
+      font-family: inherit;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .retry-btn:hover {
+      background: #b58900;
+      color: #002b36;
+    }
+
+    .retry-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Crab City</h1>
+    <div class="spinner" id="spinner"></div>
+    <p class="status" id="status">Starting daemon...</p>
+    <div class="error" id="error">
+      <p class="error-message" id="error-message">Failed to start daemon</p>
+      <p class="error-hint">Is <code>crab</code> installed and on your PATH?</p>
+      <button class="retry-btn" id="retry-btn">Retry</button>
+    </div>
+  </div>
+
+  <script>
+    // API for Rust to call via window.eval()
+
+    function setStatus(text) {
+      var el = document.getElementById('status');
+      if (el) {
+        el.style.opacity = '0';
+        setTimeout(function() {
+          el.textContent = text;
+          el.style.opacity = '0.8';
+        }, 150);
+      }
+    }
+
+    function showError(message) {
+      document.getElementById('spinner').style.display = 'none';
+      document.getElementById('status').style.display = 'none';
+      var errDiv = document.getElementById('error');
+      errDiv.classList.add('visible');
+      document.getElementById('error-message').textContent = message;
+    }
+
+    function fadeOutAndNavigate(url) {
+      document.body.style.opacity = '0';
+      setTimeout(function() {
+        window.location.href = url;
+      }, 400);
+    }
+
+    // Retry button — calls Tauri IPC command if available, falls back to reload
+    document.getElementById('retry-btn').addEventListener('click', function() {
+      var btn = this;
+      btn.disabled = true;
+      btn.textContent = 'Retrying...';
+
+      // Hide error, show spinner again
+      document.getElementById('error').classList.remove('visible');
+      document.getElementById('spinner').style.display = 'inline-block';
+      document.getElementById('status').style.display = 'block';
+      document.getElementById('status').textContent = 'Retrying...';
+
+      if (window.__TAURI_INTERNALS__) {
+        window.__TAURI_INTERNALS__.invoke('retry_daemon_startup').catch(function(err) {
+          showError(err || 'Retry failed');
+          btn.disabled = false;
+          btn.textContent = 'Retry';
+        });
+      } else {
+        // Fallback if Tauri IPC not available
+        location.reload();
+      }
+    });
+  </script>
+</body>
+</html>

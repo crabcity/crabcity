@@ -13,6 +13,19 @@ build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
 build:clippy --@rules_rust//:clippy_flags=-Dwarnings
 
+# Cargo build scripts
+# Some build scripts (notably tauri) record absolute paths in their output.
+# Running them locally prevents sandbox-path leakage into downstream actions.
+build --strategy=CargoBuildScriptRun=local
+
+# Tauri proc-macro cfg consistency
+# Tauri's ResolvedCommand has #[cfg(debug_assertions)] fields. Proc macros
+# run in the exec config (default: opt → no debug_assertions), but the target
+# uses fastbuild (debug_assertions ON). This mismatch causes the proc macro to
+# generate struct literals missing fields the target compilation expects.
+# Compiling exec tools in fastbuild mode keeps cfg(debug_assertions) consistent.
+build --host_compilation_mode=fastbuild
+
 # Coverage
 # Filter to only instrument our source code, not external crates or test harnesses
 coverage --instrumentation_filter="//packages[/:],//tools[/:]"
