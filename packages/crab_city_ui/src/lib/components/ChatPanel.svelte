@@ -31,12 +31,14 @@
   import { sendChatMessage, requestChatHistory, requestChatTopics, forwardChatMessage } from '$lib/stores/websocket';
   import { currentInstanceId, currentInstance, instances } from '$lib/stores/instances';
   import { isDesktop } from '$lib/stores/ui';
+  import InsetButton from './InsetButton.svelte';
 
   interface Props {
     embedded?: boolean;
+    oninset?: () => void;
   }
 
-  let { embedded = false }: Props = $props();
+  let { embedded = false, oninset }: Props = $props();
 
   const isVisible = $derived(embedded || $isChatOpen);
 
@@ -213,6 +215,9 @@
               <path d="M9 12l2 2 4-4" />
             </svg>
           </button>
+        {/if}
+        {#if !embedded && oninset}
+          <InsetButton onclick={oninset} />
         {/if}
         {#if !embedded}
           <button class="close-btn" onclick={closeChat} aria-label="Close chat">

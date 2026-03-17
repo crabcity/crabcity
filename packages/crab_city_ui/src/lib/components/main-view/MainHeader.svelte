@@ -8,20 +8,11 @@
   import { toggleExplorer, isExplorerOpen } from '$lib/stores/files';
   import { toggleChat, isChatOpen, totalUnread } from '$lib/stores/chat';
   import { isTaskPanelOpen, toggleTaskPanel, currentInstanceTaskCount } from '$lib/stores/tasks';
-  import {
-    paneCount,
-    splitPane,
-    layoutState,
-    getPaneInstanceId,
-    defaultContentForKind
-  } from '$lib/stores/layout';
-  import type { PaneContentKind } from '$lib/stores/layout';
+  import { layoutState, getPaneInstanceId } from '$lib/stores/layout';
 
   import FleetCommandCenter from './FleetCommandCenter.svelte';
   import InstancePopover from './InstancePopover.svelte';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
-
-  const isMultiPane = $derived($paneCount > 1);
 
   function getStatusColor(status: string): string {
     switch (status) {
@@ -111,28 +102,16 @@
     selectInstance(instanceId);
   }
 
-  /** In multi-pane mode, open a panel type as a new split pane */
-  function openAsSplit(kind: PaneContentKind) {
-    const focusedId = $layoutState.focusedPaneId;
-    const instanceId =
-      getPaneInstanceId($layoutState.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null }) ??
-      $currentInstanceId;
-    splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId));
-  }
-
   function handleFilesClick() {
-    if (isMultiPane) openAsSplit('file-explorer');
-    else toggleExplorer();
+    toggleExplorer();
   }
 
   function handleTasksClick() {
-    if (isMultiPane) openAsSplit('tasks');
-    else toggleTaskPanel();
+    toggleTaskPanel();
   }
 
   function handleChatClick() {
-    if (isMultiPane) openAsSplit('chat');
-    else toggleChat();
+    toggleChat();
   }
 
   // =========================================================================
@@ -192,7 +171,7 @@
   <div class="header-actions">
     <button
       class="action-btn"
-      class:active={!isMultiPane && $isExplorerOpen}
+      class:active={$isExplorerOpen}
       onclick={handleFilesClick}
       title="Files"
       aria-label="Toggle file explorer"
@@ -203,7 +182,7 @@
     </button>
     <button
       class="action-btn tasks-btn"
-      class:active={!isMultiPane && $isTaskPanelOpen}
+      class:active={$isTaskPanelOpen}
       onclick={handleTasksClick}
       title="Tasks"
       aria-label="Toggle task panel"
@@ -219,7 +198,7 @@
     </button>
     <button
       class="action-btn chat-btn"
-      class:active={!isMultiPane && $isChatOpen}
+      class:active={$isChatOpen}
       onclick={handleChatClick}
       title="Chat"
       aria-label="Toggle chat panel"

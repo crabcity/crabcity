@@ -16,12 +16,14 @@
   import type { Task } from '$lib/types';
   import TaskCard from './task-panel/TaskCard.svelte';
   import InProgressCard from './task-panel/InProgressCard.svelte';
+  import InsetButton from './InsetButton.svelte';
 
   interface Props {
     embedded?: boolean;
+    oninset?: () => void;
   }
 
-  let { embedded = false }: Props = $props();
+  let { embedded = false, oninset }: Props = $props();
 
   const isVisible = $derived(embedded || $isTaskPanelOpen);
 
@@ -224,6 +226,9 @@
             Free
           </button>
         </div>
+        {#if !embedded && oninset}
+          <InsetButton onclick={oninset} />
+        {/if}
         {#if !embedded}
           <button class="close-btn" onclick={closeTaskPanel} aria-label="Close task panel">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

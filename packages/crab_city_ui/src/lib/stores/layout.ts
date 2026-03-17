@@ -348,6 +348,19 @@ export function splitPane(paneId: string, direction: 'horizontal' | 'vertical', 
 }
 
 /**
+ * Split the currently focused pane, placing `kind` content in the new pane.
+ * Inherits the focused pane's instanceId (or falls back to the global current instance).
+ */
+export function splitFocusedPane(kind: PaneContentKind): void {
+  const s = get(layoutState);
+  const focusedId = s.focusedPaneId;
+  const instanceId =
+    getPaneInstanceId(s.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null }) ??
+    get(currentInstanceId);
+  splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId));
+}
+
+/**
  * Close a pane. Its sibling replaces the parent split node.
  * No-op if this is the last pane.
  */

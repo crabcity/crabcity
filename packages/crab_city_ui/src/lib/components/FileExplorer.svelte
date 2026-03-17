@@ -39,12 +39,14 @@
   import GitBranches from './file-explorer/GitBranches.svelte';
   import GitStatus from './file-explorer/GitStatus.svelte';
   import FileBrowser from './file-explorer/FileBrowser.svelte';
+  import InsetButton from './InsetButton.svelte';
 
   interface Props {
     embedded?: boolean;
+    oninset?: () => void;
   }
 
-  let { embedded = false }: Props = $props();
+  let { embedded = false, oninset }: Props = $props();
 
   const isVisible = $derived(embedded || $isExplorerOpen);
 
@@ -217,12 +219,17 @@
         <span class="title-text">{$isGitOpen ? 'Git' : 'Files'}</span>
       </div>
       {#if !embedded}
-        <button class="close-btn" onclick={closeExplorer} aria-label="Close file explorer">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
+        <div class="header-actions">
+          {#if oninset}
+            <InsetButton onclick={oninset} />
+          {/if}
+          <button class="close-btn" onclick={closeExplorer} aria-label="Close file explorer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
       {/if}
     </header>
 
@@ -395,6 +402,12 @@
   .close-btn svg {
     width: 14px;
     height: 14px;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
   /* Explorer mode tabs: Files | Git */

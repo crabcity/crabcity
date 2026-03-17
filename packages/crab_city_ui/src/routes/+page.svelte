@@ -30,12 +30,16 @@
   import { toggleTheme } from '$lib/stores/settings';
   import { selectInstance } from '$lib/stores/instances';
   import { fullscreenView, closeFullscreen, isFullscreenOpen } from '$lib/stores/fullscreen';
-  import { layoutState, splitPane, closePane, paneCount, moveFocus } from '$lib/stores/layout';
-  import type { PaneContentKind } from '$lib/stores/layout';
+  import {
+    layoutState,
+    splitPane,
+    splitFocusedPane,
+    closePane,
+    paneCount,
+    moveFocus
+  } from '$lib/stores/layout';
 
   let showBoot = $state(true);
-
-  const isSinglePane = $derived($paneCount <= 1);
 
   // Map Claude state to data attribute for ambient CSS
   const claudeStateAttr = $derived(
@@ -183,20 +187,26 @@
   {:else}
     <MainView />
 
-    <!-- Overlay panels: only in single-pane mode (multi-pane uses embedded pane types) -->
-    {#if isSinglePane}
-      <!-- File explorer panel -->
-      <FileExplorer />
-
-      <!-- Chat panel -->
-      <ChatPanel />
-
-      <!-- Task panel (left slide-out) -->
-      <TaskPanel />
-
-      <!-- Global file viewer overlay -->
-      <FileViewer />
-    {/if}
+    <!-- Overlay drawer panels (always available; each has its own isVisible check) -->
+    <FileExplorer
+      oninset={() => {
+        splitFocusedPane('file-explorer');
+        closeExplorer();
+      }}
+    />
+    <ChatPanel
+      oninset={() => {
+        splitFocusedPane('chat');
+        closeChat();
+      }}
+    />
+    <TaskPanel
+      oninset={() => {
+        splitFocusedPane('tasks');
+        closeTaskPanel();
+      }}
+    />
+    <FileViewer />
   {/if}
 </div>
 
