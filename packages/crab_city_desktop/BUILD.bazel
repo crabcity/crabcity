@@ -1,0 +1,84 @@
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+_TAURI_DATA = [
+    "tauri.conf.json",
+    "loading.html",
+] + glob([
+    "capabilities/**",
+    "icons/**",
+])
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
+        # Cargo propagates this from tauri's build.rs (links = "Tauri", cargo:dev=true).
+        # In Bazel we set it directly. true = dev mode (no custom-protocol feature).
+        "DEP_TAURI_DEV": "true",
+    },
+    data = _TAURI_DATA,
+    # Receive DEP_* env vars (PERMISSION_FILES_PATH) from tauri and plugin build scripts
+    link_deps = [
+        "@crate_index//:tauri",
+        "@crate_index//:tauri-plugin-shell",
+        "@crate_index//:tauri-plugin-window-state",
+    ],
+    # no-sandbox: tauri-build reads tauri.conf.json, capabilities/, icons/ from disk
+    tags = ["no-sandbox"],
+    deps = [
+        "@crate_index//:blake3",
+        "@crate_index//:plist",
+        "@crate_index//:png",
+        "@crate_index//:serde_json",
+        "@crate_index//:tauri-build",
+    ],
+)
+
+rust_binary(
+    name = "crab_city_desktop",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = _TAURI_DATA,
+    edition = "2024",
+    rustc_env = {
+        # Proc macro generate_context!() reads tauri.conf.json relative to this
+        "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
+    },
+    # no-sandbox: tauri proc macros read config and icon files from disk
+    tags = ["no-sandbox"],
+    deps = [
+        ":build_script",
+        "@crate_index//:anyhow",
+        "@crate_index//:dirs",
+        "@crate_index//:nix",
+        "@crate_index//:reqwest",
+        "@crate_index//:serde",
+        "@crate_index//:serde_json",
+        "@crate_index//:tauri",
+        "@crate_index//:tauri-plugin-shell",
+        "@crate_index//:tauri-plugin-window-state",
+        "@crate_index//:thiserror",
+        "@crate_index//:tokio",
+        "@crate_index//:tracing",
+        "@crate_index//:tracing-subscriber",
+        "@crate_index//:which",
+    ],
+)
+
+rust_test(
+    name = "crab_city_desktop_test",
+    compile_data = _TAURI_DATA,
+    crate = ":crab_city_desktop",
+    edition = "2024",
+    rustc_env = {
+        "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
+    },
+    tags = ["no-sandbox"],
+    deps = [
+        "@crate_index//:axum",
+        "@crate_index//:tempfile",
+    ],
+)
