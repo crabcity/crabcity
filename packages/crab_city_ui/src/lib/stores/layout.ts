@@ -20,10 +20,23 @@ import {
 } from './instances';
 import { addToast } from './toasts';
 import { updateUrl } from '$lib/utils/url';
+import {
+  getPaneInstanceId,
+  getPaneWorkingDir,
+  defaultContentForKind,
+  migratePaneContentV3toV4
+} from '$lib/utils/pane-content';
+
+// Re-export types and pure helpers so existing imports from 'stores/layout' still work
+export type { PaneContent, PaneContentKind } from '$lib/utils/pane-content';
+export { getPaneInstanceId, getPaneWorkingDir, defaultContentForKind } from '$lib/utils/pane-content';
 
 // =============================================================================
 // Types
 // =============================================================================
+
+// Import PaneContent/PaneContentKind for internal use
+import type { PaneContent, PaneContentKind } from '$lib/utils/pane-content';
 
 export interface SplitNode {
   type: 'split';
@@ -41,59 +54,6 @@ export interface LeafNode {
 }
 
 export type LayoutNode = SplitNode | LeafNode;
-
-export type PaneContentKind =
-  | 'landing'
-  | 'terminal'
-  | 'conversation'
-  | 'file-explorer'
-  | 'chat'
-  | 'tasks'
-  | 'file-viewer'
-  | 'git'
-  | 'settings'
-  | 'picker';
-
-export type PaneContent =
-  | { kind: 'landing' }
-  | { kind: 'terminal'; instanceId: string | null }
-  | { kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }
-  | { kind: 'file-viewer'; filePath: string | null; lineNumber?: number }
-  | { kind: 'file-explorer'; instanceId: string | null }
-  | { kind: 'chat'; scope: 'global' | string }
-  | { kind: 'tasks'; instanceId: string | null }
-  | { kind: 'git'; instanceId: string | null }
-  | { kind: 'settings' }
-  | { kind: 'picker' };
-
-/** Extract instanceId from a PaneContent if it has one */
-export function getPaneInstanceId(content: PaneContent): string | null {
-  if ('instanceId' in content) return content.instanceId;
-  return null;
-}
-
-/** Construct default PaneContent for a given kind, optionally inheriting instanceId */
-export function defaultContentForKind(kind: PaneContentKind, instanceId: string | null): PaneContent {
-  switch (kind) {
-    case 'landing':
-      return { kind: 'landing' };
-    case 'terminal':
-    case 'file-explorer':
-    case 'tasks':
-    case 'git':
-      return { kind, instanceId };
-    case 'conversation':
-      return { kind: 'conversation', instanceId, viewMode: 'structured' };
-    case 'file-viewer':
-      return { kind: 'file-viewer', filePath: null };
-    case 'chat':
-      return { kind: 'chat', scope: instanceId ?? 'global' };
-    case 'settings':
-      return { kind: 'settings' };
-    case 'picker':
-      return { kind: 'picker' };
-  }
-}
 
 export interface PaneState {
   id: string;
@@ -161,6 +121,12 @@ export const focusedPane = derived(layoutState, ($s) => {
 export const focusedPaneInstanceId = derived(focusedPane, ($pane) => {
   if (!$pane) return null;
   return getPaneInstanceId($pane.content);
+});
+
+/** The focused pane's working directory (resolved from workingDir or instance) */
+export const focusedPaneWorkingDir = derived([focusedPane, instances], ([$pane, $instances]) => {
+  if (!$pane) return null;
+  return getPaneWorkingDir($pane.content, $instances);
 });
 
 /** Total number of panes */
@@ -250,21 +216,22 @@ export function setFocusedInstance(id: string | null): FocusResult {
   const focusedId = state.focusedPaneId;
   const fp = state.panes.get(focusedId);
   if (fp) {
-    if (fp.content.kind === 'landing') {
-      // Landing → pick the right kind based on instance type
+    if (fp.content.kind === 'terminal' || fp.content.kind === 'conversation') {
+      // Instance-bound: swap instanceId, correcting kind mismatch if needed
+      if (fp.content.kind === 'conversation' && !isStructured) {
+        setPaneContent(focusedId, { kind: 'terminal', instanceId: id });
+      } else if (fp.content.kind === 'terminal' && isStructured) {
+        setPaneContent(focusedId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
+      } else {
+        setPaneContent(focusedId, { ...fp.content, instanceId: id });
+      }
+    } else {
+      // Everything else (landing, picker, file-explorer, etc.): replace with correct kind
       if (isStructured) {
         setPaneContent(focusedId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
       } else {
         setPaneContent(focusedId, { kind: 'terminal', instanceId: id });
       }
-    } else if (fp.content.kind === 'conversation' && !isStructured) {
-      // Conversation pane but unstructured instance → swap to terminal
-      setPaneContent(focusedId, { kind: 'terminal', instanceId: id });
-    } else if (fp.content.kind === 'terminal' && isStructured) {
-      // Terminal pane but structured instance → swap to conversation
-      setPaneContent(focusedId, { kind: 'conversation', instanceId: id, viewMode: 'structured' });
-    } else if ('instanceId' in fp.content) {
-      setPaneContent(focusedId, { ...fp.content, instanceId: id });
     }
     return 'swapped';
   }
@@ -282,8 +249,22 @@ export function setupLayoutSync(): void {
   if (_syncSetup) return;
   _syncSetup = true;
 
-  // Drive currentInstanceId from focusedPaneInstanceId (one-way flow)
-  driveCurrentInstanceId(focusedPaneInstanceId);
+  // Derive an effective instance ID that resolves directory-bound panes to an instance
+  const effectiveInstanceId = derived(
+    [focusedPaneInstanceId, focusedPaneWorkingDir, instances],
+    ([$instId, $wd, $instances]) => {
+      if ($instId) return $instId;
+      if (!$wd) return null;
+      // Find the first instance in this working directory
+      for (const inst of $instances.values()) {
+        if (inst.working_dir === $wd) return inst.id;
+      }
+      return null;
+    }
+  );
+
+  // Drive currentInstanceId from effectiveInstanceId (one-way flow)
+  driveCurrentInstanceId(effectiveInstanceId);
 
   // Register so selectInstance/clearSelection can reach setFocusedInstance
   registerFocusInstance(setFocusedInstance);
@@ -298,11 +279,17 @@ export function setupLayoutSync(): void {
  * gets `newContent` or inherits from the source.
  */
 export function splitPane(paneId: string, direction: 'horizontal' | 'vertical', newContent?: PaneContent): void {
+  // Capture instances once outside the update (the only external store needed)
+  const instMap = newContent ? undefined : get(instances);
+
   layoutState.update((s) => {
     const sourcePane = s.panes.get(paneId);
     if (!sourcePane) return s;
 
-    const clonedContent: PaneContent = newContent ?? { kind: 'picker' as const };
+    const clonedContent: PaneContent = newContent ?? {
+      kind: 'picker' as const,
+      sourceWorkingDir: getPaneWorkingDir(sourcePane.content, instMap!) ?? undefined
+    };
 
     // Check terminal pane cap
     if (clonedContent.kind === 'terminal') {
@@ -349,15 +336,17 @@ export function splitPane(paneId: string, direction: 'horizontal' | 'vertical', 
 
 /**
  * Split the currently focused pane, placing `kind` content in the new pane.
- * Inherits the focused pane's instanceId (or falls back to the global current instance).
+ * Inherits the focused pane's instanceId and workingDir (or falls back to global current instance).
  */
 export function splitFocusedPane(kind: PaneContentKind): void {
   const s = get(layoutState);
   const focusedId = s.focusedPaneId;
-  const instanceId =
-    getPaneInstanceId(s.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null }) ??
-    get(currentInstanceId);
-  splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId));
+  const focusedContent = s.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null };
+  const instanceId = getPaneInstanceId(focusedContent) ?? get(currentInstanceId);
+  const instMap = get(instances);
+  const workingDir =
+    getPaneWorkingDir(focusedContent, instMap) ?? instMap.get(get(currentInstanceId) ?? '')?.working_dir ?? null;
+  splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId, workingDir));
 }
 
 /**
@@ -505,7 +494,7 @@ export function pruneInstancePanes(deletedInstanceId: string): void {
     for (const [id, pane] of newPanes) {
       const paneInstanceId = getPaneInstanceId(pane.content);
       if (paneInstanceId === deletedInstanceId) {
-        if ('instanceId' in pane.content) {
+        if (pane.content.kind === 'terminal' || pane.content.kind === 'conversation') {
           newPanes.set(id, {
             ...pane,
             content: { ...pane.content, instanceId: fallbackId }
@@ -541,7 +530,7 @@ export function validatePaneInstances(validIds: Set<string>): void {
     for (const [id, pane] of newPanes) {
       const paneInstanceId = getPaneInstanceId(pane.content);
       if (paneInstanceId && !validIds.has(paneInstanceId)) {
-        if ('instanceId' in pane.content) {
+        if (pane.content.kind === 'terminal' || pane.content.kind === 'conversation') {
           newPanes.set(id, {
             ...pane,
             content: { ...pane.content, instanceId: null }
@@ -636,7 +625,7 @@ function updateSplitRatio(node: LayoutNode, splitId: string, ratio: number): Lay
 // =============================================================================
 
 const STORAGE_KEY = 'crab_city_layout';
-const LAYOUT_SCHEMA_VERSION = 3;
+const LAYOUT_SCHEMA_VERSION = 4;
 
 const VALID_CONTENT_KINDS: ReadonlySet<string> = new Set([
   'landing',
@@ -693,15 +682,31 @@ function deserializeState(data: SerializedLayoutState): LayoutState | null {
         panes.set(id, { ...pane, content: { kind: 'file-viewer', filePath: null } });
       } else if (c.kind === 'chat' && !('scope' in c)) {
         panes.set(id, { ...pane, content: { kind: 'chat', scope: (c.instanceId as string) ?? 'global' } });
-      } else if (c.kind !== 'file-viewer' && c.kind !== 'chat' && !('instanceId' in c)) {
+      } else if (
+        c.kind !== 'file-viewer' &&
+        c.kind !== 'chat' &&
+        c.kind !== 'file-explorer' &&
+        c.kind !== 'tasks' &&
+        c.kind !== 'git' &&
+        !('instanceId' in c)
+      ) {
         panes.set(id, { ...pane, content: { kind: c.kind as PaneContentKind, instanceId: null } as PaneContent });
       }
       // v2 → v3: add viewMode to conversation panes
       if (c.kind === 'conversation' && !('viewMode' in c)) {
         panes.set(id, {
           ...pane,
-          content: { kind: 'conversation', instanceId: (c.instanceId as string | null) ?? null, viewMode: 'structured' }
+          content: {
+            kind: 'conversation',
+            instanceId: (c.instanceId as string | null) ?? null,
+            viewMode: 'structured'
+          }
         });
+      }
+      // v3 → v4: directory-bound kinds: instanceId → workingDir
+      const migrated = migratePaneContentV3toV4(c);
+      if (migrated) {
+        panes.set(id, { ...pane, content: migrated });
       }
     }
 
@@ -837,8 +842,12 @@ export function setupLayoutPersistence(): void {
   window.addEventListener('beforeunload', flushPersist);
 }
 
-/** Try to restore a saved layout. Call after store initialization. */
+/** Try to restore a saved layout. Only runs once (first mount). */
+let _layoutRestored = false;
+
 export function tryRestoreLayout(): boolean {
+  if (_layoutRestored) return false;
+  _layoutRestored = true;
   const restored = restoreLayout();
   if (!restored) return false;
   layoutState.set(restored);

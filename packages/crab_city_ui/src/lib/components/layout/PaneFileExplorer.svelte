@@ -1,11 +1,5 @@
 <script lang="ts">
   import FileExplorer from '../FileExplorer.svelte';
-
-  interface Props {
-    instanceId: string | null;
-  }
-
-  let { instanceId }: Props = $props();
 </script>
 
 <div class="pane-file-explorer">

@@ -6,6 +6,7 @@
     closePane,
     setPaneContent,
     getPaneInstanceId,
+    getPaneWorkingDir,
     defaultContentForKind
   } from '$lib/stores/layout';
   import {
@@ -71,14 +72,19 @@
 
   const canClose = $derived($paneCount > 1);
 
-  // Whether this pane kind carries an instanceId
-  const hasInstanceId = $derived(
-    pane.content.kind === 'terminal' ||
-      pane.content.kind === 'conversation' ||
-      pane.content.kind === 'file-explorer' ||
-      pane.content.kind === 'tasks' ||
-      pane.content.kind === 'git'
+  // Whether this pane is instance-bound (terminal/conversation) vs directory-bound
+  const isInstanceBound = $derived(pane.content.kind === 'terminal' || pane.content.kind === 'conversation');
+  const isDirBound = $derived(
+    pane.content.kind === 'file-explorer' || pane.content.kind === 'tasks' || pane.content.kind === 'git'
   );
+
+  // Project label for directory-bound panes
+  const dirLabel = $derived.by(() => {
+    if (!isDirBound || !('workingDir' in pane.content)) return null;
+    const wd = pane.content.workingDir;
+    if (!wd) return 'No project';
+    return wd.replace(/\/+$/, '').split('/').pop() ?? wd;
+  });
 
   const paneInstanceId = $derived(getPaneInstanceId(pane.content));
 
@@ -101,11 +107,13 @@
     return new Set(['terminal', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
   });
 
-  // Terminal panes show only shell instances; other kinds show only structured instances
+  // Terminal panes show only shell instances; conversation panes show only structured instances
   const filteredInstances = $derived(
-    $instanceList.filter((inst) =>
-      pane.content.kind === 'terminal' ? inst.kind.type === 'Unstructured' : inst.kind.type === 'Structured'
-    )
+    isInstanceBound
+      ? $instanceList.filter((inst) =>
+          pane.content.kind === 'terminal' ? inst.kind.type === 'Unstructured' : inst.kind.type === 'Structured'
+        )
+      : []
   );
 
   // Instance status indicator for terminal/conversation panes
@@ -191,15 +199,19 @@
       // Released on a popover item → split with that kind
       if (kind === 'terminal') {
         // Auto-create a shell for the new pane using configured command
-        createInstance({ command: $userSettings.shellCommand || 'bash' }).then((result) => {
-          if (result) {
-            splitPane(pane.id, dir, { kind: 'terminal', instanceId: result.id });
+        const wd = getPaneWorkingDir(pane.content, $instances);
+        createInstance({ command: $userSettings.shellCommand || 'bash', working_dir: wd ?? undefined }).then(
+          (result) => {
+            if (result) {
+              splitPane(pane.id, dir, { kind: 'terminal', instanceId: result.id });
+            }
           }
-        });
+        );
         return;
       }
       const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
-      splitPane(pane.id, dir, defaultContentForKind(kind, instanceId));
+      const workingDir = getPaneWorkingDir(pane.content, $instances);
+      splitPane(pane.id, dir, defaultContentForKind(kind, instanceId, workingDir));
     } else if (!didEnter) {
       // Plain click (never entered popover) → split with picker
       splitPane(pane.id, dir);
@@ -214,14 +226,19 @@
   async function handleContentChange(e: Event) {
     const newKind = (e.target as HTMLSelectElement).value as PaneContentKind;
     if (newKind === 'terminal') {
-      const result = await createInstance({ command: $userSettings.shellCommand || 'bash' });
+      const wd = getPaneWorkingDir(pane.content, $instances);
+      const result = await createInstance({
+        command: $userSettings.shellCommand || 'bash',
+        working_dir: wd ?? undefined
+      });
       if (result) {
         setPaneContent(pane.id, { kind: 'terminal', instanceId: result.id });
       }
       return;
     }
     const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
-    setPaneContent(pane.id, defaultContentForKind(newKind, instanceId));
+    const workingDir = getPaneWorkingDir(pane.content, $instances);
+    setPaneContent(pane.id, defaultContentForKind(newKind, instanceId, workingDir));
   }
 
   let showCreateModal = $state(false);
@@ -238,13 +255,13 @@
     }
 
     const newId = value || null;
-    if ('instanceId' in pane.content) {
+    if (pane.content.kind === 'terminal' || pane.content.kind === 'conversation') {
       setPaneContent(pane.id, { ...pane.content, instanceId: newId });
     }
   }
 
   function handleCreated(instanceId: string) {
-    if ('instanceId' in pane.content) {
+    if (pane.content.kind === 'terminal' || pane.content.kind === 'conversation') {
       setPaneContent(pane.id, { ...pane.content, instanceId });
       selectInstance(instanceId);
     }
@@ -272,7 +289,10 @@
   async function handleRestart() {
     const cmd = termCommand.trim() || $userSettings.shellCommand || 'bash';
     const oldId = paneInstanceId;
-    const result = await createInstance({ command: cmd });
+    const result = await createInstance({
+      command: cmd,
+      working_dir: currentInstance?.working_dir ?? undefined
+    });
     if (result) {
       setPaneContent(pane.id, { kind: 'terminal', instanceId: result.id });
       if (oldId) deleteInstance(oldId);
@@ -285,9 +305,24 @@
       handleRestart();
     }
   }
+
+  // -- Responsive: hide split buttons when pane is too narrow --
+  let chromeEl: HTMLElement | undefined = $state();
+  let chromeWidth = $state(Infinity);
+
+  $effect(() => {
+    if (!chromeEl) return;
+    const ro = new ResizeObserver(([entry]) => {
+      chromeWidth = entry.contentRect.width;
+    });
+    ro.observe(chromeEl);
+    return () => ro.disconnect();
+  });
+
+  const showSplitButtons = $derived(chromeWidth > 180);
 </script>
 
-<div class="pane-chrome">
+<div class="pane-chrome" bind:this={chromeEl}>
   {#if instanceStatus && instanceStatus !== 'idle'}
     <span
       class="status-dot"
@@ -340,7 +375,7 @@
         </svg>
       </button>
     {/if}
-  {:else if hasInstanceId}
+  {:else if isInstanceBound}
     <span class="chrome-sep">/</span>
     <select class="instance-select" value={paneInstanceId ?? ''} onchange={handleInstanceChange} aria-label="Instance">
       <option value="">None</option>
@@ -349,6 +384,9 @@
       {/each}
       <option value="__new__">+ New</option>
     </select>
+  {:else if isDirBound}
+    <span class="chrome-sep">/</span>
+    <span class="chrome-label">{dirLabel}</span>
   {:else if pane.content.kind === 'file-viewer'}
     <span class="chrome-sep">/</span>
     <span class="chrome-label">{fileViewerLabel}</span>
@@ -359,6 +397,42 @@
   <div class="pane-spacer"></div>
   {#if pane.content.kind !== 'landing'}
     <div class="pane-actions">
+      {#if canClose}
+        <button class="chrome-btn close" onclick={handleClose} title="Close pane (Cmd+W)" aria-label="Close pane">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <line x1="4" y1="4" x2="12" y2="12" />
+            <line x1="12" y1="4" x2="4" y2="12" />
+          </svg>
+        </button>
+      {/if}
+      {#if showSplitButtons}
+        <button
+          class="chrome-btn"
+          onpointerdown={(e) => handleSplitPointerDown('vertical', e)}
+          onpointermove={handleSplitPointerMove}
+          onpointerup={handleSplitPointerUp}
+          title="Split vertical (Cmd+\)"
+          aria-label="Split pane vertically"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="1" y="1" width="14" height="14" rx="1" />
+            <line x1="8" y1="1" x2="8" y2="15" />
+          </svg>
+        </button>
+        <button
+          class="chrome-btn"
+          onpointerdown={(e) => handleSplitPointerDown('horizontal', e)}
+          onpointermove={handleSplitPointerMove}
+          onpointerup={handleSplitPointerUp}
+          title="Split horizontal"
+          aria-label="Split pane horizontally"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="1" y="1" width="14" height="14" rx="1" />
+            <line x1="1" y1="8" x2="15" y2="8" />
+          </svg>
+        </button>
+      {/if}
       {#if isTerminal && paneInstanceId}
         <button
           class="chrome-btn"
@@ -371,40 +445,6 @@
             <path d="M13.5 8a5.5 5.5 0 0 1-9.3 4" />
             <polyline points="11.5 2 12 4.2 9.8 4.5" />
             <polyline points="4.5 14 4 11.8 6.2 11.5" />
-          </svg>
-        </button>
-      {/if}
-      <button
-        class="chrome-btn"
-        onpointerdown={(e) => handleSplitPointerDown('vertical', e)}
-        onpointermove={handleSplitPointerMove}
-        onpointerup={handleSplitPointerUp}
-        title="Split vertical (Cmd+\)"
-        aria-label="Split pane vertically"
-      >
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="1" y="1" width="14" height="14" rx="1" />
-          <line x1="8" y1="1" x2="8" y2="15" />
-        </svg>
-      </button>
-      <button
-        class="chrome-btn"
-        onpointerdown={(e) => handleSplitPointerDown('horizontal', e)}
-        onpointermove={handleSplitPointerMove}
-        onpointerup={handleSplitPointerUp}
-        title="Split horizontal"
-        aria-label="Split pane horizontally"
-      >
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="1" y="1" width="14" height="14" rx="1" />
-          <line x1="1" y1="8" x2="15" y2="8" />
-        </svg>
-      </button>
-      {#if canClose}
-        <button class="chrome-btn close" onclick={handleClose} title="Close pane (Cmd+W)" aria-label="Close pane">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-            <line x1="4" y1="4" x2="12" y2="12" />
-            <line x1="12" y1="4" x2="4" y2="12" />
           </svg>
         </button>
       {/if}

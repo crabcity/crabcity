@@ -88,8 +88,8 @@ impl InstanceManager {
         scrollback_lines: usize,
         vt_record_dir: Option<std::path::PathBuf>,
     ) -> Self {
-        let base_directory = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+        let base_directory = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .to_string_lossy()
             .to_string();
 

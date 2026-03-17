@@ -27,30 +27,35 @@ Stores must handle WebSocket broadcasts **idempotently** (upsert by ID, not blin
 The UI uses a **binary split pane** layout (tmux-inspired). Core data lives in `stores/layout.ts`:
 
 - **`LayoutNode`** = `SplitNode | LeafNode` — recursive tree, immutable updates
-- **`PaneContent`** = discriminated union tagged by `kind`:
-  - `{ kind: 'terminal'; instanceId: string | null }` — terminal bound to an instance
-  - `{ kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }` — conversation view (structured = notebook cells, raw = terminal inside conversation chrome)
-  - `{ kind: 'file-viewer'; filePath: string | null; lineNumber?: number }` — self-contained file viewer
-  - `{ kind: 'file-explorer'; instanceId: string | null }` — file tree for instance's working_dir
-  - `{ kind: 'chat'; scope: 'global' | string }` — chat panel (global or instance-scoped)
-  - `{ kind: 'tasks'; instanceId: string | null }` — task panel
-  - `{ kind: 'git'; instanceId: string | null }` — git diff/log view
-  - `{ kind: 'settings' }` — settings panel (no instanceId)
-- Helpers: `getPaneInstanceId(content)` extracts instanceId from any variant; `defaultContentForKind(kind, instanceId)` constructs default config
+- **`PaneContent`** = discriminated union tagged by `kind`, split into **instance-bound** and **directory-bound** variants:
+  - Instance-bound (carry `instanceId`):
+    - `{ kind: 'terminal'; instanceId: string | null }` — terminal bound to an instance
+    - `{ kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }` — conversation view
+  - Directory-bound (carry `workingDir`):
+    - `{ kind: 'file-explorer'; workingDir: string | null }` — file tree for a project directory
+    - `{ kind: 'tasks'; workingDir: string | null }` — task panel scoped to a directory
+    - `{ kind: 'git'; workingDir: string | null }` — git diff/log view for a directory
+  - Other:
+    - `{ kind: 'file-viewer'; filePath: string | null; lineNumber?: number }` — self-contained file viewer
+    - `{ kind: 'chat'; scope: 'global' | string }` — chat panel (global or instance-scoped)
+    - `{ kind: 'settings' }` — settings panel (no instanceId)
+- Helpers (defined in `utils/pane-content.ts`, re-exported from `stores/layout.ts`): `getPaneInstanceId(content)` extracts instanceId (terminal/conversation only); `getPaneWorkingDir(content, instanceMap)` resolves workingDir from any variant (directory-bound directly, instance-bound via instance lookup — takes an explicit instances map, no hidden store reads); `defaultContentForKind(kind, instanceId, workingDir?)` constructs default config; `migratePaneContentV3toV4(content)` handles persistence migration
 - Actions: `splitPane`, `closePane`, `focusPane`, `setSplitRatio`, `setPaneContent`, `setPaneViewMode`, `togglePaneViewMode`
 
 Components in `src/lib/components/layout/`:
 - **LayoutTree.svelte** — recursive renderer (split → flex + SplitHandle, leaf → PaneHost). CSS transitions on split/close (150ms, disabled during drag). On mobile with multiple panes, renders focused pane with a tab bar (instance names, status dots, close/add buttons).
 - **PaneHost.svelte** — dispatches to content component by `kind`, passes explicit props from the discriminated union (no global fallback). Each pane owns its own `instanceId`/`filePath`/`scope`.
-- **PaneChrome.svelte** — title bar with content type dropdown, instance selector (for instance-bound kinds), split/close buttons, status dot. File-viewer panes show filename; chat panes show scope label.
+- **PaneChrome.svelte** — title bar with content type dropdown, instance selector (for terminal/conversation), project label (for file-explorer/tasks/git), split/close buttons, status dot. Split buttons hide via `ResizeObserver` when pane is <180px wide; close button is always visible. File-viewer panes show filename; chat panes show scope label.
 - **SplitHandle.svelte** — drag-to-resize between split children, keyboard accessible (`role="separator"`, arrow keys ±5%/±15%, Home=50%)
 - **Pane\*.svelte** — thin wrappers (PaneTerminal, PaneConversation, PaneFileExplorer, PaneChat, PaneTasks, PaneFileViewer, PaneGit, PaneSettings). Each accepts explicit props from its union variant.
 
 **PaneFileViewer** is self-contained — it fetches file content independently via `apiGet`, has its own loading/error/empty states, and does not read global file viewer state. Two file-viewer panes can show different files simultaneously.
 
+**Instance-bound vs directory-bound panes**: Terminal and conversation panes carry `instanceId` and show an instance selector in PaneChrome. File-explorer, tasks, and git panes carry `workingDir` and show a project label instead. When a directory-bound pane is focused, `currentInstanceId` is resolved by finding any instance in the same `workingDir` (via `effectiveInstanceId` in `setupLayoutSync`). The instance picker (`PICKER_KINDS`) only shows for terminal/conversation panes. The pane wrapper components (PaneFileExplorer, PaneTasks, PaneGit) are zero-prop wrappers — they read from global stores (`currentInstance`, `currentInstanceId`) which are correctly set by the layout system's `effectiveInstanceId` derivation. The `workingDir` on `PaneContent` is a layout concern (drives `effectiveInstanceId` and `dirLabel`), not a component concern.
+
 **Embedded panel pattern**: FileExplorer, ChatPanel, TaskPanel, FileViewer accept an `embedded` prop. When `true`, they skip the `position: fixed` overlay chrome (backdrop, close button, resize handle) and render inline. Pane wrappers pass `embedded={true}`. In single-pane mode, overlays still work as before.
 
-**Persistence**: Layout serializes to `localStorage` key `crab_city_layout` (schema version 3, debounced 300ms, flushed on `beforeunload`). Deserialization migrates legacy flat format (version 1→2) and adds `viewMode` to conversation panes (version 2→3). All layouts (including single-pane) are restored from persistence.
+**Persistence**: Layout serializes to `localStorage` key `crab_city_layout` (schema version 4, debounced 300ms, flushed on `beforeunload`). Deserialization migrates legacy flat format (version 1→2), adds `viewMode` to conversation panes (version 2→3), and converts directory-bound kinds from `instanceId` to `workingDir` (version 3→4). All layouts (including single-pane) are restored from persistence.
 
 **Presets**: `applyPreset('single' | 'dev-split' | 'side-by-side')` — accessible from MainHeader.
 
@@ -62,7 +67,7 @@ Components in `src/lib/components/layout/`:
 
 **Toast notifications**: `stores/toasts.ts` provides `addToast(message, type?, duration?)`. Max 3 visible (FIFO). `ToastStack.svelte` renders fixed bottom-right with slide-up animation.
 
-**Cross-view focus**: `currentInstanceId` is driven one-way from `focusedPaneInstanceId` via `driveCurrentInstanceId()` (set up in `setupLayoutSync()`). To change the current instance, always use `setFocusedInstance(id)` or `selectInstance(id)` — never write to `currentInstanceId` directly. `setFocusedInstance()` routes through the layout bridge: it finds a pane already showing the instance and focuses it, or binds the focused pane to the new instance (choosing `conversation` vs `terminal` pane kind based on `InstanceKind`). Terminal focus handoff uses per-pane `requestTerminalFocus(paneId)` / `consumeTerminalFocus(paneId)` in `layout.ts`. There is no global `showTerminal` store — `PaneContent` is the single source of truth for what each pane displays, including the `viewMode` on conversation panes.
+**Cross-view focus**: `currentInstanceId` is driven one-way from an `effectiveInstanceId` derived in `setupLayoutSync()`. For instance-bound panes (terminal/conversation), this is the pane's `instanceId`. For directory-bound panes (file-explorer/tasks/git), it resolves the pane's `workingDir` to the first matching instance. This ensures file/git/task stores see the correct context when a directory-bound pane is focused. To change the current instance, always use `setFocusedInstance(id)` or `selectInstance(id)` — never write to `currentInstanceId` directly. `setFocusedInstance()` routes through the layout bridge: it finds a pane already showing the instance and focuses it, or binds the focused pane to the new instance (choosing `conversation` vs `terminal` pane kind based on `InstanceKind`). Terminal focus handoff uses per-pane `requestTerminalFocus(paneId)` / `consumeTerminalFocus(paneId)` in `layout.ts`. There is no global `showTerminal` store — `PaneContent` is the single source of truth for what each pane displays, including the `viewMode` on conversation panes.
 
 ### Project & Instance Hierarchy
 

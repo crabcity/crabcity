@@ -183,7 +183,7 @@
   {:else if $fullscreenView === 'settings'}
     <SettingsPanel onback={closeFullscreen} />
   {:else if $fullscreenView === 'new-project'}
-    <CreateInstanceModal mode="project" onclose={closeFullscreen} />
+    <CreateInstanceModal mode="project" onclose={closeFullscreen} oncreated={() => closeFullscreen()} />
   {:else}
     <MainView />
 

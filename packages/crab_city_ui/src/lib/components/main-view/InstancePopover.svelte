@@ -78,7 +78,7 @@
   function handleOpenInSplit() {
     const focusedId = $layoutState.focusedPaneId;
     const kind = instance.kind.type === 'Structured' ? 'conversation' : 'terminal';
-    splitPane(focusedId, 'vertical', defaultContentForKind(kind, instance.id));
+    splitPane(focusedId, 'vertical', defaultContentForKind(kind, instance.id, instance.working_dir ?? null));
     onclose();
   }
 

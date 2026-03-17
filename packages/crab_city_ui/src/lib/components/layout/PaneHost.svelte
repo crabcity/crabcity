@@ -23,7 +23,7 @@
   const isFocused = $derived($layoutState.focusedPaneId === paneId);
 
   // Pane kinds that show the instance picker when instanceId is null.
-  const PICKER_KINDS = new Set(['terminal', 'conversation', 'file-explorer', 'tasks', 'git']);
+  const PICKER_KINDS = new Set(['terminal', 'conversation']);
 
   const needsInstancePicker = $derived.by(() => {
     if (!pane) return false;
@@ -47,7 +47,7 @@
     {#if pane}
       {@const content = pane.content}
       {#if content.kind === 'picker'}
-        <PaneKindPicker paneId={pane.id} />
+        <PaneKindPicker paneId={pane.id} {content} />
       {:else if content.kind === 'landing'}
         <PaneLanding />
       {:else if needsInstancePicker}
@@ -56,16 +56,16 @@
         <PaneTerminal instanceId={content.instanceId} paneId={pane.id} />
       {:else if content.kind === 'conversation' && content.instanceId}
         <PaneConversation instanceId={content.instanceId} viewMode={content.viewMode} paneId={pane.id} />
-      {:else if content.kind === 'file-explorer' && 'instanceId' in content}
-        <PaneFileExplorer instanceId={content.instanceId} />
+      {:else if content.kind === 'file-explorer'}
+        <PaneFileExplorer />
       {:else if content.kind === 'chat'}
         <PaneChat scope={content.scope} />
-      {:else if content.kind === 'tasks' && 'instanceId' in content}
-        <PaneTasks instanceId={content.instanceId} />
+      {:else if content.kind === 'tasks'}
+        <PaneTasks />
       {:else if content.kind === 'file-viewer'}
         <PaneFileViewer filePath={content.filePath} lineNumber={content.lineNumber} paneId={pane.id} />
-      {:else if content.kind === 'git' && 'instanceId' in content}
-        <PaneGit instanceId={content.instanceId} />
+      {:else if content.kind === 'git'}
+        <PaneGit />
       {:else if content.kind === 'settings'}
         <PaneSettings paneId={pane.id} />
       {:else}

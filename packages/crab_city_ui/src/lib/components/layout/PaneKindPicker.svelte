@@ -1,14 +1,15 @@
 <script lang="ts">
-  import type { PaneContentKind } from '$lib/stores/layout';
+  import type { PaneContentKind, PaneContent } from '$lib/stores/layout';
   import { setPaneContent, defaultContentForKind } from '$lib/stores/layout';
-  import { currentInstanceId, createInstance } from '$lib/stores/instances';
+  import { currentInstanceId, instances, createInstance } from '$lib/stores/instances';
   import { userSettings } from '$lib/stores/settings';
 
   interface Props {
     paneId: string;
+    content: PaneContent & { kind: 'picker' };
   }
 
-  let { paneId }: Props = $props();
+  let { paneId, content }: Props = $props();
 
   const options: { kind: PaneContentKind; label: string; icon: string }[] = [
     {
@@ -54,16 +55,29 @@
   ];
 
   async function handleSelect(kind: PaneContentKind) {
+    // Resolve context from picker's source pane, falling back to current instance
+    const workingDir = content.sourceWorkingDir ?? null;
+    // Find an instance in this directory for instance-bound pane kinds
+    const instanceId = (() => {
+      if (workingDir) {
+        for (const inst of $instances.values()) {
+          if (inst.working_dir === workingDir) return inst.id;
+        }
+      }
+      return $currentInstanceId;
+    })();
     if (kind === 'terminal') {
       // Auto-create a shell instance using the configured shell command
-      const result = await createInstance({ command: $userSettings.shellCommand || 'bash' });
+      const result = await createInstance({
+        command: $userSettings.shellCommand || 'bash',
+        working_dir: workingDir ?? undefined
+      });
       if (result) {
         setPaneContent(paneId, { kind: 'terminal', instanceId: result.id });
       }
       return;
     }
-    const instanceId = $currentInstanceId;
-    setPaneContent(paneId, defaultContentForKind(kind, instanceId));
+    setPaneContent(paneId, defaultContentForKind(kind, instanceId, workingDir));
   }
 </script>
 
