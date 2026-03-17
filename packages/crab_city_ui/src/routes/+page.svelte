@@ -28,17 +28,9 @@
   import { connectionStatus } from '$lib/stores/websocket';
   import { currentProject } from '$lib/stores/projects';
   import { toggleTheme } from '$lib/stores/settings';
+  import { selectInstance } from '$lib/stores/instances';
   import { fullscreenView, closeFullscreen, isFullscreenOpen } from '$lib/stores/fullscreen';
-  import {
-    layoutState,
-    splitPane,
-    closePane,
-    paneCount,
-    moveFocus,
-    focusPane,
-    getPaneInstanceId,
-    defaultContentForKind
-  } from '$lib/stores/layout';
+  import { layoutState, splitPane, closePane, paneCount, moveFocus } from '$lib/stores/layout';
   import type { PaneContentKind } from '$lib/stores/layout';
 
   let showBoot = $state(true);
@@ -165,24 +157,12 @@
       toggleTaskPanel();
     }
     // 1-9 to switch instances (indexes into current project's instances)
-    // Focus-if-visible, insert-if-not (matches drawer behavior)
     const num = parseInt(e.key);
     if (num >= 1 && num <= 9) {
       const project = $currentProject;
       if (project && num <= project.instances.length) {
         e.preventDefault();
-        const targetId = project.instances[num - 1].id;
-
-        // If a pane already shows this instance, focus it
-        for (const [paneId, pane] of $layoutState.panes) {
-          if (getPaneInstanceId(pane.content) === targetId) {
-            focusPane(paneId);
-            return;
-          }
-        }
-
-        // Not in any pane — insert as a new split
-        splitPane($layoutState.focusedPaneId, 'vertical', defaultContentForKind('conversation', targetId));
+        selectInstance(project.instances[num - 1].id);
       }
     }
   }

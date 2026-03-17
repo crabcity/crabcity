@@ -16,7 +16,7 @@ use crate::repository::ConversationRepository;
 
 use crate::virtual_terminal::ClientType;
 
-use super::focus::{handle_focus, send_conversation_since};
+use super::focus::{handle_focus, send_conversation_since, send_output_history};
 use super::protocol::{BackpressureStats, ClientMessage, PresenceUser, ServerMessage, WsUser};
 use super::state_manager::{
     GlobalStateManager, InputContext, InputUser, TERMINAL_LOCK_TIMEOUT_SECS,
@@ -385,13 +385,34 @@ pub async fn handle_multiplexed_ws(
                                         warn!("Failed to resize PTY for {}: {}", instance_id, e);
                                     }
 
-                                    // Ask the focus task to re-send the full terminal
-                                    // state with the correct client_rows. The focus task
-                                    // drains its broadcast receiver before generating the
-                                    // replay, preventing overlap duplication.
-                                    if let Some(ref refresh_tx) = *focus_refresh_clone.read().await
-                                    {
-                                        let _ = refresh_tx.send(rows).await;
+                                    // If this instance has an active focus task, ask
+                                    // it to re-send OutputHistory (it drains stale
+                                    // broadcasts first, preventing overlap duplication).
+                                    // Otherwise send OutputHistory directly — covers
+                                    // non-focused pane-bound terminals after page reload
+                                    // and split-opened instances.
+                                    let is_focused = focused_clone.read().await.as_deref()
+                                        == Some(instance_id.as_str());
+                                    let sent_via_focus = if is_focused {
+                                        if let Some(ref refresh_tx) =
+                                            *focus_refresh_clone.read().await
+                                        {
+                                            refresh_tx.send(rows).await.is_ok()
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    };
+                                    if !sent_via_focus {
+                                        let _ = send_output_history(
+                                            &handle,
+                                            &instance_id,
+                                            usize::MAX,
+                                            rows,
+                                            &tx_input,
+                                        )
+                                        .await;
                                     }
                                 }
                             }

@@ -82,6 +82,25 @@
 
   const paneInstanceId = $derived(getPaneInstanceId(pane.content));
 
+  // Resolve the bound instance's kind (Structured vs Unstructured)
+  const boundInstanceKind = $derived.by(() => {
+    const id = paneInstanceId;
+    if (!id) return null;
+    return $instances.get(id)?.kind ?? null;
+  });
+
+  // Filter content-type dropdown: hide incompatible kinds based on instance type
+  const allowedContentKinds = $derived.by((): Set<PaneContentKind> => {
+    const kind = boundInstanceKind;
+    if (!kind) return new Set(['terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
+    if (kind.type === 'Structured') {
+      // Structured (Claude): no terminal (use raw viewMode instead)
+      return new Set(['conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
+    }
+    // Unstructured (shell): no conversation (no conversation data)
+    return new Set(['terminal', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
+  });
+
   // Terminal panes show only shell instances; other kinds show only structured instances
   const filteredInstances = $derived(
     $instanceList.filter((inst) =>
@@ -286,14 +305,14 @@
     onchange={handleContentChange}
     aria-label="Pane content type"
   >
-    <option value="terminal">Terminal</option>
-    <option value="conversation">Conversation</option>
-    <option value="file-explorer">Files</option>
-    <option value="chat">Chat</option>
-    <option value="tasks">Tasks</option>
-    <option value="file-viewer">File Viewer</option>
-    <option value="git">Git</option>
-    <option value="settings">Settings</option>
+    {#if allowedContentKinds.has('terminal')}<option value="terminal">Terminal</option>{/if}
+    {#if allowedContentKinds.has('conversation')}<option value="conversation">Conversation</option>{/if}
+    {#if allowedContentKinds.has('file-explorer')}<option value="file-explorer">Files</option>{/if}
+    {#if allowedContentKinds.has('chat')}<option value="chat">Chat</option>{/if}
+    {#if allowedContentKinds.has('tasks')}<option value="tasks">Tasks</option>{/if}
+    {#if allowedContentKinds.has('file-viewer')}<option value="file-viewer">File Viewer</option>{/if}
+    {#if allowedContentKinds.has('git')}<option value="git">Git</option>{/if}
+    {#if allowedContentKinds.has('settings')}<option value="settings">Settings</option>{/if}
   </select>
   {#if isTerminal && paneInstanceId}
     <span class="chrome-sep">/</span>
@@ -399,7 +418,7 @@
 
 {#if splitPopover}
   <div class="split-popover" style="left: {splitPopover.x}px; top: {splitPopover.y}px;">
-    {#each SPLIT_KIND_OPTIONS as opt}
+    {#each SPLIT_KIND_OPTIONS.filter((o) => allowedContentKinds.has(o.kind)) as opt}
       <div class="split-popover-item" class:hovered={hoveredKind === opt.kind} data-split-kind={opt.kind}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" class="split-popover-icon">
           {@html opt.icon}

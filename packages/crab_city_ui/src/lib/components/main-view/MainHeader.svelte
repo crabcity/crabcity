@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Instance } from '$lib/types';
-  import { currentInstanceId } from '$lib/stores/instances';
+  import { currentInstanceId, selectInstance } from '$lib/stores/instances';
   import { connectionStatus } from '$lib/stores/websocket';
   import { currentProject, projects } from '$lib/stores/projects';
   import { getStateInfo } from '$lib/utils/instance-state';
@@ -12,7 +12,6 @@
     paneCount,
     splitPane,
     layoutState,
-    focusPane,
     getPaneInstanceId,
     defaultContentForKind
   } from '$lib/stores/layout';
@@ -109,18 +108,7 @@
 
   function handleFleetSelect(instanceId: string) {
     panelOpen = false;
-
-    // If a pane already shows this instance, just focus it
-    for (const [paneId, pane] of $layoutState.panes) {
-      if (getPaneInstanceId(pane.content) === instanceId) {
-        focusPane(paneId);
-        return;
-      }
-    }
-
-    // Not in any pane — insert as a new split (non-destructive)
-    const focusedId = $layoutState.focusedPaneId;
-    splitPane(focusedId, 'vertical', defaultContentForKind('conversation', instanceId));
+    selectInstance(instanceId);
   }
 
   /** In multi-pane mode, open a panel type as a new split pane */
