@@ -82,11 +82,11 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    border: 1px solid transparent;
   }
 
   .pane-host.focused {
-    outline: 1px solid var(--amber-600);
-    outline-offset: -1px;
+    border-color: var(--amber-600);
   }
 
   .pane-content {
