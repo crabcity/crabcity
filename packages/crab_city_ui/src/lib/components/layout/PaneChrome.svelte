@@ -10,9 +10,13 @@
     defaultContentForKind
   } from '$lib/stores/layout';
   import {
+    SELECTABLE_KINDS,
+    INSTANCE_BOUND_KINDS,
+    DIR_BOUND_KINDS
+  } from '$lib/utils/pane-content';
+  import {
     instances,
     instanceList,
-    currentInstanceId,
     selectInstance,
     createInstance,
     deleteInstance
@@ -21,49 +25,6 @@
   import { openExplorerPicker } from '$lib/stores/files';
   import { userSettings } from '$lib/stores/settings';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
-
-  const SPLIT_KIND_OPTIONS: { kind: PaneContentKind; label: string; icon: string }[] = [
-    {
-      kind: 'terminal',
-      label: 'Terminal',
-      icon: '<rect x="2" y="3" width="12" height="10" rx="1"/><polyline points="4 7 6 9 4 11"/>'
-    },
-    {
-      kind: 'conversation',
-      label: 'Conversation',
-      icon: '<path d="M2 4h12a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-3l-2 2v-2H2a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>'
-    },
-    {
-      kind: 'file-explorer',
-      label: 'Files',
-      icon: '<path d="M1 4V3.5A.5.5 0 0 1 1.5 3H5l1.5 1.5H14.5a.5.5 0 0 1 .5.5v.5"/><rect x="1" y="4.5" width="14" height="9" rx=".5"/>'
-    },
-    {
-      kind: 'chat',
-      label: 'Chat',
-      icon: '<circle cx="8" cy="8" r="6"/><circle cx="5.5" cy="7.5" r=".7"/><circle cx="8" cy="7.5" r=".7"/><circle cx="10.5" cy="7.5" r=".7"/>'
-    },
-    {
-      kind: 'tasks',
-      label: 'Tasks',
-      icon: '<rect x="2" y="2" width="4" height="4" rx=".5"/><rect x="2" y="10" width="4" height="4" rx=".5"/><line x1="9" y1="4" x2="14" y2="4"/><line x1="9" y1="12" x2="14" y2="12"/>'
-    },
-    {
-      kind: 'file-viewer',
-      label: 'File Viewer',
-      icon: '<path d="M4 1h6l3 3v10a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V1.5A.5.5 0 0 1 4 1z"/><polyline points="9.5 1 9.5 4.5 13 4.5"/>'
-    },
-    {
-      kind: 'git',
-      label: 'Git',
-      icon: '<circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="13" r="1.5"/><circle cx="13" cy="8" r="1.5"/><line x1="8" y1="4.5" x2="8" y2="11.5"/><path d="M8 6.5c0 1.5 5 1.5 5 1.5"/>'
-    },
-    {
-      kind: 'settings',
-      label: 'Settings',
-      icon: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2m0 9v2M3.4 3.4l1.4 1.4m6.4 6.4l1.4 1.4M1.5 8h2m9 0h2M3.4 12.6l1.4-1.4m6.4-6.4l1.4-1.4"/>'
-    }
-  ];
 
   interface Props {
     pane: PaneState;
@@ -74,10 +35,8 @@
   const canClose = $derived($paneCount > 1);
 
   // Whether this pane is instance-bound (terminal/conversation) vs directory-bound
-  const isInstanceBound = $derived(pane.content.kind === 'terminal' || pane.content.kind === 'conversation');
-  const isDirBound = $derived(
-    pane.content.kind === 'file-explorer' || pane.content.kind === 'tasks' || pane.content.kind === 'git'
-  );
+  const isInstanceBound = $derived(INSTANCE_BOUND_KINDS.has(pane.content.kind));
+  const isDirBound = $derived(DIR_BOUND_KINDS.has(pane.content.kind) && pane.content.kind !== 'file-viewer');
 
   // Project label for directory-bound panes
   const dirLabel = $derived.by(() => {
@@ -89,24 +48,9 @@
 
   const paneInstanceId = $derived(getPaneInstanceId(pane.content));
 
-  // Resolve the bound instance's kind (Structured vs Unstructured)
-  const boundInstanceKind = $derived.by(() => {
-    const id = paneInstanceId;
-    if (!id) return null;
-    return $instances.get(id)?.kind ?? null;
-  });
-
-  // Filter content-type dropdown: hide incompatible kinds based on instance type
-  const allowedContentKinds = $derived.by((): Set<PaneContentKind> => {
-    const kind = boundInstanceKind;
-    if (!kind) return new Set(['terminal', 'conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
-    if (kind.type === 'Structured') {
-      // Structured (Claude): no terminal (use raw viewMode instead)
-      return new Set(['conversation', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
-    }
-    // Unstructured (shell): no conversation (no conversation data)
-    return new Set(['terminal', 'file-explorer', 'chat', 'tasks', 'file-viewer', 'git', 'settings']);
-  });
+  // All selectable content kinds are always available — switching to terminal auto-creates
+  // a shell, switching to conversation shows the instance picker if no structured instance
+  // is bound. Derived from the single-source-of-truth registry.
 
   // Terminal panes show only shell instances; conversation panes show only structured instances
   const filteredInstances = $derived(
@@ -210,9 +154,8 @@
         );
         return;
       }
-      const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
       const workingDir = getPaneWorkingDir(pane.content, $instances);
-      splitPane(pane.id, dir, defaultContentForKind(kind, instanceId, workingDir));
+      splitPane(pane.id, dir, defaultContentForKind(kind, workingDir));
     } else if (!didEnter) {
       // Plain click (never entered popover) → split with picker
       splitPane(pane.id, dir);
@@ -226,20 +169,20 @@
 
   async function handleContentChange(e: Event) {
     const newKind = (e.target as HTMLSelectElement).value as PaneContentKind;
+    // Switching pane type is always a fresh open — never carry an instance binding
+    // across incompatible kinds. Only working directory context is preserved.
+    const workingDir = getPaneWorkingDir(pane.content, $instances);
     if (newKind === 'terminal') {
-      const wd = getPaneWorkingDir(pane.content, $instances);
       const result = await createInstance({
         command: $userSettings.shellCommand || 'bash',
-        working_dir: wd ?? undefined
+        working_dir: workingDir ?? undefined
       });
       if (result) {
         setPaneContent(pane.id, { kind: 'terminal', instanceId: result.id });
       }
       return;
     }
-    const instanceId = getPaneInstanceId(pane.content) ?? $currentInstanceId;
-    const workingDir = getPaneWorkingDir(pane.content, $instances);
-    setPaneContent(pane.id, defaultContentForKind(newKind, instanceId, workingDir));
+    setPaneContent(pane.id, defaultContentForKind(newKind, workingDir));
   }
 
   let showCreateModal = $state(false);
@@ -341,14 +284,9 @@
     onchange={handleContentChange}
     aria-label="Pane content type"
   >
-    {#if allowedContentKinds.has('terminal')}<option value="terminal">Terminal</option>{/if}
-    {#if allowedContentKinds.has('conversation')}<option value="conversation">Conversation</option>{/if}
-    {#if allowedContentKinds.has('file-explorer')}<option value="file-explorer">Files</option>{/if}
-    {#if allowedContentKinds.has('chat')}<option value="chat">Chat</option>{/if}
-    {#if allowedContentKinds.has('tasks')}<option value="tasks">Tasks</option>{/if}
-    {#if allowedContentKinds.has('file-viewer')}<option value="file-viewer">File Viewer</option>{/if}
-    {#if allowedContentKinds.has('git')}<option value="git">Git</option>{/if}
-    {#if allowedContentKinds.has('settings')}<option value="settings">Settings</option>{/if}
+    {#each SELECTABLE_KINDS as def}
+      <option value={def.kind}>{def.label}</option>
+    {/each}
   </select>
   {#if isTerminal && paneInstanceId}
     <span class="chrome-sep">/</span>
@@ -470,12 +408,12 @@
 
 {#if splitPopover}
   <div class="split-popover" style="left: {splitPopover.x}px; top: {splitPopover.y}px;">
-    {#each SPLIT_KIND_OPTIONS.filter((o) => allowedContentKinds.has(o.kind)) as opt}
-      <div class="split-popover-item" class:hovered={hoveredKind === opt.kind} data-split-kind={opt.kind}>
+    {#each SELECTABLE_KINDS as def}
+      <div class="split-popover-item" class:hovered={hoveredKind === def.kind} data-split-kind={def.kind}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" class="split-popover-icon">
-          {@html opt.icon}
+          {@html def.chromeIcon}
         </svg>
-        <span class="split-popover-label">{opt.label}</span>
+        <span class="split-popover-label">{def.label}</span>
       </div>
     {/each}
   </div>

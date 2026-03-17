@@ -1,8 +1,11 @@
 <script lang="ts">
-  import type { PaneContentKind, PaneContent } from '$lib/stores/layout';
-  import { setPaneContent, defaultContentForKind } from '$lib/stores/layout';
-  import { currentInstanceId, instances, createInstance } from '$lib/stores/instances';
+  import type { PaneContent, PaneContentKind } from '$lib/stores/layout';
+  import { setPaneContent, defaultContentForKind, closePane, paneCount } from '$lib/stores/layout';
+  import { SELECTABLE_KINDS } from '$lib/utils/pane-content';
+  import { createInstance } from '$lib/stores/instances';
   import { userSettings } from '$lib/stores/settings';
+
+  const canClose = $derived($paneCount > 1);
 
   interface Props {
     paneId: string;
@@ -11,63 +14,11 @@
 
   let { paneId, content }: Props = $props();
 
-  const options: { kind: PaneContentKind; label: string; icon: string }[] = [
-    {
-      kind: 'terminal',
-      label: 'Terminal',
-      icon: '<rect x="2" y="3" width="16" height="13" rx="1.5"/><polyline points="5 8 7.5 10.5 5 13"/><line x1="10" y1="13" x2="14" y2="13"/>'
-    },
-    {
-      kind: 'conversation',
-      label: 'Conversation',
-      icon: '<path d="M3 4h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-4l-3 3v-3H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/>'
-    },
-    {
-      kind: 'file-explorer',
-      label: 'Files',
-      icon: '<path d="M2 5V4a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v1"/><rect x="2" y="5" width="16" height="11" rx="1"/>'
-    },
-    {
-      kind: 'chat',
-      label: 'Chat',
-      icon: '<circle cx="10" cy="10" r="7.5"/><circle cx="6.5" cy="9.5" r="1"/><circle cx="10" cy="9.5" r="1"/><circle cx="13.5" cy="9.5" r="1"/>'
-    },
-    {
-      kind: 'tasks',
-      label: 'Tasks',
-      icon: '<rect x="3" y="3" width="5" height="5" rx="0.5"/><rect x="3" y="12" width="5" height="5" rx="0.5"/><line x1="11" y1="5.5" x2="17" y2="5.5"/><line x1="11" y1="14.5" x2="17" y2="14.5"/>'
-    },
-    {
-      kind: 'file-viewer',
-      label: 'File Viewer',
-      icon: '<path d="M5 2h8l4 4v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><polyline points="12 2 12 6 17 6"/><line x1="7" y1="10" x2="14" y2="10"/><line x1="7" y1="13" x2="12" y2="13"/>'
-    },
-    {
-      kind: 'git',
-      label: 'Git',
-      icon: '<circle cx="10" cy="4" r="2"/><circle cx="10" cy="16" r="2"/><circle cx="16" cy="10" r="2"/><line x1="10" y1="6" x2="10" y2="14"/><path d="M10 8c0 2 6 2 6 2"/>'
-    },
-    {
-      kind: 'settings',
-      label: 'Settings',
-      icon: '<circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2M4.2 4.2l1.4 1.4m8.8 8.8l1.4 1.4M2 10h2m12 0h2M4.2 15.8l1.4-1.4m8.8-8.8l1.4-1.4"/>'
-    }
-  ];
+  const options = SELECTABLE_KINDS;
 
   async function handleSelect(kind: PaneContentKind) {
-    // Resolve context from picker's source pane, falling back to current instance
     const workingDir = content.sourceWorkingDir ?? null;
-    // Find an instance in this directory for instance-bound pane kinds
-    const instanceId = (() => {
-      if (workingDir) {
-        for (const inst of $instances.values()) {
-          if (inst.working_dir === workingDir) return inst.id;
-        }
-      }
-      return $currentInstanceId;
-    })();
     if (kind === 'terminal') {
-      // Auto-create a shell instance using the configured shell command
       const result = await createInstance({
         command: $userSettings.shellCommand || 'bash',
         working_dir: workingDir ?? undefined
@@ -77,20 +28,111 @@
       }
       return;
     }
-    setPaneContent(paneId, defaultContentForKind(kind, instanceId, workingDir));
+    setPaneContent(paneId, defaultContentForKind(kind, workingDir));
   }
+
+  // -- Keyboard navigation --
+  let focusedIndex = $state(0);
+  let gridEl: HTMLElement | undefined = $state();
+
+  function handleKeydown(e: KeyboardEvent) {
+    const cols = columns;
+    const count = options.length;
+    let next = focusedIndex;
+
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      next = Math.min(focusedIndex + 1, count - 1);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      next = Math.max(focusedIndex - 1, 0);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      next = Math.min(focusedIndex + cols, count - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      next = Math.max(focusedIndex - cols, 0);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleSelect(options[focusedIndex].kind);
+      return;
+    } else if (e.key === 'Escape' && canClose) {
+      e.preventDefault();
+      closePane(paneId);
+      return;
+    }
+
+    if (next !== focusedIndex) {
+      focusedIndex = next;
+      // Move DOM focus to the button
+      const btns = gridEl?.querySelectorAll<HTMLButtonElement>('.kind-card');
+      btns?.[focusedIndex]?.focus();
+    }
+  }
+
+  // Auto-focus the grid on mount
+  $effect(() => {
+    if (gridEl) {
+      const first = gridEl.querySelector<HTMLButtonElement>('.kind-card');
+      first?.focus();
+    }
+  });
+
+  // -- Responsive columns via ResizeObserver --
+  let pickerEl: HTMLElement | undefined = $state();
+  let pickerWidth = $state(400);
+
+  $effect(() => {
+    if (!pickerEl) return;
+    const ro = new ResizeObserver(([entry]) => {
+      pickerWidth = entry.contentRect.width;
+    });
+    ro.observe(pickerEl);
+    return () => ro.disconnect();
+  });
+
+  // 2 columns above 260px, 1 column below
+  const columns = $derived(pickerWidth > 260 ? 2 : 1);
+  // Compact mode: hide descriptions, shrink padding
+  const compact = $derived(pickerWidth < 200);
 </script>
 
-<div class="picker">
-  <div class="picker-inner">
-    <h2 class="picker-title">Select Pane Type</h2>
-    <div class="kind-grid">
-      {#each options as opt}
-        <button class="kind-card" onclick={() => handleSelect(opt.kind)}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="picker" bind:this={pickerEl} onkeydown={handleKeydown}>
+  {#if canClose}
+    <button class="picker-close" onclick={() => closePane(paneId)} title="Close pane" aria-label="Close pane">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <line x1="4" y1="4" x2="12" y2="12" />
+        <line x1="12" y1="4" x2="4" y2="12" />
+      </svg>
+    </button>
+  {/if}
+  <div class="picker-inner" class:compact>
+    <div
+      class="kind-grid"
+      class:single-col={columns === 1}
+      bind:this={gridEl}
+      role="grid"
+      aria-label="Pane type selection"
+    >
+      {#each options as opt, i}
+        <button
+          class="kind-card"
+          class:focused={focusedIndex === i}
+          style="--i: {i}"
+          tabindex={focusedIndex === i ? 0 : -1}
+          onclick={() => handleSelect(opt.kind)}
+          onfocus={() => (focusedIndex = i)}
+          role="gridcell"
+          aria-label={opt.label}
+        >
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" class="kind-icon">
-            {@html opt.icon}
+            {@html opt.pickerIcon}
           </svg>
           <span class="kind-label">{opt.label}</span>
+          {#if !compact}
+            <span class="kind-desc">{opt.desc}</span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -100,10 +142,41 @@
 <style>
   .picker {
     display: flex;
-    align-items: center;
+    align-items: safe center;
     justify-content: center;
     flex: 1;
     min-height: 0;
+    overflow-y: auto;
+    position: relative;
+  }
+
+  .picker-close {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 2px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.1s ease;
+    z-index: 1;
+  }
+
+  .picker-close svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .picker-close:hover {
+    background: var(--status-red-tint);
+    color: var(--status-red);
   }
 
   .picker-inner {
@@ -111,18 +184,14 @@
     flex-direction: column;
     align-items: center;
     gap: 12px;
-    max-width: 320px;
+    max-width: 360px;
     width: 100%;
     padding: 24px;
   }
 
-  .picker-title {
-    margin: 0;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--amber-500);
+  .picker-inner.compact {
+    padding: 12px;
+    gap: 6px;
   }
 
   .kind-grid {
@@ -130,6 +199,11 @@
     grid-template-columns: 1fr 1fr;
     gap: 6px;
     width: 100%;
+    outline: none;
+  }
+
+  .kind-grid.single-col {
+    grid-template-columns: 1fr;
   }
 
   .kind-card {
@@ -137,35 +211,75 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 12px 8px;
+    gap: 4px;
+    padding: 12px 8px 10px;
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
     color: var(--text-secondary);
     font-family: inherit;
     cursor: pointer;
-    transition: all 0.1s ease;
+    outline: none;
+    transition:
+      border-color 0.1s ease,
+      background 0.1s ease,
+      box-shadow 0.1s ease;
+
+    /* Staggered entrance */
+    animation: card-in 0.12s ease-out both;
+    animation-delay: calc(var(--i) * 35ms);
   }
 
-  .kind-card:hover {
+  .compact .kind-card {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .kind-card:hover,
+  .kind-card.focused {
     border-color: var(--amber-600);
     background: var(--tint-hover);
+    box-shadow: 0 0 8px rgba(251, 146, 60, 0.08);
   }
 
-  .kind-card:hover .kind-icon {
+  .kind-card:hover .kind-icon,
+  .kind-card.focused .kind-icon {
     color: var(--amber-400);
+    filter: drop-shadow(0 0 3px var(--amber-glow));
   }
 
-  .kind-card:hover .kind-label {
+  .kind-card:hover .kind-label,
+  .kind-card.focused .kind-label {
     color: var(--amber-400);
+    text-shadow: var(--emphasis);
+  }
+
+  .kind-card:hover .kind-desc,
+  .kind-card.focused .kind-desc {
+    color: var(--text-secondary);
+  }
+
+  @keyframes card-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .kind-icon {
     width: 20px;
     height: 20px;
+    flex-shrink: 0;
     color: var(--text-muted);
-    transition: color 0.1s ease;
+    transition:
+      color 0.1s ease,
+      filter 0.1s ease;
   }
 
   .kind-label {
@@ -174,6 +288,21 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--text-secondary);
+    transition:
+      color 0.1s ease,
+      text-shadow 0.1s ease;
+  }
+
+  .kind-desc {
+    font-size: 9px;
+    letter-spacing: 0.03em;
+    color: var(--text-muted);
     transition: color 0.1s ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .kind-card {
+      animation: none;
+    }
   }
 </style>

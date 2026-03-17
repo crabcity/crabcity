@@ -2,7 +2,8 @@
   import type { Instance } from '$lib/types';
   import type { StateInfo } from '$lib/utils/instance-state';
   import { setCustomName, deleteInstance, selectInstance } from '$lib/stores/instances';
-  import { layoutState, focusPane, splitPane, getPaneInstanceId, defaultContentForKind } from '$lib/stores/layout';
+  import type { PaneContent } from '$lib/stores/layout';
+  import { layoutState, focusPane, splitPane, getPaneInstanceId } from '$lib/stores/layout';
 
   interface Props {
     instance: Instance;
@@ -77,8 +78,11 @@
 
   function handleOpenInSplit() {
     const focusedId = $layoutState.focusedPaneId;
-    const kind = instance.kind.type === 'Structured' ? 'conversation' : 'terminal';
-    splitPane(focusedId, 'vertical', defaultContentForKind(kind, instance.id, instance.working_dir ?? null));
+    const content: PaneContent =
+      instance.kind.type === 'Structured'
+        ? { kind: 'conversation', instanceId: instance.id, viewMode: 'structured' as const }
+        : { kind: 'terminal', instanceId: instance.id };
+    splitPane(focusedId, 'vertical', content);
     onclose();
   }
 

@@ -77,10 +77,11 @@
 <style>
   .picker {
     display: flex;
-    align-items: center;
+    align-items: safe center;
     justify-content: center;
     flex: 1;
     min-height: 0;
+    overflow-y: auto;
   }
 
   .picker-inner {

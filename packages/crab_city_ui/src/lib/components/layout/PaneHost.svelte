@@ -1,5 +1,6 @@
 <script lang="ts">
   import { layoutState, focusPane, paneCount, getPaneInstanceId } from '$lib/stores/layout';
+  import { INSTANCE_BOUND_KINDS } from '$lib/utils/pane-content';
   import PaneTerminal from './PaneTerminal.svelte';
   import PaneConversation from './PaneConversation.svelte';
   import PaneFileExplorer from './PaneFileExplorer.svelte';
@@ -22,12 +23,9 @@
   const pane = $derived($layoutState.panes.get(paneId) ?? null);
   const isFocused = $derived($layoutState.focusedPaneId === paneId);
 
-  // Pane kinds that show the instance picker when instanceId is null.
-  const PICKER_KINDS = new Set(['terminal', 'conversation']);
-
   const needsInstancePicker = $derived.by(() => {
     if (!pane) return false;
-    if (!PICKER_KINDS.has(pane.content.kind)) return false;
+    if (!INSTANCE_BOUND_KINDS.has(pane.content.kind)) return false;
     return !getPaneInstanceId(pane.content);
   });
 
@@ -39,7 +37,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="pane-host" class:focused={isFocused && $paneCount > 1} onclick={handleFocus}>
-  {#if pane}
+  {#if pane && pane.content.kind !== 'picker'}
     <PaneChrome {pane} />
   {/if}
 

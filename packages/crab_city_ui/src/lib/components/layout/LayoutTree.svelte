@@ -1,6 +1,7 @@
 <script module lang="ts">
   import type { LayoutNode as LN, PaneState as PS } from '$lib/stores/layout';
   import { getPaneInstanceId } from '$lib/stores/layout';
+  import { kindShortLabel } from '$lib/utils/pane-content';
   import type { Instance as Inst } from '$lib/types';
 
   function collectLeaves(node: LN): string[] {
@@ -23,16 +24,7 @@
       const filename = content.filePath.split('/').pop() ?? 'File';
       return filename.length > 12 ? filename.slice(0, 12) + '\u2026' : filename;
     }
-    const kindLabels: Record<string, string> = {
-      terminal: 'Terminal',
-      conversation: 'Convo',
-      'file-explorer': 'Files',
-      chat: 'Chat',
-      tasks: 'Tasks',
-      'file-viewer': 'Viewer',
-      git: 'Git'
-    };
-    return kindLabels[kind] ?? 'Pane';
+    return kindShortLabel(kind) ?? 'Pane';
   }
 
   function getMobileTabStatus(

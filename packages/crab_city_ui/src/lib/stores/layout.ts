@@ -26,7 +26,8 @@ import {
   getPaneInstanceId,
   getPaneWorkingDir,
   defaultContentForKind,
-  migratePaneContentV3toV4
+  migratePaneContentV3toV4,
+  PERSISTABLE_CONTENT_KINDS
 } from '$lib/utils/pane-content';
 import { projectHash, projectStorageKey, LAYOUT_META_KEY } from '$lib/utils/project-id';
 
@@ -428,17 +429,16 @@ export function splitPane(paneId: string, direction: 'horizontal' | 'vertical', 
 
 /**
  * Split the currently focused pane, placing `kind` content in the new pane.
- * Inherits the focused pane's instanceId and workingDir (or falls back to global current instance).
+ * Only workingDir context is carried forward — instance binding starts fresh.
  */
 export function splitFocusedPane(kind: PaneContentKind): void {
   const s = get(layoutState);
   const focusedId = s.focusedPaneId;
   const focusedContent = s.panes.get(focusedId)?.content ?? { kind: 'terminal', instanceId: null };
-  const instanceId = getPaneInstanceId(focusedContent) ?? get(currentInstanceId);
   const instMap = get(instances);
   const workingDir =
     getPaneWorkingDir(focusedContent, instMap) ?? instMap.get(get(currentInstanceId) ?? '')?.working_dir ?? null;
-  splitPane(focusedId, 'vertical', defaultContentForKind(kind, instanceId, workingDir));
+  splitPane(focusedId, 'vertical', defaultContentForKind(kind, workingDir));
 }
 
 /**
@@ -719,17 +719,8 @@ function updateSplitRatio(node: LayoutNode, splitId: string, ratio: number): Lay
 const LEGACY_STORAGE_KEY = 'crab_city_layout';
 const LAYOUT_SCHEMA_VERSION = 4;
 
-const VALID_CONTENT_KINDS: ReadonlySet<string> = new Set([
-  'landing',
-  'terminal',
-  'conversation',
-  'file-explorer',
-  'chat',
-  'tasks',
-  'file-viewer',
-  'git',
-  'settings'
-]);
+// Valid content kinds for persistence — derived from the registry (excludes transient 'picker')
+const VALID_CONTENT_KINDS = PERSISTABLE_CONTENT_KINDS;
 
 /** JSON-safe representation (Map → array of entries) */
 interface SerializedLayoutState {
