@@ -45,17 +45,25 @@ fn main() {
             setup_menu(app)?;
             setup_tray(app)?;
 
-            // Inject loading page into the blank webview and show window.
-            // Without frontendDist, the webview starts on about:blank.
             if let Some(window) = app.get_webview_window("main") {
-                inject_loading_page(&window);
-                let _ = window.show();
-            }
+                // In `cargo tauri dev`, the webview loads devUrl (Vite) before
+                // setup runs. Don't inject the loading page or navigate away —
+                // Vite proxies to the daemon and handles its own reconnection.
+                let has_dev_frontend = window
+                    .url()
+                    .map(|u| u.scheme() == "http" || u.scheme() == "https")
+                    .unwrap_or(false);
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                start_and_navigate(handle).await;
-            });
+                let _ = window.show();
+
+                if !has_dev_frontend {
+                    inject_loading_page(&window);
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        start_and_navigate(handle).await;
+                    });
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -322,12 +330,30 @@ async fn start_and_navigate(handle: tauri::AppHandle) {
     }
 }
 
-/// Write the loading page HTML into the webview via document.write().
-/// Uses string concatenation (not format!) to avoid escaping CSS braces.
+/// Inject the loading page into the webview via DOM manipulation.
+///
+/// Uses innerHTML + manual script execution instead of document.write(),
+/// which would clobber Tauri's injected IPC scripts (__TAURI_INTERNALS__).
 fn inject_loading_page(window: &tauri::WebviewWindow) {
-    let mut js = String::from("document.open();document.write(`");
+    // Parse out <style> and <body> content from the loading HTML, then inject
+    // via DOM APIs that preserve Tauri's existing script context.
+    let mut js = String::from(
+        "(function() {\
+         var parser = new DOMParser();\
+         var doc = parser.parseFromString(`",
+    );
     js.push_str(LOADING_HTML);
-    js.push_str("`);document.close();");
+    js.push_str(
+        "`, 'text/html');\
+         document.head.innerHTML = doc.head.innerHTML;\
+         document.body.innerHTML = doc.body.innerHTML;\
+         doc.querySelectorAll('script').forEach(function(s) {\
+           var ns = document.createElement('script');\
+           ns.textContent = s.textContent;\
+           document.body.appendChild(ns);\
+         });\
+         })();",
+    );
     let _ = window.eval(&js);
 }
 
