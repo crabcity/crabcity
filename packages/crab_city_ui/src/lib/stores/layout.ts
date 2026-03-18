@@ -22,6 +22,7 @@ import {
 } from './instances';
 import { addToast } from './toasts';
 import { updateUrl } from '$lib/utils/url';
+import { loadProjectOrder } from './projects';
 import {
   getPaneInstanceId,
   getPaneWorkingDir,
@@ -952,6 +953,8 @@ let _persistSetup = false;
 export function setupLayoutPersistence(): void {
   if (_persistSetup || !browser) return;
   _persistSetup = true;
+
+  loadProjectOrder();
 
   layoutState.subscribe((state) => {
     persistLayout(state);

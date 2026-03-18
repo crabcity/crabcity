@@ -1,6 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
-  import { projects, currentProject } from '$lib/stores/projects';
+  import { projects, currentProject, reorderProjects } from '$lib/stores/projects';
+  import { isGapValid } from '$lib/utils/project-order';
   import { switchProject } from '$lib/stores/layout';
   import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
   import { fullscreenView, openFullscreen, closeFullscreen } from '$lib/stores/fullscreen';
@@ -8,6 +9,41 @@
   import type { Project } from '$lib/stores/projects';
 
   let closeProjectTarget = $state<Project | null>(null);
+
+  // Drag-and-drop state — tracks insertion gap, not hovered item.
+  // For N items there are N+1 gaps (0=before first, N=after last).
+  let dragId = $state<string | null>(null);
+  let dropGap = $state<number | null>(null);
+
+  function handleDragStart(e: DragEvent, projectId: string) {
+    dragId = projectId;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
+
+  function handleDragOver(e: DragEvent, itemIndex: number) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const gap = e.clientY < rect.top + rect.height / 2 ? itemIndex : itemIndex + 1;
+    const dragIdx = $projects.findIndex((p) => p.id === dragId);
+    dropGap = isGapValid(dragIdx, gap) ? gap : null;
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    if (dragId && dropGap !== null) {
+      reorderProjects(dragId, dropGap);
+    }
+    dragId = null;
+    dropGap = null;
+  }
+
+  function handleDragEnd() {
+    dragId = null;
+    dropGap = null;
+  }
 
   async function handleLogout() {
     await logout();
@@ -42,7 +78,18 @@
   <nav class="rail-projects">
     {#each $projects as project, i (project.id)}
       {@const isActive = $currentProject?.id === project.id}
-      <div class="rail-project-slot" class:active={isActive}>
+      <div
+        class="rail-project-slot"
+        class:active={isActive}
+        class:drag-over={dropGap === i}
+        class:dragging={dragId === project.id}
+        role="listitem"
+        draggable="true"
+        ondragstart={(e) => handleDragStart(e, project.id)}
+        ondragover={(e) => handleDragOver(e, i)}
+        ondrop={handleDrop}
+        ondragend={handleDragEnd}
+      >
         <button
           class="rail-project"
           class:active={isActive}
@@ -65,6 +112,20 @@
         {/if}
       </div>
     {/each}
+    <!-- Drop zone fills remaining nav space for "move to end" -->
+    <div
+      class="rail-drop-end"
+      class:drag-over={dropGap === $projects.length}
+      role="listitem"
+      ondragover={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        if (!dragId) return;
+        const dragIdx = $projects.findIndex((p) => p.id === dragId);
+        dropGap = isGapValid(dragIdx, $projects.length) ? $projects.length : null;
+      }}
+      ondrop={handleDrop}
+    ></div>
   </nav>
 
   <!-- Bottom actions -->
@@ -169,6 +230,46 @@
     flex-shrink: 0;
     border-radius: 50%;
     transition: all 0.15s ease;
+  }
+
+  .rail-project-slot.dragging {
+    opacity: 0.3;
+  }
+
+  .rail-project-slot.drag-over {
+    position: relative;
+  }
+
+  .rail-project-slot.drag-over::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    background: var(--amber-500);
+    border-radius: 1px;
+  }
+
+  .rail-drop-end {
+    width: 100%;
+    flex: 1;
+    min-height: 6px;
+  }
+
+  .rail-drop-end.drag-over {
+    position: relative;
+  }
+
+  .rail-drop-end.drag-over::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    background: var(--amber-500);
+    border-radius: 1px;
   }
 
   .rail-project-slot.active {
