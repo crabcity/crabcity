@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { api, apiGet } from '$lib/utils/api';
-import { checkAuth } from '$lib/stores/auth';
+import { setAuthEnabled } from '$lib/stores/auth';
 
 // Re-export pure types and functions from the dependency-free utils module.
 // Tests import from server-config-utils directly; components import from here.
@@ -83,6 +83,9 @@ export async function fetchServerConfig(): Promise<void> {
       overrides: { ...resp.overrides },
       loading: false
     }));
+    // Auth-enabled is NOT written here. checkAuth() is the sole authoritative
+    // source for auth state — this module only does optimistic writes in
+    // applyConfig() for instant UI feedback before the server restarts.
   } catch (e) {
     serverConfigState.update((s) => ({
       ...s,
@@ -110,10 +113,6 @@ export function resetLocal(): void {
 export async function applyConfig(save: boolean): Promise<void> {
   const state = get(serverConfigState);
   if (!state.server) return;
-
-  // Track whether auth is changing — we'll need to re-check after restart
-  const authChanging =
-    state.local.auth_enabled !== state.server.auth_enabled || state.local.https !== state.server.https;
 
   // Build diff-only patch body
   const body: Record<string, unknown> = { save };
@@ -151,16 +150,14 @@ export async function applyConfig(save: boolean): Promise<void> {
       statusMessage: save ? 'Saved and applied' : 'Applied (ephemeral)'
     }));
 
-    // Re-fetch config and re-check auth after server restart.
-    // Auth changes (enabling/disabling auth or HTTPS) require a full
-    // re-check so the layout auth guard can redirect to /register
-    // (first admin setup) or /login as needed.
-    setTimeout(async () => {
-      await fetchServerConfig();
-      if (authChanging) {
-        await checkAuth();
-      }
-    }, 600);
+    // Eagerly update auth store so the UI reflects the change immediately
+    // (AdminTab, auth guard) without waiting for the WS reconnect re-sync.
+    if (body.auth_enabled !== undefined) {
+      setAuthEnabled(body.auth_enabled as boolean);
+    }
+
+    // Authoritative re-sync happens automatically when the WS reconnects
+    // after server restart (see websocket.ts onopen handler).
   } catch (e) {
     serverConfigState.update((s) => ({
       ...s,

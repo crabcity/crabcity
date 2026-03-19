@@ -16,6 +16,8 @@ import { recordWebSocketMessage, recordWebSocketReconnect } from './metrics';
 import { setLoadingHistory } from './chat';
 import { createMessageHandler, type MuxClientMessage, type MuxServerMessage } from './ws-handlers';
 import { fetchServerSettings } from './settings';
+import { fetchServerConfig } from './server-config';
+import { checkAuth } from './auth';
 
 // =============================================================================
 // Connection State (formerly connection.ts)
@@ -394,8 +396,14 @@ function connectMultiplexed(onConnected?: () => void): void {
       sendFocus(pendingFocus);
     }
 
-    // Fetch server settings on connect (server wins on conflict)
+    // Re-sync all server state on (re)connect. These three fetches are
+    // independent and convergent: each writes to its own store, and
+    // checkAuth() is the sole authority for auth-enabled state (server-config
+    // only does optimistic writes during applyConfig). Order doesn't matter;
+    // all three settling in any order produces the same final state.
     fetchServerSettings();
+    fetchServerConfig();
+    checkAuth();
 
     onConnected?.();
   };

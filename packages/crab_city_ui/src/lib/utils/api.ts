@@ -5,7 +5,7 @@
 
 import { get } from 'svelte/store';
 import { base } from '$app/paths';
-import { csrfToken, currentUser, authEnabled } from '$lib/stores/auth';
+import { csrfToken, authEnabled, clearSession } from '$lib/stores/auth';
 
 const MUTATION_METHODS = ['POST', 'PUT', 'DELETE', 'PATCH'];
 
@@ -19,8 +19,7 @@ function handleUnauthorized(): void {
   const path = window.location.pathname;
   if (path === `${base}/login` || path === `${base}/register`) return;
 
-  currentUser.set(null);
-  csrfToken.set(null);
+  clearSession();
   window.location.href = `${base}/login`;
 }
 

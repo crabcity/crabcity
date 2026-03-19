@@ -462,9 +462,35 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
     // CLI --host/--port override everything (applied after figment + runtime overrides)
     let cli_host = args.host.clone();
     let cli_port = args.port;
-    // Track the actual host/port after first bind so restarts reuse the same address
-    let mut bound_port: Option<u16> = None;
-    let mut bound_host: Option<String> = None;
+
+    /// Tracks the server's TCP bind state across restart iterations.
+    ///
+    /// When the server is configured with port 0, the OS picks an ephemeral port.
+    /// `BindState` remembers both the *requested* address and the *actual* bound
+    /// address so that:
+    /// - Ephemeral ports survive config-reload restarts (no change in request → keep same port)
+    /// - Intentional port/host changes are always honored (change in request → rebind)
+    struct BindState {
+        /// What was requested last time (effective_host, effective_port)
+        requested: (String, u16),
+        /// What the OS actually gave us (may differ when requested port was 0)
+        actual_port: u16,
+    }
+
+    impl BindState {
+        /// Determine the port to bind on this iteration.
+        /// Returns `actual_port` (sticky) only if the request hasn't changed;
+        /// otherwise returns the new `effective_port` to force a rebind.
+        fn resolve_port(&self, effective_host: &str, effective_port: u16) -> u16 {
+            if self.requested.0 == effective_host && self.requested.1 == effective_port {
+                self.actual_port // Same request → reuse OS-assigned port
+            } else {
+                effective_port // Request changed → rebind
+            }
+        }
+    }
+
+    let mut bind_state: Option<BindState> = None;
 
     // Clone references needed for shutdown cleanup
     let persistence_for_shutdown = persistence_service.clone();
@@ -502,12 +528,6 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         }
 
         let server_config = Arc::new(ServerConfig::from_file(&fc.server));
-
-        // If effective host changed from last iteration, force rebind
-        let host_changed = bound_host.as_ref().is_some_and(|h| h != effective_host);
-        if host_changed {
-            bound_port = None;
-        }
 
         if auth_config_raw.enabled {
             info!(
@@ -749,12 +769,26 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
             info!("Embedded UI enabled - serving SPA at /");
         }
 
-        let port = bound_port.unwrap_or(effective_port);
+        let port = match &bind_state {
+            Some(bs) => {
+                let resolved = bs.resolve_port(effective_host, effective_port);
+                if resolved != bs.actual_port {
+                    info!(
+                        "Bind address changed: was :{}, now requesting :{}",
+                        bs.actual_port, resolved
+                    );
+                }
+                resolved
+            }
+            None => effective_port, // First iteration
+        };
         let addr = format!("{}:{}", effective_host, port).parse::<SocketAddr>()?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_addr = listener.local_addr()?;
-        bound_port = Some(actual_addr.port());
-        bound_host = Some(effective_host.to_string());
+        bind_state = Some(BindState {
+            requested: (effective_host.to_string(), effective_port),
+            actual_port: actual_addr.port(),
+        });
 
         // Write daemon PID and port files so clients can discover us
         let pid = std::process::id();

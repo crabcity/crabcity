@@ -1,7 +1,8 @@
 /**
  * Authentication Store
  *
- * Manages current user state, CSRF token, and auth status.
+ * Single source of truth for auth state. All fields live in one writable;
+ * read-only derived accessors preserve the same $store API for consumers.
  */
 
 import { writable, derived } from 'svelte/store';
@@ -16,6 +17,14 @@ export interface AuthUser {
   username: string;
   display_name: string;
   is_admin: boolean;
+}
+
+interface AuthState {
+  user: AuthUser | null;
+  csrfToken: string | null;
+  enabled: boolean;
+  needsSetup: boolean;
+  checked: boolean;
 }
 
 interface MeResponse {
@@ -34,13 +43,43 @@ interface AuthResponse {
 // Stores
 // =============================================================================
 
-export const currentUser = writable<AuthUser | null>(null);
-export const csrfToken = writable<string | null>(null);
-export const authEnabled = writable<boolean>(false);
-export const needsSetup = writable<boolean>(false);
-export const authChecked = writable<boolean>(false);
+/**
+ * Private single source of truth. Mixes session fields (user, csrfToken) with
+ * server config (enabled, needsSetup) because they arrive together from
+ * /api/auth/me and must transition atomically (e.g. enabling auth clears the
+ * session in the same tick). checkAuth() is the sole authoritative writer for
+ * all fields; setAuthEnabled() exists only for optimistic UI in applyConfig().
+ */
+const authState = writable<AuthState>({
+  user: null,
+  csrfToken: null,
+  enabled: false,
+  needsSetup: false,
+  checked: false
+});
 
-export const isAuthenticated = derived(currentUser, ($user) => $user !== null);
+/** Read-only derived accessors — same $store syntax, no consumer changes */
+export const currentUser = derived(authState, ($s) => $s.user);
+export const csrfToken = derived(authState, ($s) => $s.csrfToken);
+export const authEnabled = derived(authState, ($s) => $s.enabled);
+export const needsSetup = derived(authState, ($s) => $s.needsSetup);
+export const authChecked = derived(authState, ($s) => $s.checked);
+
+export const isAuthenticated = derived(authState, ($s) => $s.user !== null);
+
+// =============================================================================
+// Mutation Functions
+// =============================================================================
+
+/** Update auth-enabled flag from server-config or other external source. */
+export function setAuthEnabled(enabled: boolean): void {
+  authState.update((s) => ({ ...s, enabled }));
+}
+
+/** Clear user session (on 401, logout, etc.) */
+export function clearSession(): void {
+  authState.update((s) => ({ ...s, user: null, csrfToken: null }));
+}
 
 // =============================================================================
 // Functions
@@ -63,18 +102,14 @@ export async function checkAuth(): Promise<{
 
     const data: MeResponse = await response.json();
 
-    authEnabled.set(data.auth_enabled);
-    needsSetup.set(data.needs_setup);
-
-    if (data.user) {
-      currentUser.set(data.user);
-      csrfToken.set(data.csrf_token ?? null);
-    } else {
-      currentUser.set(null);
-      csrfToken.set(null);
-    }
-
-    authChecked.set(true);
+    authState.update((s) => ({
+      ...s,
+      enabled: data.auth_enabled,
+      needsSetup: data.needs_setup,
+      user: data.user ?? null,
+      csrfToken: data.user ? (data.csrf_token ?? null) : null,
+      checked: true
+    }));
 
     return {
       authenticated: !!data.user,
@@ -83,7 +118,7 @@ export async function checkAuth(): Promise<{
     };
   } catch (error) {
     console.error('Auth check failed:', error);
-    authChecked.set(true);
+    authState.update((s) => ({ ...s, checked: true }));
     return { authenticated: false, needsSetup: false, authEnabled: false };
   }
 }
@@ -106,8 +141,7 @@ export async function login(username: string, password: string): Promise<{ ok: b
     }
 
     const data: AuthResponse = await response.json();
-    currentUser.set(data.user);
-    csrfToken.set(data.csrf_token);
+    authState.update((s) => ({ ...s, user: data.user, csrfToken: data.csrf_token }));
     return { ok: true };
   } catch (error) {
     return { ok: false, error: 'Network error' };
@@ -143,8 +177,7 @@ export async function register(
     }
 
     const data: AuthResponse = await response.json();
-    currentUser.set(data.user);
-    csrfToken.set(data.csrf_token);
+    authState.update((s) => ({ ...s, user: data.user, csrfToken: data.csrf_token }));
     return { ok: true };
   } catch (error) {
     return { ok: false, error: 'Network error' };
@@ -184,6 +217,5 @@ export async function logout(): Promise<void> {
   } catch {
     // Ignore errors - we'll clear state anyway
   }
-  currentUser.set(null);
-  csrfToken.set(null);
+  clearSession();
 }
