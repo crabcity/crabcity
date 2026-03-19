@@ -683,6 +683,14 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
                 "/api/admin/invites/{token}",
                 delete(handlers::revoke_server_invite_handler),
             )
+            .route(
+                "/api/admin/users",
+                get(handlers::list_users_handler).post(handlers::create_user_handler),
+            )
+            .route(
+                "/api/admin/users/{id}",
+                patch(handlers::update_user_handler).delete(handlers::delete_user_handler),
+            )
             // Browse endpoints (not instance-scoped — for project creation)
             .route("/api/browse", get(handlers::browse_directory))
             .route("/api/browse/worktree", post(handlers::create_worktree))
@@ -703,13 +711,13 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         // Merge auth routes
         app = app.merge(auth::auth_routes().with_state(auth_state.clone()));
 
-        // Apply auth middleware if enabled
-        if auth_config.enabled {
-            app = app.layer(axum::middleware::from_fn_with_state(
-                auth_state,
-                auth::auth_middleware,
-            ));
-        }
+        // Always apply auth middleware. When auth is disabled, the middleware
+        // injects a synthetic admin for loopback connections so that admin
+        // endpoints (invites, config) work locally without login.
+        app = app.layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            auth::auth_middleware,
+        ));
 
         // Spawn periodic expired session cleanup (once, on whichever iteration auth is first enabled)
         if !cleanup_spawned && auth_config.enabled {

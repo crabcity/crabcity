@@ -430,6 +430,108 @@ impl ConversationRepository {
         Ok(())
     }
 
+    // =========================================================================
+    // User Admin Operations
+    // =========================================================================
+
+    pub async fn list_users(&self) -> Result<Vec<User>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, username, display_name, password_hash, is_admin, is_disabled, created_at, updated_at
+            FROM users ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| User {
+                id: r.get("id"),
+                username: r.get("username"),
+                display_name: r.get("display_name"),
+                password_hash: r.get("password_hash"),
+                is_admin: r.get::<i32, _>("is_admin") != 0,
+                is_disabled: r.get::<i32, _>("is_disabled") != 0,
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect())
+    }
+
+    /// Count non-disabled admin users.
+    pub async fn count_active_admins(&self) -> Result<i64> {
+        let row =
+            sqlx::query("SELECT COUNT(*) as cnt FROM users WHERE is_admin = 1 AND is_disabled = 0")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.get("cnt"))
+    }
+
+    pub async fn set_user_admin(&self, user_id: &str, is_admin: bool) -> Result<bool> {
+        let result =
+            sqlx::query("UPDATE users SET is_admin = ?, updated_at = unixepoch() WHERE id = ?")
+                .bind(is_admin)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_user_disabled(&self, user_id: &str, is_disabled: bool) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        let result =
+            sqlx::query("UPDATE users SET is_disabled = ?, updated_at = unixepoch() WHERE id = ?")
+                .bind(is_disabled)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+
+        // Invalidate all sessions when disabling a user
+        if is_disabled {
+            sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn update_user_display_name(
+        &self,
+        user_id: &str,
+        display_name: &str,
+    ) -> Result<bool> {
+        let result =
+            sqlx::query("UPDATE users SET display_name = ?, updated_at = unixepoch() WHERE id = ?")
+                .bind(display_name)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_user(&self, user_id: &str) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
+        // Delete sessions first
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn revoke_server_invite(&self, token: &str) -> Result<bool> {
         let result =
             sqlx::query("UPDATE server_invites SET revoked = 1 WHERE token = ? AND revoked = 0")
@@ -783,6 +885,55 @@ mod tests {
             .unwrap();
         assert_eq!(inv.acceptors.len(), 1);
         assert_eq!(inv.acceptors[0].user_id, "new-user");
+    }
+
+    #[tokio::test]
+    async fn count_active_admins_empty() {
+        let repo = test_helpers::test_repository().await;
+        assert_eq!(repo.count_active_admins().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn count_active_admins_excludes_disabled() {
+        let repo = test_helpers::test_repository().await;
+
+        let mut admin1 = make_user("u-1", "admin1");
+        admin1.is_admin = true;
+        repo.create_user(&admin1).await.unwrap();
+
+        let mut admin2 = make_user("u-2", "admin2");
+        admin2.is_admin = true;
+        repo.create_user(&admin2).await.unwrap();
+
+        // Non-admin
+        repo.create_user(&make_user("u-3", "regular"))
+            .await
+            .unwrap();
+
+        assert_eq!(repo.count_active_admins().await.unwrap(), 2);
+
+        // Disable one admin
+        repo.set_user_disabled("u-2", true).await.unwrap();
+        assert_eq!(repo.count_active_admins().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn count_active_admins_excludes_non_admins() {
+        let repo = test_helpers::test_repository().await;
+
+        let mut admin = make_user("u-1", "admin");
+        admin.is_admin = true;
+        repo.create_user(&admin).await.unwrap();
+
+        repo.create_user(&make_user("u-2", "regular"))
+            .await
+            .unwrap();
+
+        assert_eq!(repo.count_active_admins().await.unwrap(), 1);
+
+        // Demote the admin
+        repo.set_user_admin("u-1", false).await.unwrap();
+        assert_eq!(repo.count_active_admins().await.unwrap(), 0);
     }
 
     #[tokio::test]

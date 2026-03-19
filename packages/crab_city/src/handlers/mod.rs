@@ -11,9 +11,9 @@ pub mod websocket;
 
 // Re-export all handlers for easy route registration
 pub use admin::{
-    create_server_invite_handler, get_config_handler, get_database_stats,
-    list_server_invites_handler, patch_config_handler, restart_handler,
-    revoke_server_invite_handler, trigger_import,
+    create_server_invite_handler, create_user_handler, delete_user_handler, get_config_handler,
+    get_database_stats, list_server_invites_handler, list_users_handler, patch_config_handler,
+    restart_handler, revoke_server_invite_handler, trigger_import, update_user_handler,
 };
 pub use browse::{browse_directory, create_directory, create_worktree, git_detailed_info};
 pub use conversations::{

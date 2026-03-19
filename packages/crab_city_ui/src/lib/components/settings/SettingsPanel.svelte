@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { userSettings, updateSetting, toggleTheme, DEFAULT_SETTINGS, type UserSettings } from '$lib/stores/settings';
-  import { connectionStatus } from '$lib/stores/websocket';
-  import { requestNotificationPermission } from '$lib/stores/inbox';
+  import { onMount } from 'svelte';
+  import { currentUser, authEnabled } from '$lib/stores/auth';
   import FullscreenHeader from '../FullscreenHeader.svelte';
+  import SettingsTabBar from './SettingsTabBar.svelte';
+  import PreferencesTab from './PreferencesTab.svelte';
+  import AccountTab from './AccountTab.svelte';
+  import ServerConfigTab from './ServerConfigTab.svelte';
+  import AdminTab from './AdminTab.svelte';
 
   interface Props {
     embedded?: boolean;
@@ -10,208 +14,87 @@
   }
 
   let { embedded = false, onback }: Props = $props();
-  let notificationDenied = $state(
-    typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'denied'
+
+  let activeTab = $state('preferences');
+  let layout = $state<'tabs' | 'columns'>('tabs');
+  let panelEl = $state<HTMLDivElement | null>(null);
+
+  const COLUMNS_THRESHOLD = 700;
+
+  // When auth is disabled, the user is effectively a local admin (loopback bypass).
+  let isAdmin = $derived($currentUser?.is_admin || !$authEnabled);
+
+  interface TabDef {
+    id: string;
+    label: string;
+    requiresAuth?: boolean;
+    requiresAdmin?: boolean;
+  }
+
+  const allTabs: TabDef[] = [
+    { id: 'preferences', label: 'Preferences' },
+    { id: 'account', label: 'Account', requiresAuth: true },
+    { id: 'server', label: 'Server', requiresAdmin: true },
+    { id: 'admin', label: 'Admin', requiresAdmin: true },
+  ];
+
+  let visibleTabs = $derived(
+    allTabs.filter((tab) => {
+      if (tab.requiresAdmin) return isAdmin;
+      if (tab.requiresAuth) return !!$currentUser;
+      return true;
+    })
   );
 
-  function handleThemeToggle() {
-    toggleTheme();
-  }
-
-  function handleDiffEngineChange(e: Event) {
-    const value = (e.target as HTMLSelectElement).value as UserSettings['diffEngine'];
-    updateSetting('diffEngine', value);
-  }
-
-  function handleDefaultCommandChange(e: Event) {
-    const value = (e.target as HTMLInputElement).value;
-    updateSetting('defaultCommand', value);
-  }
-
-  function handleShellCommandChange(e: Event) {
-    const value = (e.target as HTMLInputElement).value;
-    updateSetting('shellCommand', value);
-  }
-
-  function handleFontSizeChange(e: Event) {
-    const value = Number((e.target as HTMLInputElement).value);
-    updateSetting('terminalFontSize', value);
-  }
-
-  function handleFontFamilyChange(e: Event) {
-    const value = (e.target as HTMLInputElement).value;
-    updateSetting('terminalFontFamily', value);
-  }
-
-  async function handleNotificationsToggle() {
-    const enabling = !$userSettings.showNotifications;
-    if (enabling) {
-      // Request permission on user gesture — Chrome requires this
-      const result = await requestNotificationPermission();
-      if (result === 'denied') {
-        notificationDenied = true;
-        return; // Don't enable the setting if permission was denied
-      }
-    }
-    updateSetting('showNotifications', enabling);
-  }
+  onMount(() => {
+    if (!panelEl) return;
+    const ro = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      layout = width >= COLUMNS_THRESHOLD ? 'columns' : 'tabs';
+    });
+    ro.observe(panelEl);
+    return () => ro.disconnect();
+  });
 </script>
 
-<div class="settings-panel" class:embedded>
+<div class="settings-panel" class:embedded bind:this={panelEl}>
   {#if onback}
     <FullscreenHeader title="Settings" onclose={onback} />
   {/if}
-  <div class="settings-scroll">
-    {#if !onback}
-      <div class="settings-header">
-        <h1 class="settings-title">SETTINGS</h1>
+
+  {#if layout === 'tabs'}
+    <SettingsTabBar tabs={visibleTabs} {activeTab} onchange={(id) => (activeTab = id)} />
+    <div class="settings-scroll">
+      {#if activeTab === 'preferences'}
+        <PreferencesTab />
+      {:else if activeTab === 'account'}
+        <AccountTab />
+      {:else if activeTab === 'server'}
+        <ServerConfigTab onTabChange={(id) => (activeTab = id)} />
+      {:else if activeTab === 'admin'}
+        <AdminTab />
+      {/if}
+    </div>
+  {:else}
+    <div class="columns-scroll">
+      <div class="columns-grid">
+        {#each visibleTabs as tab (tab.id)}
+          <div class="settings-column">
+            <h2 class="column-header">{tab.label}</h2>
+            {#if tab.id === 'preferences'}
+              <PreferencesTab />
+            {:else if tab.id === 'account'}
+              <AccountTab />
+            {:else if tab.id === 'server'}
+              <ServerConfigTab onTabChange={(id) => (activeTab = id)} />
+            {:else if tab.id === 'admin'}
+              <AdminTab />
+            {/if}
+          </div>
+        {/each}
       </div>
-    {/if}
-
-    <!-- Appearance -->
-    <section class="settings-section">
-      <h2 class="section-header">APPEARANCE</h2>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Theme</span>
-          <span class="setting-desc">Visual style for the interface</span>
-        </div>
-        <button
-          class="toggle-btn"
-          class:active={$userSettings.theme === 'analog'}
-          onclick={handleThemeToggle}
-          aria-label="Toggle theme"
-        >
-          <span class="toggle-option" class:selected={$userSettings.theme === 'phosphor'}>Phosphor</span>
-          <span class="toggle-divider">/</span>
-          <span class="toggle-option" class:selected={$userSettings.theme === 'analog'}>Analog</span>
-        </button>
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="font-size">Terminal Font Size</label>
-          <span class="setting-desc">{$userSettings.terminalFontSize}px</span>
-        </div>
-        <input
-          id="font-size"
-          type="range"
-          min="12"
-          max="24"
-          step="1"
-          value={$userSettings.terminalFontSize}
-          oninput={handleFontSizeChange}
-          class="range-input"
-        />
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="font-family">Terminal Font</label>
-          <span class="setting-desc">CSS font-family stack</span>
-        </div>
-        <input
-          id="font-family"
-          type="text"
-          class="setting-input font-family-input"
-          value={$userSettings.terminalFontFamily}
-          onchange={handleFontFamilyChange}
-          placeholder={DEFAULT_SETTINGS.terminalFontFamily}
-        />
-      </div>
-    </section>
-
-    <!-- Editor -->
-    <section class="settings-section">
-      <h2 class="section-header">EDITOR</h2>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="diff-engine">Diff Engine</label>
-          <span class="setting-desc">Algorithm for displaying code diffs</span>
-        </div>
-        <select
-          id="diff-engine"
-          class="setting-select"
-          value={$userSettings.diffEngine}
-          onchange={handleDiffEngineChange}
-        >
-          <option value="standard">Standard</option>
-          <option value="patience">Patience</option>
-          <option value="structural">Structural</option>
-        </select>
-      </div>
-    </section>
-
-    <!-- Terminal -->
-    <section class="settings-section">
-      <h2 class="section-header">TERMINAL</h2>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="default-command">Default Command</label>
-          <span class="setting-desc">Command used for new Claude instances</span>
-        </div>
-        <input
-          id="default-command"
-          type="text"
-          class="setting-input"
-          value={$userSettings.defaultCommand}
-          onchange={handleDefaultCommandChange}
-          placeholder={DEFAULT_SETTINGS.defaultCommand}
-        />
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="shell-command">Shell Command</label>
-          <span class="setting-desc">Command used for new terminal panes</span>
-        </div>
-        <input
-          id="shell-command"
-          type="text"
-          class="setting-input"
-          value={$userSettings.shellCommand}
-          onchange={handleShellCommandChange}
-          placeholder={DEFAULT_SETTINGS.shellCommand}
-        />
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Notifications</span>
-          <span class="setting-desc"
-            >{notificationDenied
-              ? 'Blocked by browser — reset in site settings'
-              : 'Browser alerts when instances are ready'}</span
-          >
-        </div>
-        <button
-          class="indicator-btn"
-          class:on={$userSettings.showNotifications && !notificationDenied}
-          disabled={notificationDenied}
-          onclick={handleNotificationsToggle}
-          aria-label="Toggle notifications"
-        >
-          <span class="indicator-dot"></span>
-          <span class="indicator-label"
-            >{notificationDenied ? 'BLOCKED' : $userSettings.showNotifications ? 'ON' : 'OFF'}</span
-          >
-        </button>
-      </div>
-    </section>
-
-    <!-- About -->
-    <section class="settings-section">
-      <h2 class="section-header">ABOUT</h2>
-
-      <div class="about-row">
-        <span class="about-key">Connection</span>
-        <span class="about-value status-{$connectionStatus}">{$connectionStatus}</span>
-      </div>
-    </section>
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -227,6 +110,8 @@
   .settings-panel.embedded {
     border: none;
   }
+
+  /* --- Tab mode (narrow) --- */
 
   .settings-scroll {
     flex: 1;
@@ -244,264 +129,44 @@
     border-radius: 2px;
   }
 
-  .settings-header {
+  /* --- Column mode (wide) --- */
+
+  .columns-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 24px 24px 24px;
+  }
+
+  .columns-scroll::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .columns-scroll::-webkit-scrollbar-thumb {
+    background: var(--surface-border);
+    border-radius: 2px;
+  }
+
+  .columns-grid {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 32px;
+    align-items: flex-start;
   }
 
-  .settings-title {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.15em;
-    color: var(--text-primary);
-    margin: 0;
+  .settings-column {
+    flex: 1;
+    min-width: 260px;
+    max-width: 420px;
   }
 
-  .settings-section {
-    margin-bottom: 24px;
-  }
-
-  .section-header {
-    font-size: 10px;
+  .column-header {
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--amber-500);
-    margin: 0 0 12px 0;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--surface-border);
-  }
-
-  .setting-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 0;
-    gap: 16px;
-  }
-
-  .setting-info {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .setting-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    letter-spacing: 0.03em;
-  }
-
-  .setting-desc {
-    font-size: 10px;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
-  }
-
-  /* Theme toggle button */
-  .toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--surface-700);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    transition: border-color 0.15s ease;
-  }
-
-  .toggle-btn:hover {
-    border-color: var(--amber-600);
-  }
-
-  .toggle-option {
-    color: var(--text-muted);
-    transition: color 0.15s ease;
-  }
-
-  .toggle-option.selected {
-    color: var(--amber-400);
-    font-weight: 700;
-  }
-
-  .toggle-divider {
-    color: var(--text-muted);
-    opacity: 0.3;
-  }
-
-  /* Range slider */
-  .range-input {
-    width: 100px;
-    height: 4px;
-    appearance: none;
-    -webkit-appearance: none;
-    background: var(--surface-600);
-    border-radius: 2px;
-    outline: none;
-    cursor: pointer;
-  }
-
-  .range-input::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--amber-500);
-    border: none;
-    cursor: pointer;
-  }
-
-  .range-input::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--amber-500);
-    border: none;
-    cursor: pointer;
-  }
-
-  /* Select */
-  .setting-select {
-    font-size: 11px;
-    font-weight: 600;
-    font-family: inherit;
-    color: var(--text-secondary);
-    background: var(--surface-700);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    outline: none;
-  }
-
-  .setting-select:hover {
-    border-color: var(--amber-600);
-  }
-
-  .setting-select:focus {
-    border-color: var(--amber-500);
-  }
-
-  .setting-select option {
-    background: var(--surface-600);
+    text-transform: uppercase;
     color: var(--text-primary);
-  }
-
-  /* Text input */
-  .setting-input {
-    font-size: 11px;
-    font-family: inherit;
-    color: var(--text-secondary);
-    background: var(--surface-700);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    width: 140px;
-    outline: none;
-  }
-
-  .setting-input:hover {
-    border-color: var(--amber-600);
-  }
-
-  .setting-input:focus {
-    border-color: var(--amber-500);
-    color: var(--text-primary);
-  }
-
-  .setting-input::placeholder {
-    color: var(--text-muted);
-    opacity: 0.5;
-  }
-
-  .setting-input.font-family-input {
-    width: 220px;
-    font-size: 10px;
-  }
-
-  /* Indicator toggle (ON/OFF) */
-  .indicator-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--surface-700);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    font-family: inherit;
-    transition: border-color 0.15s ease;
-  }
-
-  .indicator-btn:hover {
-    border-color: var(--amber-600);
-  }
-
-  .indicator-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    opacity: 0.3;
-    transition: all 0.15s ease;
-  }
-
-  .indicator-btn.on .indicator-dot {
-    background: var(--amber-500);
-    opacity: 1;
-    box-shadow: 0 0 4px var(--amber-glow);
-  }
-
-  .indicator-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-  }
-
-  .indicator-btn.on .indicator-label {
-    color: var(--amber-400);
-  }
-
-  /* About section */
-  .about-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 0;
-  }
-
-  .about-key {
-    font-size: 11px;
-    color: var(--text-muted);
-    letter-spacing: 0.03em;
-  }
-
-  .about-value {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    letter-spacing: 0.03em;
-  }
-
-  .about-value.status-connected {
-    color: var(--status-green);
-  }
-
-  .about-value.status-error,
-  .about-value.status-server_gone {
-    color: var(--status-red);
-  }
-
-  .about-value.status-reconnecting,
-  .about-value.status-connecting {
-    color: var(--amber-400);
+    margin: 0 0 16px 0;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--amber-500);
   }
 </style>

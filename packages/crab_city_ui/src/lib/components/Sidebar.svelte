@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { base } from '$app/paths';
   import { projects, currentProject, reorderProjects } from '$lib/stores/projects';
   import { isGapValid } from '$lib/utils/project-order';
   import { switchProject } from '$lib/stores/layout';
-  import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
+  import { currentUser, isAuthenticated } from '$lib/stores/auth';
   import { fullscreenView, openFullscreen, closeFullscreen } from '$lib/stores/fullscreen';
   import CloseProjectModal from './CloseProjectModal.svelte';
   import type { Project } from '$lib/stores/projects';
@@ -43,11 +42,6 @@
   function handleDragEnd() {
     dragId = null;
     dropGap = null;
-  }
-
-  async function handleLogout() {
-    await logout();
-    window.location.href = `${base}/login`;
   }
 
   function handleSelectProject(workingDir: string) {
@@ -172,8 +166,8 @@
     {#if $isAuthenticated && $currentUser}
       <button
         class="rail-btn user-btn"
-        title="{$currentUser.display_name} — click to log out"
-        onclick={handleLogout}
+        title="{$currentUser.display_name} — Account"
+        onclick={() => ($fullscreenView === 'settings' ? closeFullscreen() : openFullscreen('settings'))}
         aria-label="User: {$currentUser.display_name}"
       >
         <span class="user-initial">{$currentUser.display_name.charAt(0).toUpperCase()}</span>

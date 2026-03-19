@@ -171,6 +171,8 @@ ts_project(
         "src/lib/utils/project-id.ts",
         "src/lib/utils/project-order.test.ts",
         "src/lib/utils/project-order.ts",
+        "src/lib/utils/server-config-utils.test.ts",
+        "src/lib/utils/server-config-utils.ts",
         "src/lib/utils/tool-registry.test.ts",
         "src/lib/utils/tool-registry.ts",
         "src/lib/utils/virtualList.test.ts",
