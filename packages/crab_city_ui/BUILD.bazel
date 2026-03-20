@@ -14,14 +14,32 @@ exports_files([
 
 npm_link_all_packages(name = "node_modules")
 
+# Inner prettier binary — not used directly, wrapped by :prettier below.
 prettier_bin.prettier_binary(
-    name = "prettier",
+    name = "prettier_inner",
+    data = [
+        ":node_modules/prettier-plugin-svelte",
+    ],
     env = {"BAZEL_BINDIR": "."},
     fixed_args = [
-        "--plugin=./packages/crab_city_ui/node_modules/prettier-plugin-svelte/plugin.js",
         "--log-level=warn",
     ],
+)
+
+# Wrapper that resolves the prettier-plugin-svelte path from runfiles and
+# passes it as an absolute --plugin path. Prettier 3 uses ESM import() for
+# plugin resolution which only searches node_modules up from the calling
+# module — it ignores NODE_PATH and can't find Bazel-managed dependencies.
+# Resolving to an absolute file path bypasses ESM resolution entirely.
+sh_binary(
+    name = "prettier",
+    srcs = ["prettier_wrapper.sh"],
+    data = [
+        ":node_modules/prettier-plugin-svelte",
+        ":prettier_inner",
+    ],
     visibility = ["//tools/format:__pkg__"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
 )
 
 # Sources
