@@ -18,7 +18,7 @@ prettier_bin.prettier_binary(
     name = "prettier",
     env = {"BAZEL_BINDIR": "."},
     fixed_args = [
-        "--plugin=packages/crab_city_ui/node_modules/prettier-plugin-svelte/plugin.js",
+        "--plugin=./packages/crab_city_ui/node_modules/prettier-plugin-svelte/plugin.js",
         "--log-level=warn",
     ],
     visibility = ["//tools/format:__pkg__"],
