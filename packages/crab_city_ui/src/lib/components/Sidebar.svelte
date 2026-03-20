@@ -1,570 +1,399 @@
 <script lang="ts">
-	import { base } from '$app/paths';
-	import { onMount } from 'svelte';
-	import {
-		instanceList,
-		currentInstanceId,
-		createInstance,
-		deleteInstance,
-		selectInstance
-	} from '$lib/stores/instances';
-	import { defaultCommand } from '$lib/stores/settings';
-	import { closeSidebar, isDesktop } from '$lib/stores/ui';
-	import { activityLevel, getInstanceVerb, clearInstanceVerbs } from '$lib/stores/activity';
-	import { instancePresence } from '$lib/stores/websocket';
-	import { tasks, pendingTasks, getTaskCount } from '$lib/stores/tasks';
-	import { currentUser, isAuthenticated, logout } from '$lib/stores/auth';
-	import { theme, toggleTheme } from '$lib/stores/settings';
-	import type { ClaudeState, Instance } from '$lib/types';
-	import InstanceItem from './sidebar/InstanceItem.svelte';
+  import { projects, currentProject, reorderProjects } from '$lib/stores/projects';
+  import { isGapValid } from '$lib/utils/project-order';
+  import { switchProject } from '$lib/stores/layout';
+  import { currentUser, isAuthenticated } from '$lib/stores/auth';
+  import { fullscreenView, openFullscreen, closeFullscreen } from '$lib/stores/fullscreen';
+  import CloseProjectModal from './CloseProjectModal.svelte';
+  import type { Project } from '$lib/stores/projects';
 
-	async function handleLogout() {
-		await logout();
-		window.location.href = `${base}/login`;
-	}
+  let closeProjectTarget = $state<Project | null>(null);
 
-	let isCreating = false;
+  // Drag-and-drop state — tracks insertion gap, not hovered item.
+  // For N items there are N+1 gaps (0=before first, N=after last).
+  let dragId = $state<string | null>(null);
+  let dropGap = $state<number | null>(null);
 
-	// Track previous states for notifications
-	let previousStates = new Map<string, string>();
+  function handleDragStart(e: DragEvent, projectId: string) {
+    dragId = projectId;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  }
 
-	// Request notification permission on mount
-	onMount(() => {
-		if ('Notification' in window && Notification.permission === 'default') {
-			Notification.requestPermission();
-		}
-	});
+  function handleDragOver(e: DragEvent, itemIndex: number) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const gap = e.clientY < rect.top + rect.height / 2 ? itemIndex : itemIndex + 1;
+    const dragIdx = $projects.findIndex((p) => p.id === dragId);
+    dropGap = isGapValid(dragIdx, gap) ? gap : null;
+  }
 
-	// Send browser notification when instance becomes ready
-	function notifyReady(instance: Instance) {
-		if ('Notification' in window && Notification.permission === 'granted') {
-			if (instance.id === $currentInstanceId) return;
-			new Notification(`${instance.custom_name ?? instance.name} is ready`, {
-				body: 'Claude is waiting for input',
-				icon: '/favicon.png',
-				tag: `ready-${instance.id}`,
-				silent: false
-			});
-		}
-	}
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    if (dragId && dropGap !== null) {
+      reorderProjects(dragId, dropGap);
+    }
+    dragId = null;
+    dropGap = null;
+  }
 
-	// Check for state transitions and notify
-	$: {
-		for (const instance of $instanceList) {
-			const prevState = previousStates.get(instance.id);
-			const currentState = instance.claude_state?.type;
+  function handleDragEnd() {
+    dragId = null;
+    dropGap = null;
+  }
 
-			if (prevState && currentState === 'WaitingForInput' && prevState !== 'WaitingForInput') {
-				notifyReady(instance);
-				clearInstanceVerbs(instance.id);
-			}
+  function handleSelectProject(workingDir: string) {
+    const project = $projects.find((p) => p.workingDir === workingDir);
+    if (project && project.instances.length > 0) {
+      switchProject(workingDir, project.instances[0].id);
+    }
+  }
 
-			if (currentState) {
-				previousStates.set(instance.id, currentState);
-			}
-		}
-	}
+  /** Get 2-letter abbreviation for a project name */
+  function getProjectAbbr(name: string): string {
+    const words = name
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .split(/[\s_-]+/)
+      .filter(Boolean);
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  }
 
-	async function handleCreate() {
-		if (isCreating) return;
-		isCreating = true;
-
-		const result = await createInstance({ command: $defaultCommand });
-		if (result) {
-			selectInstance(result.id);
-			if (!$isDesktop) closeSidebar();
-		}
-
-		isCreating = false;
-	}
-
-	async function handleDelete(id: string, event: MouseEvent) {
-		event.stopPropagation();
-		await deleteInstance(id);
-	}
-
-	function handleSelectInstance(id: string) {
-		selectInstance(id);
-		if (!$isDesktop) closeSidebar();
-	}
-
-	function getStateInfo(
-		instanceId: string,
-		state: ClaudeState | undefined,
-		stale: boolean = false
-	): { label: string; color: string; animate: boolean; stale: boolean } {
-		if (!state) {
-			return { label: '', color: 'var(--text-muted)', animate: false, stale: false };
-		}
-
-		switch (state.type) {
-			case 'Initializing':
-				return { label: 'init', color: 'var(--text-muted)', animate: true, stale: false };
-			case 'Starting':
-				return { label: 'starting', color: 'var(--amber-500)', animate: true, stale: false };
-			case 'Idle':
-				return { label: '', color: 'var(--status-green)', animate: false, stale: false };
-			case 'Thinking': {
-				const verb = getInstanceVerb(instanceId, 'Thinking').toLowerCase();
-				return { label: stale ? `${verb}?` : verb, color: 'var(--purple-500)', animate: !stale, stale };
-			}
-			case 'Responding': {
-				const verb = getInstanceVerb(instanceId, 'Responding').toLowerCase();
-				return { label: stale ? `${verb}?` : verb, color: 'var(--amber-500)', animate: !stale, stale };
-			}
-			case 'ToolExecuting':
-				return { label: stale ? `${state.tool}?` : state.tool, color: 'var(--amber-400)', animate: !stale, stale };
-			case 'WaitingForInput':
-				return { label: 'ready', color: 'var(--status-green)', animate: false, stale: false };
-			default:
-				return { label: '', color: 'var(--text-muted)', animate: false, stale: false };
-		}
-	}
-
-	function getQueueCount(instanceId: string, _tasks: typeof $tasks): number {
-		return getTaskCount(instanceId);
-	}
+  /** Color by index for project icons */
+  const projectColors = ['var(--amber-500)', 'var(--purple-400)', 'var(--status-green)', 'var(--status-red)'];
 </script>
 
-<aside class="sidebar">
-	<!-- Header -->
-	<header class="sidebar-header">
-		<div class="header-content">
-			<h1>Crab City</h1>
-			<p class="tagline">Claude Manager</p>
-		</div>
-		{#if !$isDesktop}
-			<button class="close-btn" on:click={closeSidebar} aria-label="Close sidebar">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M6 18L18 6M6 6l12 12" />
-				</svg>
-			</button>
-		{/if}
-	</header>
+<aside class="sidebar-rail">
+  <!-- Project icons -->
+  <nav class="rail-projects">
+    {#each $projects as project, i (project.id)}
+      {@const isActive = $currentProject?.id === project.id}
+      <div
+        class="rail-project-slot"
+        class:active={isActive}
+        class:drag-over={dropGap === i}
+        class:dragging={dragId === project.id}
+        role="listitem"
+        draggable="true"
+        ondragstart={(e) => handleDragStart(e, project.id)}
+        ondragover={(e) => handleDragOver(e, i)}
+        ondrop={handleDrop}
+        ondragend={handleDragEnd}
+      >
+        <button
+          class="rail-project"
+          class:active={isActive}
+          onclick={() => handleSelectProject(project.workingDir)}
+          title="{project.name} ({project.instances.length} instances)"
+          aria-label="{project.name} project"
+          style="--project-color: {projectColors[i % projectColors.length]}"
+        >
+          <span class="project-abbr">{getProjectAbbr(project.name)}</span>
+        </button>
+        {#if isActive}
+          <button
+            class="rail-action"
+            onclick={() => {
+              closeProjectTarget = project;
+            }}
+            title="Close project"
+            aria-label="Close {project.name}">&times;</button
+          >
+        {/if}
+      </div>
+    {/each}
+    <!-- Drop zone fills remaining nav space for "move to end" -->
+    <div
+      class="rail-drop-end"
+      class:drag-over={dropGap === $projects.length}
+      role="listitem"
+      ondragover={(e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        if (!dragId) return;
+        const dragIdx = $projects.findIndex((p) => p.id === dragId);
+        dropGap = isGapValid(dragIdx, $projects.length) ? $projects.length : null;
+      }}
+      ondrop={handleDrop}
+    ></div>
+  </nav>
 
-	<!-- New Instance Button -->
-	<button class="new-instance-btn" on:click={handleCreate} disabled={isCreating} aria-label="Create new Claude instance">
-		{#if isCreating}
-			<span class="spinner"></span>
-			Creating...
-		{:else}
-			<span class="icon">+</span>
-			New Instance
-		{/if}
-	</button>
+  <!-- Bottom actions -->
+  <div class="rail-bottom">
+    <button
+      class="rail-btn"
+      onclick={() => ($fullscreenView === 'new-project' ? closeFullscreen() : openFullscreen('new-project'))}
+      title="New project"
+      aria-label="Create new project"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="12" y1="5" x2="12" y2="19" />
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </svg>
+    </button>
 
-	<!-- Instances List -->
-	<nav class="instances-list">
-		{#each $instanceList as instance (instance.id)}
-			{@const stateInfo = getStateInfo(instance.id, instance.claude_state, instance.claude_state_stale)}
-			<InstanceItem
-				{instance}
-				isActive={$currentInstanceId === instance.id}
-				{stateInfo}
-				activityLevel={$activityLevel}
-				presenceCount={$instancePresence.get(instance.id)?.length ?? 0}
-				presenceNames={$instancePresence.get(instance.id)?.map(u => u.display_name).join(', ') ?? ''}
-				queueCount={getQueueCount(instance.id, $tasks)}
-				onselect={() => handleSelectInstance(instance.id)}
-				ondelete={(e) => handleDelete(instance.id, e)}
-			/>
-		{:else}
-			<div class="empty-list">
-				<p>No instances yet</p>
-				<p class="hint">Click "New Instance" to start</p>
-			</div>
-		{/each}
-	</nav>
+    <button
+      class="rail-btn"
+      onclick={() => ($fullscreenView === 'history' ? closeFullscreen() : openFullscreen('history'))}
+      title="History"
+      aria-label="Conversation history"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M6 2L6 6M18 2L18 6M6 18L6 22M18 18L18 22" />
+        <path d="M6 6C6 6 4 6 4 8V10C4 12 6 12 6 12H18C18 12 20 12 20 10V8C20 6 18 6 18 6" />
+        <path d="M6 12C6 12 4 12 4 14V16C4 18 6 18 6 18H18C18 18 20 18 20 16V14C20 12 18 12 18 12" />
+      </svg>
+    </button>
 
-	<!-- Footer -->
-	<footer class="sidebar-footer">
-		{#if $isAuthenticated && $currentUser}
-			<div class="user-info">
-				<span class="user-display-name">{$currentUser.display_name}</span>
-				<button class="logout-btn" on:click={handleLogout}>Logout</button>
-			</div>
-		{/if}
-		<div class="footer-row">
-			<div class="footer-links">
-				<a href="{base}/tasks" class="footer-link">
-					Tasks
-					{#if $pendingTasks.length > 0}
-						<span class="footer-badge">{$pendingTasks.length}</span>
-					{/if}
-				</a>
-				<a href="{base}/history" class="footer-link">History</a>
-				<a href="{base}/account" class="footer-link">Settings</a>
-			</div>
-			<button
-				class="theme-toggle"
-				class:analog={$theme === 'analog'}
-				on:click={toggleTheme}
-				title={$theme === 'phosphor' ? 'Switch to analog (⇧⌘L)' : 'Switch to phosphor (⇧⌘L)'}
-				aria-label="Toggle theme"
-			>
-				<span class="theme-toggle-track">
-					<span class="theme-toggle-thumb">
-						{#if $theme === 'phosphor'}
-							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-								<rect x="2" y="2" width="12" height="8" rx="1" />
-								<path d="M5 13h6M8 10v3" />
-								<line class="scanline" x1="3" y1="5" x2="13" y2="5" stroke-opacity="0.4" />
-								<line class="scanline s2" x1="3" y1="7" x2="13" y2="7" stroke-opacity="0.25" />
-							</svg>
-						{:else}
-							<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-								<path d="M8 14 L6 8 Q8 3 8 1 Q8 3 10 8 Z" />
-								<line x1="8" y1="7" x2="8" y2="11" stroke-opacity="0.3" />
-								<circle cx="8" cy="13" r="0.5" fill="currentColor" stroke="none" />
-							</svg>
-						{/if}
-					</span>
-				</span>
-			</button>
-		</div>
-	</footer>
+    <button
+      class="rail-btn"
+      onclick={() => ($fullscreenView === 'settings' ? closeFullscreen() : openFullscreen('settings'))}
+      title="Settings"
+      aria-label="Settings"
+    >
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="8" cy="8" r="2.5" />
+        <path
+          d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"
+        />
+      </svg>
+    </button>
+
+    {#if $isAuthenticated && $currentUser}
+      <button
+        class="rail-btn user-btn"
+        title="{$currentUser.display_name} — Account"
+        onclick={() => ($fullscreenView === 'settings' ? closeFullscreen() : openFullscreen('settings'))}
+        aria-label="User: {$currentUser.display_name}"
+      >
+        <span class="user-initial">{$currentUser.display_name.charAt(0).toUpperCase()}</span>
+      </button>
+    {/if}
+  </div>
 </aside>
 
+{#if closeProjectTarget}
+  <CloseProjectModal project={closeProjectTarget} onclose={() => (closeProjectTarget = null)} />
+{/if}
+
 <style>
-	.sidebar {
-		display: flex;
-		flex-direction: column;
-		width: 260px;
-		background: linear-gradient(180deg, var(--surface-700) 0%, var(--surface-800) 100%);
-		border-right: 1px solid var(--surface-border);
-		height: 100%;
-		flex-shrink: 0;
-		position: relative;
-	}
+  .sidebar-rail {
+    display: flex;
+    flex-direction: column;
+    width: 48px;
+    background: linear-gradient(180deg, var(--surface-700) 0%, var(--surface-800) 100%);
+    border-right: 1px solid var(--surface-border);
+    height: 100%;
+    flex-shrink: 0;
+    align-items: center;
+    padding: 8px 0;
+  }
 
-	.sidebar::after {
-		content: '';
-		position: absolute;
-		top: 0;
-		right: 0;
-		bottom: 0;
-		width: 1px;
-		background: linear-gradient(180deg, transparent 0%, var(--tint-active) 50%, transparent 100%);
-	}
+  .sidebar-rail::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 1px;
+    background: linear-gradient(180deg, transparent 0%, var(--tint-active) 50%, transparent 100%);
+  }
 
-	.sidebar-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 20px 16px;
-		border-bottom: 1px solid var(--surface-border);
-		background: var(--panel-inset);
-	}
+  .rail-projects {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
 
-	.header-content { flex: 1; }
+  .rail-projects::-webkit-scrollbar {
+    width: 0;
+  }
 
-	.sidebar-header h1 {
-		margin: 0;
-		font-size: 16px;
-		font-weight: 700;
-		letter-spacing: 0.1em;
-		color: var(--amber-500);
-		text-shadow: var(--emphasis-strong);
-		text-transform: uppercase;
-		font-family: var(--font-display);
-	}
+  .rail-project-slot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    border-radius: 50%;
+    transition: all 0.15s ease;
+  }
 
-	.tagline {
-		margin: 6px 0 0;
-		font-size: 10px;
-		letter-spacing: 0.15em;
-		color: var(--text-muted);
-		text-transform: uppercase;
-	}
+  .rail-project-slot.dragging {
+    opacity: 0.3;
+  }
 
-	.close-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		background: transparent;
-		border: 1px solid var(--surface-border);
-		border-radius: 4px;
-		color: var(--text-secondary);
-		cursor: pointer;
-		transition: all 0.15s ease;
-		flex-shrink: 0;
-	}
+  .rail-project-slot.drag-over {
+    position: relative;
+  }
 
-	.close-btn:hover {
-		border-color: var(--amber-600);
-		color: var(--amber-400);
-		background: var(--tint-active);
-	}
+  .rail-project-slot.drag-over::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    background: var(--amber-500);
+    border-radius: 1px;
+  }
 
-	.close-btn svg { width: 18px; height: 18px; }
+  .rail-drop-end {
+    width: 100%;
+    flex: 1;
+    min-height: 6px;
+  }
 
-	.new-instance-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 8px;
-		margin: 12px;
-		padding: 12px 16px;
-		background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-		border: var(--active-border);
-		border-radius: 4px;
-		color: var(--amber-400);
-		font-size: 12px;
-		font-weight: 600;
-		font-family: inherit;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		box-shadow: var(--depth-up);
-	}
+  .rail-drop-end.drag-over {
+    position: relative;
+  }
 
-	.new-instance-btn:hover:not(:disabled) {
-		background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-		border-color: var(--amber-500);
-		color: var(--amber-300);
-		box-shadow: var(--elevation-high);
-		text-shadow: var(--emphasis);
-	}
+  .rail-drop-end.drag-over::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    right: 4px;
+    height: 2px;
+    background: var(--amber-500);
+    border-radius: 1px;
+  }
 
-	.new-instance-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .rail-project-slot.active {
+    background: var(--tint-active);
+    border: 1px solid var(--amber-500);
+    border-radius: 10px;
+    padding: 3px 3px 2px;
+  }
 
-	.icon { font-size: 16px; font-weight: 400; }
+  .rail-project-slot.active .rail-project {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+  }
 
-	.spinner {
-		width: 12px;
-		height: 12px;
-		border: 2px solid var(--spinner-track);
-		border-top-color: var(--amber-500);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
+  .rail-project-slot.active .rail-project:hover {
+    background: var(--tint-hover);
+  }
 
-	@keyframes spin { to { transform: rotate(360deg); } }
+  .rail-project-slot.active .project-abbr {
+    color: var(--amber-400);
+  }
 
-	.instances-list {
-		flex: 1;
-		overflow-y: auto;
-		padding: 8px;
-	}
+  .rail-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 16px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--amber-700);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.15s ease;
+    border-radius: 0 0 8px 8px;
+    margin-top: 1px;
+  }
 
-	.empty-list {
-		padding: 32px 16px;
-		text-align: center;
-		color: var(--text-muted);
-	}
+  .rail-action:hover {
+    color: var(--status-red);
+  }
 
-	.empty-list p { margin: 0; font-size: 11px; letter-spacing: 0.05em; }
+  .rail-project {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--surface-600);
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
 
-	.hint {
-		margin-top: 8px !important;
-		font-size: 10px !important;
-		color: var(--text-muted) !important;
-		opacity: 0.7;
-	}
+  .rail-project:hover {
+    background: var(--surface-500);
+    border-color: var(--surface-border-light);
+  }
 
-	.sidebar-footer {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		padding: 12px 16px;
-		border-top: 1px solid var(--surface-border);
-		background: var(--panel-inset);
-	}
+  .project-abbr {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--project-color, var(--text-secondary));
+  }
 
-	.user-info {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding-bottom: 8px;
-		border-bottom: 1px solid var(--surface-border);
-	}
+  .rail-bottom {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--surface-border);
+  }
 
-	.user-display-name {
-		font-size: 11px;
-		font-weight: 600;
-		color: var(--text-primary);
-		letter-spacing: 0.03em;
-	}
+  .rail-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+    padding: 0;
+  }
 
-	.logout-btn {
-		background: none;
-		border: 1px solid var(--surface-border);
-		border-radius: 3px;
-		padding: 2px 8px;
-		font-size: 10px;
-		font-family: inherit;
-		color: var(--text-muted);
-		cursor: pointer;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		transition: all 0.15s ease;
-	}
+  .rail-btn:hover {
+    background: var(--tint-hover);
+    border-color: var(--surface-border);
+    color: var(--text-secondary);
+  }
 
-	.logout-btn:hover { border-color: var(--status-red); color: var(--status-red); }
+  .rail-btn svg {
+    width: 14px;
+    height: 14px;
+  }
 
-	.footer-links { display: flex; gap: 16px; }
+  .user-btn {
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+  }
 
-	.footer-link {
-		font-size: 11px;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
-		text-decoration: none;
-		text-transform: uppercase;
-		transition: all 0.15s ease;
-	}
+  .user-initial {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+  }
 
-	.footer-link:hover { color: var(--amber-400); text-shadow: var(--emphasis); }
+  /* Analog theme */
+  :global([data-theme='analog']) .sidebar-rail {
+    background-color: var(--surface-800);
+    background-image: var(--grain-fine), var(--grain-coarse);
+    background-blend-mode: multiply, multiply;
+  }
 
-	.footer-badge {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 14px;
-		height: 14px;
-		padding: 0 3px;
-		margin-left: 3px;
-		background: var(--tint-active-strong);
-		border: 1px solid var(--amber-600);
-		border-radius: 7px;
-		font-size: 9px;
-		font-weight: 700;
-		color: var(--amber-400);
-		font-variant-numeric: tabular-nums;
-		vertical-align: middle;
-	}
-
-	/* Scrollbar */
-	.instances-list::-webkit-scrollbar { width: 6px; }
-	.instances-list::-webkit-scrollbar-track { background: transparent; }
-	.instances-list::-webkit-scrollbar-thumb { background: var(--surface-border); border-radius: 3px; }
-	.instances-list::-webkit-scrollbar-thumb:hover { background: var(--amber-600); }
-
-	/* Theme toggle */
-	.footer-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.theme-toggle {
-		position: relative;
-		width: 40px;
-		height: 22px;
-		padding: 0;
-		background: none;
-		border: none;
-		cursor: pointer;
-		flex-shrink: 0;
-	}
-
-	.theme-toggle-track {
-		display: block;
-		width: 100%;
-		height: 100%;
-		border-radius: 11px;
-		background: var(--surface-500);
-		border: 1px solid var(--surface-border);
-		position: relative;
-		transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-		overflow: hidden;
-	}
-
-	.theme-toggle:not(.analog) .theme-toggle-track {
-		box-shadow: var(--recess), var(--elevation-low);
-	}
-
-	.theme-toggle.analog .theme-toggle-track {
-		background: var(--surface-400);
-		box-shadow: var(--recess), var(--elevation-low);
-	}
-
-	.theme-toggle-thumb {
-		position: absolute;
-		top: 1px;
-		left: 1px;
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		background: var(--surface-700);
-		border: 1px solid var(--surface-border-light);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-		color: var(--amber-500);
-	}
-
-	.theme-toggle:not(.analog) .theme-toggle-thumb {
-		transform: translateX(0);
-		box-shadow: var(--elevation-low);
-	}
-
-	.theme-toggle.analog .theme-toggle-thumb {
-		transform: translateX(18px);
-		background: var(--surface-700);
-		color: var(--amber-600);
-		box-shadow: var(--elevation-low);
-	}
-
-	.theme-toggle-thumb svg { width: 10px; height: 10px; }
-
-	.theme-toggle-thumb .scanline { animation: toggle-scan 1.2s linear infinite; }
-	.theme-toggle-thumb .scanline.s2 { animation-delay: 0.6s; }
-
-	@keyframes toggle-scan {
-		0%, 100% { stroke-opacity: 0.15; }
-		50% { stroke-opacity: 0.5; }
-	}
-
-	.theme-toggle:hover .theme-toggle-track { border-color: var(--surface-border-light); }
-	.theme-toggle:not(.analog):hover .theme-toggle-thumb { box-shadow: var(--elevation-high); }
-	.theme-toggle.analog:hover .theme-toggle-thumb { box-shadow: var(--elevation-high); }
-
-	.theme-toggle:active .theme-toggle-thumb { transform: translateX(0) scale(0.9); }
-	.theme-toggle.analog:active .theme-toggle-thumb { transform: translateX(18px) scale(0.9); }
-
-	/* Analog theme */
-	:global([data-theme="analog"]) .sidebar {
-		background-color: var(--surface-800);
-		background-image: var(--grain-fine), var(--grain-coarse), radial-gradient(ellipse at 50% 80%, rgba(42,31,24,0.04) 0%, transparent 60%);
-		background-blend-mode: multiply, multiply, normal;
-	}
-
-	:global([data-theme="analog"]) .new-instance-btn {
-		background-color: var(--surface-600);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-		border-width: 2px;
-		box-shadow: var(--elevation-low), inset 0 1px 2px rgba(42, 31, 24, 0.06);
-	}
-
-	:global([data-theme="analog"]) .new-instance-btn:hover:not(:disabled) {
-		background-color: var(--surface-500);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-		border-width: 2px;
-		box-shadow: var(--elevation-high), inset 0 1px 3px rgba(42, 31, 24, 0.1);
-	}
-
-	:global([data-theme="analog"]) .sidebar::after {
-		background: var(--amber-600);
-		width: 1.5px;
-		box-shadow: 1px 0 3px rgba(42, 31, 24, 0.08);
-	}
-
-	:global([data-theme="analog"]) .sidebar-footer {
-		background-color: var(--surface-800);
-		background-image: var(--grain-fine);
-		background-blend-mode: multiply;
-		border-top-width: 2px;
-	}
-
-	:global([data-theme="analog"]) .sidebar-header {
-		background-color: var(--surface-800);
-		background-image: var(--grain-coarse);
-		background-blend-mode: multiply;
-	}
+  :global([data-theme='analog']) .sidebar-rail::after {
+    background: var(--amber-600);
+    width: 1.5px;
+  }
 </style>

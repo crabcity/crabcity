@@ -156,6 +156,260 @@ pub async fn revoke_server_invite_handler(
     }
 }
 
+// =============================================================================
+// User management handlers
+// =============================================================================
+
+#[derive(Serialize)]
+pub struct AdminUserInfo {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub is_admin: bool,
+    pub is_disabled: bool,
+    pub created_at: i64,
+}
+
+pub async fn list_users_handler(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !auth_user.is_admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    match state.repository.list_users().await {
+        Ok(users) => {
+            let infos: Vec<AdminUserInfo> = users
+                .into_iter()
+                .map(|u| AdminUserInfo {
+                    id: u.id,
+                    username: u.username,
+                    display_name: u.display_name,
+                    is_admin: u.is_admin,
+                    is_disabled: u.is_disabled,
+                    created_at: u.created_at,
+                })
+                .collect();
+            Ok(Json(infos))
+        }
+        Err(e) => {
+            error!("Failed to list users: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateUserRequest {
+    username: String,
+    display_name: Option<String>,
+    password: String,
+    is_admin: Option<bool>,
+}
+
+pub async fn create_user_handler(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !auth_user.is_admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let username = req.username.trim().to_string();
+    if username.len() < 2 || username.len() > 64 {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Username must be 2-64 characters" })),
+        )
+            .into_response());
+    }
+
+    if req.password.len() < 8 {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Password must be at least 8 characters" })),
+        )
+            .into_response());
+    }
+
+    // Check for duplicate
+    if state
+        .repository
+        .get_user_by_username(&username)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .is_some()
+    {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Username already taken" })),
+        )
+            .into_response());
+    }
+
+    let password_hash =
+        crate::auth::hash_password(&req.password).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let now = chrono::Utc::now().timestamp();
+    let user = crate::models::User {
+        id: uuid::Uuid::new_v4().to_string(),
+        username: username.clone(),
+        display_name: req.display_name.unwrap_or_else(|| username.clone()),
+        password_hash,
+        is_admin: req.is_admin.unwrap_or(false),
+        is_disabled: false,
+        created_at: now,
+        updated_at: now,
+    };
+
+    state
+        .repository
+        .create_user(&user)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(AdminUserInfo {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name,
+        is_admin: user.is_admin,
+        is_disabled: user.is_disabled,
+        created_at: user.created_at,
+    })
+    .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserRequest {
+    display_name: Option<String>,
+    is_admin: Option<bool>,
+    is_disabled: Option<bool>,
+}
+
+pub async fn update_user_handler(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(user_id): Path<String>,
+    Json(req): Json<UpdateUserRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !auth_user.is_admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Prevent admins from demoting or disabling themselves
+    if user_id == auth_user.user_id {
+        if req.is_admin == Some(false) {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Cannot remove your own admin role" })),
+            )
+                .into_response());
+        }
+        if req.is_disabled == Some(true) {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Cannot disable your own account" })),
+            )
+                .into_response());
+        }
+    }
+
+    if let Some(is_admin) = req.is_admin {
+        // Prevent removing the last active admin
+        if !is_admin {
+            let admin_count = state
+                .repository
+                .count_active_admins()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if admin_count <= 1 {
+                // Check the target is actually an active admin (not already non-admin)
+                if let Ok(users) = state.repository.list_users().await
+                    && let Some(target) = users.iter().find(|u| u.id == user_id)
+                    && target.is_admin
+                    && !target.is_disabled
+                {
+                    return Ok((
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": "Cannot remove the last admin" })),
+                    )
+                        .into_response());
+                }
+            }
+        }
+        state
+            .repository
+            .set_user_admin(&user_id, is_admin)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    if let Some(is_disabled) = req.is_disabled {
+        state
+            .repository
+            .set_user_disabled(&user_id, is_disabled)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    if let Some(ref display_name) = req.display_name {
+        state
+            .repository
+            .update_user_display_name(&user_id, display_name)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
+}
+
+pub async fn delete_user_handler(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(user_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if !auth_user.is_admin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Prevent admins from deleting themselves
+    if user_id == auth_user.user_id {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Cannot delete your own account" })),
+        )
+            .into_response());
+    }
+
+    // Prevent deleting the last active admin
+    if let Ok(users) = state.repository.list_users().await
+        && let Some(target) = users.iter().find(|u| u.id == user_id)
+        && target.is_admin
+        && !target.is_disabled
+    {
+        let admin_count = state
+            .repository
+            .count_active_admins()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if admin_count <= 1 {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Cannot delete the last admin" })),
+            )
+                .into_response());
+        }
+    }
+
+    match state.repository.delete_user(&user_id).await {
+        Ok(true) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Ok(false) => Ok(StatusCode::NOT_FOUND.into_response()),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 /// Trigger an HTTP server restart to reload configuration.
 /// Accessible from loopback without auth (the CLI calls this after writing config.toml).
 pub async fn restart_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -251,6 +505,24 @@ pub async fn patch_config_handler(
     State(state): State<AppState>,
     Json(req): Json<ConfigPatchRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // Guard: prevent enabling auth when no admin users exist
+    if req.auth_enabled == Some(true) {
+        let admin_count = state
+            .repository
+            .count_active_admins()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if admin_count == 0 {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Cannot enable auth: no admin accounts exist. Create an admin user first."
+                })),
+            )
+                .into_response());
+        }
+    }
+
     // If save=true, persist to config.toml first
     if req.save {
         if let Err(e) = save_overrides_to_config(&state.config, &req) {
@@ -309,7 +581,8 @@ pub async fn patch_config_handler(
     Ok(Json(serde_json::json!({
         "ok": true,
         "saved": req.save,
-    })))
+    }))
+    .into_response())
 }
 
 /// Read-modify-write config.toml to persist the given overrides.
@@ -688,6 +961,68 @@ mod tests {
         // Runtime override should be cleared (saved to config.toml)
         let overrides = state.runtime_overrides.read().await;
         assert!(overrides.port.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_patch_config_rejects_auth_enable_without_admins() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+        let router = Router::new()
+            .route("/admin/config", axum::routing::patch(patch_config_handler))
+            .with_state(state.clone());
+
+        // No users exist at all — enabling auth should be rejected
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/admin/config")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"auth_enabled":true,"save":false}"#))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), 10_000)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("no admin accounts exist")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_patch_config_allows_auth_enable_with_admin() {
+        let (state, _tmp) = crate::test_helpers::test_app_state().await;
+
+        // Create an active admin user
+        let admin = crate::models::User {
+            id: "u-admin".to_string(),
+            username: "admin".to_string(),
+            display_name: "Admin".to_string(),
+            password_hash: "hashed".to_string(),
+            is_admin: true,
+            is_disabled: false,
+            created_at: chrono::Utc::now().timestamp(),
+            updated_at: chrono::Utc::now().timestamp(),
+        };
+        state.repository.create_user(&admin).await.unwrap();
+
+        let router = Router::new()
+            .route("/admin/config", axum::routing::patch(patch_config_handler))
+            .with_state(state.clone());
+
+        let req = Request::builder()
+            .method("PATCH")
+            .uri("/admin/config")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"auth_enabled":true,"save":false}"#))
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // =========================================================================

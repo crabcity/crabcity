@@ -137,6 +137,20 @@ fn make_clear_cookie(auth_config: &AuthConfig) -> String {
 // Auth Middleware
 // =============================================================================
 
+/// Synthetic admin identity for trusted loopback connections without a real session.
+/// Used when auth is disabled (local-only mode) or when a loopback request has no
+/// valid session cookie. This lets admin endpoints (invites, config) work for
+/// local CLI/TUI/browser clients without requiring login.
+fn synthetic_loopback_admin() -> AuthUser {
+    AuthUser {
+        user_id: "loopback".to_string(),
+        display_name: "Local Admin".to_string(),
+        is_admin: true,
+        session_token: String::new(),
+        csrf_token: String::new(),
+    }
+}
+
 /// Auth middleware that:
 /// 1. Exempts public routes (auth endpoints, health, metrics, share, static)
 /// 2. Validates session cookie for protected routes
@@ -177,11 +191,21 @@ pub async fn auth_middleware(
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .is_some_and(|ci| ci.0.ip().is_loopback());
 
+    // When auth is disabled, inject a synthetic admin for loopback connections
+    // so that admin endpoints (invites, etc.) work for local users.
+    if !auth_state.auth_config.enabled {
+        if is_loopback {
+            request.extensions_mut().insert(synthetic_loopback_admin());
+        }
+        return next.run(request).await;
+    }
+
     // Extract session token from cookie
     let token = match extract_session_token(request.headers()) {
         Some(t) => t,
         None if is_loopback => {
-            // Loopback without a session cookie — allow through without identity
+            // Loopback without a session cookie — inject synthetic admin
+            request.extensions_mut().insert(synthetic_loopback_admin());
             return next.run(request).await;
         }
         None => {
@@ -199,7 +223,8 @@ pub async fn auth_middleware(
     let (session, user) = match auth_state.repository.get_session_with_user(&token).await {
         Ok(Some(pair)) => pair,
         Ok(None) if is_loopback => {
-            // Loopback with an invalid/expired session — allow through without identity
+            // Loopback with an invalid/expired session — inject synthetic admin
+            request.extensions_mut().insert(synthetic_loopback_admin());
             return next.run(request).await;
         }
         Ok(None) => {

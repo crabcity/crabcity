@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::inference::ClaudeState;
 use crate::instance_manager::ClaudeInstance;
+#[cfg(test)]
+use crate::instance_manager::InstanceKind;
 
 /// User info passed from the auth layer into WebSocket connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +213,9 @@ pub enum ServerMessage {
         /// Indicates we're less confident in the state accuracy
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stale: bool,
+        /// Unix timestamp (seconds) when this state was entered
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entered_at: Option<i64>,
     },
     /// New instance was created
     InstanceCreated { instance: ClaudeInstance },
@@ -317,6 +322,26 @@ pub enum ServerMessage {
         /// Seconds until lock expires (for UI countdown)
         #[serde(skip_serializing_if = "Option::is_none")]
         expires_in_secs: Option<u64>,
+    },
+
+    // === User settings ===
+    /// User settings changed — full snapshot for idempotent merge
+    UserSettingsUpdate {
+        user_id: String,
+        settings: serde_json::Value,
+    },
+
+    // === Inbox (fleet attention model) ===
+    /// Single inbox item changed for an instance (upserted or cleared)
+    InboxUpdate {
+        instance_id: String,
+        /// The current inbox item, or None if cleared
+        #[serde(skip_serializing_if = "Option::is_none")]
+        item: Option<crate::models::InboxItem>,
+    },
+    /// Full inbox snapshot (sent on WS connect)
+    InboxList {
+        items: Vec<crate::models::InboxItem>,
     },
 
     // === Server lifecycle ===
@@ -507,6 +532,7 @@ mod tests {
             instance_id: "inst-1".to_string(),
             state: ClaudeState::Thinking,
             stale: false,
+            entered_at: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("StateChange"));
@@ -520,6 +546,7 @@ mod tests {
             instance_id: "inst-1".to_string(),
             state: ClaudeState::Responding,
             stale: true,
+            entered_at: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("stale"));
@@ -644,6 +671,7 @@ mod tests {
                 tool: "Bash".to_string(),
             },
             stale: false,
+            entered_at: Some(1700000000),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -654,6 +682,7 @@ mod tests {
                 instance_id,
                 state,
                 stale,
+                ..
             } => {
                 assert_eq!(instance_id, "inst");
                 assert!(!stale);
@@ -964,6 +993,7 @@ mod tests {
                 instance_id: "test".to_string(),
                 state: state.clone(),
                 stale: false,
+                entered_at: None,
             };
             let json = serde_json::to_string(&msg).unwrap();
             let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -1316,10 +1346,14 @@ mod tests {
                 wrapper_port: 0,
                 working_dir: "/tmp".to_string(),
                 command: "claude".to_string(),
+                kind: InstanceKind::Structured {
+                    provider: "claude".into(),
+                },
                 running: true,
                 created_at: "2025-01-01T00:00:00Z".to_string(),
                 session_id: None,
                 claude_state: None,
+                state_entered_at: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();

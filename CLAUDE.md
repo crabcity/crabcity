@@ -18,6 +18,12 @@ When adding a crate feature (e.g. `reqwest`'s `blocking`), update **both**:
 
 Always use `bazel run //tools/format` to format code. Do not run `rustfmt` directly.
 
+### Git
+
+All commits **must be GPG-signed**. Never use `--no-gpg-sign`. If signing agent
+errors occur, ask the user to unlock the signing agent or fix the issue rather
+than bypassing signing.
+
 ### Rust Edition 2024
 
 All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check`/`cargo test`, so some edition 2024 errors only surface in Bazel. Known gotcha: `ref mut` in match/if-let patterns is disallowed when the default binding mode is already `ref mut` (e.g. matching on `&mut Option<T>` — use `Some(x)` not `Some(ref mut x)`).
@@ -35,6 +41,7 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 - `cd packages/crab_city_ui && pnpm install && pnpm build` — build the web UI
 - `cd packages/crab_city_ui && pnpm dev` — dev server with hot reload
 - `cd packages/crab_city_ui && pnpm test` — run Jest tests
+- `cd packages/crab_city_ui && pnpm format` — format TS/Svelte with Prettier (also runs via `bazel run //tools/format`)
 
 ## TUI Styling
 
@@ -63,6 +70,7 @@ crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature f
 - **Server loop** supports hot restart via `restart_tx` watch channel (config reload without process restart)
 - **Config layering**: struct defaults < profile defaults < config.toml < env vars < CLI flags < runtime overrides
 - **Instance actor model**: each Claude instance runs in a dedicated `tokio::task` with its own PTY handle, virtual terminal, and client registry (`instance_actor.rs`)
+- **`InstanceKind`** (`instance_manager.rs`): `Structured { provider }` (conversation-capable, e.g. Claude) or `Unstructured { label }` (terminal-only, e.g. bash). Computed at creation by `InstanceKind::infer()`, stored in `InstanceInfo`, and sent in the wire protocol. Backend uses `kind.is_structured()` instead of `command.contains("claude")`; frontend checks `inst.kind.type === 'Structured'`
 - **Database**: SQLite via sqlx with embedded migrations (`db.rs`). Schema covers conversations, messages, tasks, users, sessions, chat, and instance snapshots
 
 ### Real-time Broadcast Pattern
@@ -84,6 +92,19 @@ Two WebSocket endpoints:
 The multiplexed protocol uses `ServerMessage` (defined in `ws/protocol.rs`) — a tagged enum serialized as JSON. When adding new real-time features, add a variant to `ServerMessage` and handle it in `ws/handler.rs` (server) and `stores/ws-handlers.ts` (client).
 
 On graceful shutdown the server broadcasts `ServerMessage::Shutdown` to all connected clients. The frontend connection state machine has 6 states: `disconnected → connecting → connected → reconnecting → server_gone` (plus `error`). After 3 failed reconnect attempts the client escalates from `reconnecting` to `server_gone`, showing "Server Offline" instead of "Reconnecting...". Background retry continues indefinitely.
+
+### Inbox System
+
+Server-side attention model tracking instance state transitions that need user action. One `instance_inbox` row per instance (DB schema v11). Events:
+- `completed_turn` — instance finished work (Active→Idle), turn_count accumulates
+- `needs_input` — instance is `WaitingForInput`, auto-clears when user responds
+- `error` — instance stopped unexpectedly
+
+**Server flow:** State forwarding task in `ws/state_manager.rs` detects transitions via `prev_state`, upserts/clears inbox via `repository/inbox.rs`, broadcasts `ServerMessage::InboxUpdate`. On WS connect, server sends `InboxList` with all active items.
+
+**HTTP endpoints:** `GET /api/inbox` (list), `POST /api/inbox/{id}/dismiss` (clear + broadcast)
+
+**Frontend:** `stores/inbox.ts` — `inboxItems` store (Map by instance_id), `inboxSorted` (priority-sorted), `getAttentionLevel()` (critical/warning/active/idle/booting). Browser notifications for `needs_input` events (moved from Sidebar.svelte).
 
 ### Inference Engine
 

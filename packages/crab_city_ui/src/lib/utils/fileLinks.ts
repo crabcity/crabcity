@@ -26,12 +26,12 @@ import { extractFilePaths } from './fileLinkMatch.js';
  * to opening the file explorer with a fuzzy search pre-seeded.
  */
 export function handleFilePathClick(filePath: string, lineNumber?: number, content?: string): void {
-	if (content) {
-		openFileFromTool(filePath, content, lineNumber);
-		navigateExplorerToFile(filePath);
-	} else {
-		openFilePath(filePath, lineNumber);
-	}
+  if (content) {
+    openFileFromTool(filePath, content, lineNumber);
+    navigateExplorerToFile(filePath);
+  } else {
+    openFilePath(filePath, lineNumber);
+  }
 }
 
 /**
@@ -39,77 +39,77 @@ export function handleFilePathClick(filePath: string, lineNumber?: number, conte
  * Wraps detected file paths in clickable spans.
  */
 export function makeFilePathsClickable(node: HTMLElement, options?: { content?: string }): { destroy: () => void } {
-	// Find all text nodes
-	function processNode() {
-		const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
-		const textNodes: Text[] = [];
-		let textNode: Text | null;
+  // Find all text nodes
+  function processNode() {
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+    const textNodes: Text[] = [];
+    let textNode: Text | null;
 
-		while ((textNode = walker.nextNode() as Text | null)) {
-			// Skip if parent is already a link or our file-link
-			const parent = textNode.parentElement;
-			if (parent?.tagName === 'A' || parent?.classList.contains('file-link')) {
-				continue;
-			}
-			textNodes.push(textNode);
-		}
+    while ((textNode = walker.nextNode() as Text | null)) {
+      // Skip if parent is already a link or our file-link
+      const parent = textNode.parentElement;
+      if (parent?.tagName === 'A' || parent?.classList.contains('file-link')) {
+        continue;
+      }
+      textNodes.push(textNode);
+    }
 
-		// Process each text node
-		for (const text of textNodes) {
-			const content = text.textContent ?? '';
-			const paths = extractFilePaths(content);
+    // Process each text node
+    for (const text of textNodes) {
+      const content = text.textContent ?? '';
+      const paths = extractFilePaths(content);
 
-			if (paths.length === 0) continue;
+      if (paths.length === 0) continue;
 
-			// Build replacement content
-			const fragment = document.createDocumentFragment();
-			let lastEnd = 0;
+      // Build replacement content
+      const fragment = document.createDocumentFragment();
+      let lastEnd = 0;
 
-			for (const { path, line, start, end } of paths) {
-				// Add text before this path
-				if (start > lastEnd) {
-					fragment.appendChild(document.createTextNode(content.slice(lastEnd, start)));
-				}
+      for (const { path, line, start, end } of paths) {
+        // Add text before this path
+        if (start > lastEnd) {
+          fragment.appendChild(document.createTextNode(content.slice(lastEnd, start)));
+        }
 
-				// Create clickable span for the path
-				const span = document.createElement('span');
-				span.className = 'file-link';
-				span.textContent = content.slice(start, end);
-				span.title = `Open ${path}${line ? ` at line ${line}` : ''}`;
-				span.setAttribute('role', 'button');
-				span.setAttribute('tabindex', '0');
+        // Create clickable span for the path
+        const span = document.createElement('span');
+        span.className = 'file-link';
+        span.textContent = content.slice(start, end);
+        span.title = `Open ${path}${line ? ` at line ${line}` : ''}`;
+        span.setAttribute('role', 'button');
+        span.setAttribute('tabindex', '0');
 
-				// Click handler
-				const clickHandler = () => handleFilePathClick(path, line, options?.content);
-				span.addEventListener('click', clickHandler);
-				span.addEventListener('keydown', (e) => {
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						clickHandler();
-					}
-				});
+        // Click handler
+        const clickHandler = () => handleFilePathClick(path, line, options?.content);
+        span.addEventListener('click', clickHandler);
+        span.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            clickHandler();
+          }
+        });
 
-				fragment.appendChild(span);
-				lastEnd = end;
-			}
+        fragment.appendChild(span);
+        lastEnd = end;
+      }
 
-			// Add remaining text
-			if (lastEnd < content.length) {
-				fragment.appendChild(document.createTextNode(content.slice(lastEnd)));
-			}
+      // Add remaining text
+      if (lastEnd < content.length) {
+        fragment.appendChild(document.createTextNode(content.slice(lastEnd)));
+      }
 
-			// Replace the text node
-			text.parentNode?.replaceChild(fragment, text);
-		}
-	}
+      // Replace the text node
+      text.parentNode?.replaceChild(fragment, text);
+    }
+  }
 
-	// Process on mount
-	// Use requestAnimationFrame to ensure DOM is ready
-	requestAnimationFrame(processNode);
+  // Process on mount
+  // Use requestAnimationFrame to ensure DOM is ready
+  requestAnimationFrame(processNode);
 
-	return {
-		destroy() {
-			// Cleanup is handled automatically when element is removed
-		}
-	};
+  return {
+    destroy() {
+      // Cleanup is handled automatically when element is removed
+    }
+  };
 }

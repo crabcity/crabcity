@@ -13,11 +13,11 @@ src/
 ├── auth.rs              JWT/session auth, registration, middleware (loopback bypass)
 │
 ├── cli/                 CLI subcommands (attach, list, kill, auth, daemon, picker)
-├── handlers/            HTTP route handlers (instances, tasks, conversations, admin, notes)
-├── repository/          Database query layer (conversations, tasks, auth, chat, search)
+├── handlers/            HTTP route handlers (instances, tasks, conversations, admin, notes, browse, inbox)
+├── repository/          Database query layer (conversations, tasks, auth, chat, search, inbox)
 ├── ws/                  WebSocket subsystem
 │   ├── protocol.rs      ServerMessage enum — the wire format
-│   ├── state_manager.rs Broadcast lifecycle, presence, terminal lock
+│   ├── state_manager.rs Broadcast lifecycle, presence, terminal lock, inbox, state_entered_at
 │   ├── handler.rs       Message dispatch (client → server)
 │   ├── conversation_watcher.rs  Tail JSONL logs for live conversation updates
 │   ├── focus.rs         User focus tracking
@@ -72,6 +72,8 @@ Use `sqlx::query!` / `sqlx::query_as!` for compile-time checked queries.
 ### Instance Lifecycle
 
 Instances flow through: Created → Running → Stopped. The actor model (`instance_actor.rs`) owns the PTY handle and virtual terminal for each instance. The `instance_manager.rs` coordinates creation and teardown.
+
+Each instance carries an `InstanceKind` enum (`Structured { provider }` or `Unstructured { label }`), computed at creation via `InstanceKind::infer()`. This replaces all `command.contains("claude")` checks. The kind is stored in `InstanceInfo`, sent in the `ClaudeInstance` wire format, and used by `state_manager.rs` to gate conversation watching and state tracking.
 
 ## Testing
 

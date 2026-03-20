@@ -17,9 +17,9 @@ pub async fn get_conversation(State(state): State<AppState>, Path(id): Path<Stri
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    if !instance.command.contains("claude") {
+    if !instance.kind.is_structured() {
         return Json(serde_json::json!({
-            "error": "Not a Claude instance",
+            "error": "Not a structured instance",
             "turns": []
         }))
         .into_response();
@@ -85,9 +85,9 @@ pub async fn poll_conversation(State(state): State<AppState>, Path(id): Path<Str
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    if !instance.command.contains("claude") {
+    if !instance.kind.is_structured() {
         return Json(serde_json::json!({
-            "error": "Not a Claude instance",
+            "error": "Not a structured instance",
             "new_turns": []
         }))
         .into_response();

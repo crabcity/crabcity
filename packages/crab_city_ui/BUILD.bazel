@@ -2,6 +2,7 @@ load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@aspect_rules_jest//jest:defs.bzl", "jest_test")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//packages/crab_city_ui:prettier/package_json.bzl", prettier_bin = "bin")
 load("@npm//packages/crab_city_ui:svelte-check/package_json.bzl", svelte_check_bin = "bin")
 load("@npm//packages/crab_city_ui:vite/package_json.bzl", vite_bin = "bin")
 
@@ -12,6 +13,34 @@ exports_files([
 ])
 
 npm_link_all_packages(name = "node_modules")
+
+# Inner prettier binary — not used directly, wrapped by :prettier below.
+prettier_bin.prettier_binary(
+    name = "prettier_inner",
+    data = [
+        ":node_modules/prettier-plugin-svelte",
+    ],
+    env = {"BAZEL_BINDIR": "."},
+    fixed_args = [
+        "--log-level=warn",
+    ],
+)
+
+# Wrapper that resolves the prettier-plugin-svelte path from runfiles and
+# passes it as an absolute --plugin path. Prettier 3 uses ESM import() for
+# plugin resolution which only searches node_modules up from the calling
+# module — it ignores NODE_PATH and can't find Bazel-managed dependencies.
+# Resolving to an absolute file path bypasses ESM resolution entirely.
+sh_binary(
+    name = "prettier",
+    srcs = ["prettier_wrapper.sh"],
+    data = [
+        ":node_modules/prettier-plugin-svelte",
+        ":prettier_inner",
+    ],
+    visibility = ["//tools/format:__pkg__"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
 
 # Sources
 filegroup(
@@ -81,6 +110,7 @@ svelte_check_bin.svelte_check_binary(
     args = [
         "--tsconfig",
         "./tsconfig.json",
+        "--fail-on-warnings",
     ],
     chdir = package_name(),
     data = [
@@ -97,6 +127,7 @@ svelte_check_bin.svelte_check_test(
     args = [
         "--tsconfig",
         "./tsconfig.json",
+        "--fail-on-warnings",
     ],
     chdir = package_name(),
     data = [
@@ -152,6 +183,14 @@ ts_project(
         "src/lib/utils/fuzzy.ts",
         "src/lib/utils/noise.test.ts",
         "src/lib/utils/noise.ts",
+        "src/lib/utils/pane-content.test.ts",
+        "src/lib/utils/pane-content.ts",
+        "src/lib/utils/project-id.test.ts",
+        "src/lib/utils/project-id.ts",
+        "src/lib/utils/project-order.test.ts",
+        "src/lib/utils/project-order.ts",
+        "src/lib/utils/server-config-utils.test.ts",
+        "src/lib/utils/server-config-utils.ts",
         "src/lib/utils/tool-registry.test.ts",
         "src/lib/utils/tool-registry.ts",
         "src/lib/utils/virtualList.test.ts",

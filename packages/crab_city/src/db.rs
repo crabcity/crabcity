@@ -84,7 +84,7 @@ pub struct DbStats {
 }
 
 /// Current schema version - increment when adding migrations
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 11;
 
 // Run migrations manually since Bazel doesn't package the migrations directory
 pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -681,11 +681,42 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         .execute(pool)
         .await?;
 
+    // v10: Per-user settings table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            PRIMARY KEY (user_id, key)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // v11: Instance inbox table (server-side attention model)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS instance_inbox (
+            instance_id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            turn_count INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            metadata_json TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     // Record the schema version
     if current_version < SCHEMA_VERSION {
         sqlx::query("INSERT OR REPLACE INTO schema_version (version, description) VALUES (?, ?)")
             .bind(SCHEMA_VERSION)
-            .bind("Add task_dispatches table, migrate sent->in_progress")
+            .bind("Add instance_inbox table for fleet attention model")
             .execute(pool)
             .await?;
         info!("Schema upgraded to version {}", SCHEMA_VERSION);

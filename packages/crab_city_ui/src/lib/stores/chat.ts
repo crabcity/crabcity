@@ -14,21 +14,21 @@ import { currentInstanceId } from './instances';
 // =============================================================================
 
 export interface ChatMessageData {
-	id: number;
-	uuid: string;
-	scope: string;
-	user_id: string;
-	display_name: string;
-	content: string;
-	created_at: number;
-	forwarded_from?: string | null;
-	topic?: string | null;
+  id: number;
+  uuid: string;
+  scope: string;
+  user_id: string;
+  display_name: string;
+  content: string;
+  created_at: number;
+  forwarded_from?: string | null;
+  topic?: string | null;
 }
 
 export interface ChatTopicSummary {
-	topic: string;
-	message_count: number;
-	latest_at: number;
+  topic: string;
+  message_count: number;
+  latest_at: number;
 }
 
 // =============================================================================
@@ -84,75 +84,70 @@ export const composeTargetInstance = writable<string | null>(null);
 
 /** Messages for the currently active scope, filtered by active topic */
 export const currentChatMessages = derived(
-	[chatMessages, chatScope, activeTopic],
-	([$chatMessages, $chatScope, $activeTopic]) => {
-		const all = $chatMessages.get($chatScope) ?? [];
-		if ($activeTopic === null) return all;
-		return all.filter((m) => m.topic === $activeTopic);
-	}
+  [chatMessages, chatScope, activeTopic],
+  ([$chatMessages, $chatScope, $activeTopic]) => {
+    const all = $chatMessages.get($chatScope) ?? [];
+    if ($activeTopic === null) return all;
+    return all.filter((m) => m.topic === $activeTopic);
+  }
 );
 
 /** Messages for the current scope grouped by topic (for "all topics" view) */
-export const groupedByTopic = derived(
-	[chatMessages, chatScope],
-	([$chatMessages, $chatScope]) => {
-		const all = $chatMessages.get($chatScope) ?? [];
-		const groups = new Map<string, ChatMessageData[]>();
-		for (const msg of all) {
-			const key = msg.topic ?? '(General)';
-			const group = groups.get(key) ?? [];
-			group.push(msg);
-			groups.set(key, group);
-		}
-		return groups;
-	}
-);
+export const groupedByTopic = derived([chatMessages, chatScope], ([$chatMessages, $chatScope]) => {
+  const all = $chatMessages.get($chatScope) ?? [];
+  const groups = new Map<string, ChatMessageData[]>();
+  for (const msg of all) {
+    const key = msg.topic ?? '(General)';
+    const group = groups.get(key) ?? [];
+    group.push(msg);
+    groups.set(key, group);
+  }
+  return groups;
+});
 
 /** Full ChatMessageData objects for selected IDs, ordered by created_at */
 export const selectedMessages = derived(
-	[chatMessages, chatScope, selectedMessageIds],
-	([$chatMessages, $chatScope, $selectedIds]) => {
-		if ($selectedIds.size === 0) return [];
-		const all = $chatMessages.get($chatScope) ?? [];
-		return all
-			.filter((m) => $selectedIds.has(m.uuid))
-			.sort((a, b) => a.created_at - b.created_at);
-	}
+  [chatMessages, chatScope, selectedMessageIds],
+  ([$chatMessages, $chatScope, $selectedIds]) => {
+    if ($selectedIds.size === 0) return [];
+    const all = $chatMessages.get($chatScope) ?? [];
+    return all.filter((m) => $selectedIds.has(m.uuid)).sort((a, b) => a.created_at - b.created_at);
+  }
 );
 
 /** Formatted compose draft from selected messages */
 export const composeDraft = derived(selectedMessages, ($selectedMessages) => {
-	if ($selectedMessages.length === 0) return '';
-	const participants = [...new Set($selectedMessages.map((m) => m.display_name))];
-	const lines = $selectedMessages.map((m) => `${m.display_name}: ${m.content}`);
-	return `[Context from chat discussion between ${participants.join(', ')}]\n\n${lines.join('\n')}\n\nBased on the above discussion, please:\n`;
+  if ($selectedMessages.length === 0) return '';
+  const participants = [...new Set($selectedMessages.map((m) => m.display_name))];
+  const lines = $selectedMessages.map((m) => `${m.display_name}: ${m.content}`);
+  return `[Context from chat discussion between ${participants.join(', ')}]\n\n${lines.join('\n')}\n\nBased on the above discussion, please:\n`;
 });
 
 /** Total unread across all scopes */
 export const totalUnread = derived(unreadCounts, ($unreadCounts) => {
-	let total = 0;
-	for (const count of $unreadCounts.values()) {
-		total += count;
-	}
-	return total;
+  let total = 0;
+  for (const count of $unreadCounts.values()) {
+    total += count;
+  }
+  return total;
 });
 
 /** Whether the current scope has more history to load */
 export const currentHasMore = derived(
-	[hasMoreHistory, chatScope],
-	([$hasMore, $scope]) => $hasMore.get($scope) ?? true
+  [hasMoreHistory, chatScope],
+  ([$hasMore, $scope]) => $hasMore.get($scope) ?? true
 );
 
 /** Whether the current scope is loading history */
 export const currentLoadingHistory = derived(
-	[loadingHistory, chatScope],
-	([$loading, $scope]) => $loading.get($scope) ?? false
+  [loadingHistory, chatScope],
+  ([$loading, $scope]) => $loading.get($scope) ?? false
 );
 
 /** Topics for the current scope */
 export const currentTopics = derived(
-	[topicList, chatScope],
-	([$topicList, $chatScope]) => $topicList.get($chatScope) ?? []
+  [topicList, chatScope],
+  ([$topicList, $chatScope]) => $topicList.get($chatScope) ?? []
 );
 
 // =============================================================================
@@ -161,65 +156,61 @@ export const currentTopics = derived(
 
 /** Handle an incoming ChatMessage from WebSocket */
 export function handleChatMessage(msg: ChatMessageData): void {
-	chatMessages.update((map) => {
-		const existing = map.get(msg.scope) ?? [];
-		// Dedup by uuid
-		if (existing.some((m) => m.uuid === msg.uuid)) return map;
-		map.set(msg.scope, [...existing, msg]);
-		return new Map(map);
-	});
+  chatMessages.update((map) => {
+    const existing = map.get(msg.scope) ?? [];
+    // Dedup by uuid
+    if (existing.some((m) => m.uuid === msg.uuid)) return map;
+    map.set(msg.scope, [...existing, msg]);
+    return new Map(map);
+  });
 
-	// Bump unread if panel is closed or on a different scope
-	const open = get(isChatOpen);
-	const activeScope = get(chatScope);
-	if (!open || activeScope !== msg.scope) {
-		unreadCounts.update((map) => {
-			map.set(msg.scope, (map.get(msg.scope) ?? 0) + 1);
-			return new Map(map);
-		});
-	}
+  // Bump unread if panel is closed or on a different scope
+  const open = get(isChatOpen);
+  const activeScope = get(chatScope);
+  if (!open || activeScope !== msg.scope) {
+    unreadCounts.update((map) => {
+      map.set(msg.scope, (map.get(msg.scope) ?? 0) + 1);
+      return new Map(map);
+    });
+  }
 }
 
 /** Handle a ChatHistoryResponse from WebSocket */
-export function handleChatHistory(
-	scope: string,
-	messages: ChatMessageData[],
-	hasMore: boolean
-): void {
-	chatMessages.update((map) => {
-		const existing = map.get(scope) ?? [];
-		// Prepend older messages, dedup by uuid
-		const existingUuids = new Set(existing.map((m) => m.uuid));
-		const newMsgs = messages.filter((m) => !existingUuids.has(m.uuid));
-		map.set(scope, [...newMsgs, ...existing]);
-		return new Map(map);
-	});
+export function handleChatHistory(scope: string, messages: ChatMessageData[], hasMore: boolean): void {
+  chatMessages.update((map) => {
+    const existing = map.get(scope) ?? [];
+    // Prepend older messages, dedup by uuid
+    const existingUuids = new Set(existing.map((m) => m.uuid));
+    const newMsgs = messages.filter((m) => !existingUuids.has(m.uuid));
+    map.set(scope, [...newMsgs, ...existing]);
+    return new Map(map);
+  });
 
-	hasMoreHistory.update((map) => {
-		map.set(scope, hasMore);
-		return new Map(map);
-	});
+  hasMoreHistory.update((map) => {
+    map.set(scope, hasMore);
+    return new Map(map);
+  });
 
-	loadingHistory.update((map) => {
-		map.set(scope, false);
-		return new Map(map);
-	});
+  loadingHistory.update((map) => {
+    map.set(scope, false);
+    return new Map(map);
+  });
 }
 
 /** Handle a ChatTopicsResponse from WebSocket */
 export function handleChatTopics(scope: string, topics: ChatTopicSummary[]): void {
-	topicList.update((map) => {
-		map.set(scope, topics);
-		return new Map(map);
-	});
+  topicList.update((map) => {
+    map.set(scope, topics);
+    return new Map(map);
+  });
 }
 
 /** Mark a scope as loading history */
 export function setLoadingHistory(scope: string): void {
-	loadingHistory.update((map) => {
-		map.set(scope, true);
-		return new Map(map);
-	});
+  loadingHistory.update((map) => {
+    map.set(scope, true);
+    return new Map(map);
+  });
 }
 
 // =============================================================================
@@ -227,7 +218,7 @@ export function setLoadingHistory(scope: string): void {
 // =============================================================================
 
 export function setActiveTopic(topic: string | null): void {
-	activeTopic.set(topic);
+  activeTopic.set(topic);
 }
 
 // =============================================================================
@@ -235,44 +226,44 @@ export function setActiveTopic(topic: string | null): void {
 // =============================================================================
 
 export function toggleSelectionMode(): void {
-	const current = get(selectionMode);
-	if (current) {
-		// Exiting: clear selection
-		selectionMode.set(false);
-		selectedMessageIds.set(new Set());
-	} else {
-		selectionMode.set(true);
-	}
+  const current = get(selectionMode);
+  if (current) {
+    // Exiting: clear selection
+    selectionMode.set(false);
+    selectedMessageIds.set(new Set());
+  } else {
+    selectionMode.set(true);
+  }
 }
 
 export function exitSelectionMode(): void {
-	selectionMode.set(false);
-	selectedMessageIds.set(new Set());
+  selectionMode.set(false);
+  selectedMessageIds.set(new Set());
 }
 
 export function toggleMessageSelection(uuid: string): void {
-	selectedMessageIds.update((set) => {
-		const next = new Set(set);
-		if (next.has(uuid)) {
-			next.delete(uuid);
-		} else {
-			next.add(uuid);
-		}
-		return next;
-	});
+  selectedMessageIds.update((set) => {
+    const next = new Set(set);
+    if (next.has(uuid)) {
+      next.delete(uuid);
+    } else {
+      next.add(uuid);
+    }
+    return next;
+  });
 }
 
 export function selectAllInTopic(topic: string): void {
-	const scope = get(chatScope);
-	const msgs = get(chatMessages).get(scope) ?? [];
-	const topicMsgs = msgs.filter((m) => (m.topic ?? '(General)') === topic);
-	selectedMessageIds.update((set) => {
-		const next = new Set(set);
-		for (const m of topicMsgs) {
-			next.add(m.uuid);
-		}
-		return next;
-	});
+  const scope = get(chatScope);
+  const msgs = get(chatMessages).get(scope) ?? [];
+  const topicMsgs = msgs.filter((m) => (m.topic ?? '(General)') === topic);
+  selectedMessageIds.update((set) => {
+    const next = new Set(set);
+    for (const m of topicMsgs) {
+      next.add(m.uuid);
+    }
+    return next;
+  });
 }
 
 // =============================================================================
@@ -280,14 +271,14 @@ export function selectAllInTopic(topic: string): void {
 // =============================================================================
 
 export function openCompose(): void {
-	const draft = get(composeDraft);
-	composeContent.set(draft);
-	composeTargetInstance.set(get(currentInstanceId));
-	composeOpen.set(true);
+  const draft = get(composeDraft);
+  composeContent.set(draft);
+  composeTargetInstance.set(get(currentInstanceId));
+  composeOpen.set(true);
 }
 
 export function closeCompose(): void {
-	composeOpen.set(false);
+  composeOpen.set(false);
 }
 
 // =============================================================================
@@ -295,44 +286,44 @@ export function closeCompose(): void {
 // =============================================================================
 
 export function openChat(): void {
-	isChatOpen.set(true);
-	clearUnreadForCurrentScope();
+  isChatOpen.set(true);
+  clearUnreadForCurrentScope();
 }
 
 export function closeChat(): void {
-	isChatOpen.set(false);
+  isChatOpen.set(false);
 }
 
 export function toggleChat(): void {
-	const open = get(isChatOpen);
-	if (open) {
-		closeChat();
-	} else {
-		openChat();
-	}
+  const open = get(isChatOpen);
+  if (open) {
+    closeChat();
+  } else {
+    openChat();
+  }
 }
 
 export function switchScope(scope: string): void {
-	chatScope.set(scope);
-	activeTopic.set(null); // Reset topic filter on scope change
-	clearUnread(scope);
+  chatScope.set(scope);
+  activeTopic.set(null); // Reset topic filter on scope change
+  clearUnread(scope);
 }
 
 function clearUnreadForCurrentScope(): void {
-	const scope = get(chatScope);
-	clearUnread(scope);
+  const scope = get(chatScope);
+  clearUnread(scope);
 }
 
 function clearUnread(scope: string): void {
-	unreadCounts.update((map) => {
-		map.delete(scope);
-		return new Map(map);
-	});
+  unreadCounts.update((map) => {
+    map.delete(scope);
+    return new Map(map);
+  });
 }
 
 /** Get the oldest message ID for a scope (for pagination) */
 export function getOldestMessageId(scope: string): number | undefined {
-	const msgs = get(chatMessages).get(scope);
-	if (!msgs || msgs.length === 0) return undefined;
-	return msgs[0].id;
+  const msgs = get(chatMessages).get(scope);
+  if (!msgs || msgs.length === 0) return undefined;
+  return msgs[0].id;
 }
