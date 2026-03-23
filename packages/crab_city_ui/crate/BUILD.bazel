@@ -12,7 +12,10 @@ rust_library(
         # Use execpath to get path to the tree artifact
         "CRAB_CITY_UI_PATH": "$(execpath //packages/crab_city_ui)",
     },
-    # Disable sandbox - rust-embed proc macro can't follow sandbox symlinks
+    # rust-embed proc macro walks the filesystem at compile time and can't
+    # follow Bazel sandbox symlinks — no-sandbox is required.
+    # Staleness is prevented by hashing UI sources in the CI disk cache key
+    # (see .github/workflows/release.yml).
     tags = ["no-sandbox"],
     visibility = ["//visibility:public"],
     deps = [

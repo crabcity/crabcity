@@ -38,10 +38,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/bazel-disk-cache
-          key: bazel-disk-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml') }}
+          key: bazel-disk-${{ matrix.target }}-${{ hashFiles('MODULE.bazel', 'Cargo.lock', 'packages/crab_city_ui/pnpm-lock.yaml', 'packages/crab_city_ui/src/**') }}
           restore-keys: |
             bazel-disk-${{ matrix.target }}-
-          save-always: true
 
       - name: Build
         run: >
