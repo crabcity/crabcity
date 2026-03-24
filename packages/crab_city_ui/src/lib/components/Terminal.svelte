@@ -72,6 +72,7 @@
   let outputUnsubscribe: (() => void) | null = null;
   let isReady = $state(false);
   let error = $state<string | null>(null);
+  let scrolledUp = $state(false);
 
   // Capture instance ID at mount time so onDestroy targets the correct instance
   // (currentInstanceId store may have already changed by the time onDestroy fires)
@@ -123,28 +124,24 @@
         terminal.write('\x1b[H\x1b[2J');
       }
 
-      // Check viewport position BEFORE writing so writes don't change the answer
-      const wasAtBottom = isAtBottom();
+      // On replay, always pin to bottom — the old buffer was nuked so
+      // the previous scroll position is meaningless.
+      const pinToBottom = buffer.shouldClear || isAtBottom();
 
-      for (const chunk of buffer.chunks) {
-        terminal.write(chunk);
-      }
-
-      // Auto-scroll only if the viewport was already at the bottom
-      if (wasAtBottom) {
-        terminal.scrollToBottom();
+      for (let i = 0; i < buffer.chunks.length; i++) {
+        const isLast = i === buffer.chunks.length - 1;
+        terminal.write(buffer.chunks[i], isLast && pinToBottom ? () => terminal?.scrollToBottom() : undefined);
       }
     });
   }
 
-  // Check if terminal is scrolled to bottom
+  // Check if terminal is scrolled to bottom using xterm's buffer API.
+  // The `.xterm-viewport` DOM element doesn't reflect real scroll state
+  // in xterm.js 6.0's canvas renderer — use viewportY/baseY instead.
   function isAtBottom(): boolean {
     if (!terminal) return true;
-    const viewport = terminal.element?.querySelector('.xterm-viewport');
-    if (!viewport) return true;
-    const { scrollTop, scrollHeight, clientHeight } = viewport;
-    // Consider "at bottom" if within 5px
-    return scrollHeight - scrollTop - clientHeight < 5;
+    const buf = terminal.buffer.active;
+    return buf.viewportY >= buf.baseY;
   }
 
   onMount(() => {
@@ -231,6 +228,10 @@
         sendInput(data);
         // Scroll to bottom when user types
         terminal?.scrollToBottom();
+      });
+
+      terminal.onScroll(() => {
+        scrolledUp = !isAtBottom();
       });
 
       resizeObserver = new ResizeObserver(() => {
@@ -362,6 +363,11 @@
     </div>
   {/if}
   <div class="terminal-container" class:hidden={!isReady || error} bind:this={terminalEl}></div>
+  {#if scrolledUp && isReady}
+    <button class="scroll-bottom-btn" onclick={() => { terminal?.scrollToBottom(); }}>
+      &#9660; LATEST
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -555,6 +561,31 @@
   .lock-action-btn.release:hover {
     background: var(--status-green-border);
     border-color: var(--status-green);
+  }
+
+  .scroll-bottom-btn {
+    position: absolute;
+    bottom: 12px;
+    right: 20px;
+    padding: 4px 12px;
+    background: var(--surface-800);
+    border: 1px solid var(--surface-border);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: inherit;
+    letter-spacing: 0.1em;
+    color: var(--amber-400);
+    cursor: pointer;
+    z-index: 10;
+    transition: all 0.15s ease;
+    box-shadow: var(--elevation-low);
+  }
+
+  .scroll-bottom-btn:hover {
+    background: var(--tint-focus);
+    border-color: var(--tint-selection);
+    box-shadow: var(--elevation-high);
   }
 
   .terminal-container :global(.xterm) {
