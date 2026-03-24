@@ -641,9 +641,15 @@
   }
 
   .pane-actions {
+    position: relative;
     display: flex;
     gap: 2px;
     flex-shrink: 0;
+    padding: 0 4px;
+    margin-right: -8px;
+    padding-right: 8px;
+    background: color-mix(in srgb, var(--surface-700) 80%, transparent);
+    border-radius: 3px;
   }
 
   .chrome-btn {
