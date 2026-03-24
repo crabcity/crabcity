@@ -24,6 +24,7 @@
   import { sendRefresh } from '$lib/stores/websocket';
   import { openExplorerPicker } from '$lib/stores/files';
   import { userSettings } from '$lib/stores/settings';
+  import { activityLevel } from '$lib/stores/activity';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
   interface Props {
@@ -82,6 +83,28 @@
     if (instanceStatus === 'tool') return 'Claude is executing a tool';
     return null;
   });
+
+  // Activity meter: visible whenever the instance is producing output
+  const showActivityFill = $derived(pane.content.kind === 'conversation' && $activityLevel > 0);
+
+  const BLOCK_COUNT = 80;
+  // √x curve: 25% baud → half bar, compresses asymptotically toward full.
+  // Keeps the visual action in the middle where oscillation is most readable.
+  const litBlocks = $derived(Math.max(1, Math.ceil(Math.sqrt($activityLevel) * BLOCK_COUNT)));
+
+  // Phosphor palette — matches VoiceVisualizer's ember→amber ramp
+  // rgb(160,65,10) brown ember → rgb(245,180,110) hot amber
+  const METER_COLORS = Array.from({ length: BLOCK_COUNT }, (_, i) => {
+    const t = i / (BLOCK_COUNT - 1);
+    const r = Math.round(160 + t * 85);
+    const g = Math.round(65 + t * 115);
+    const b = Math.round(10 + t * 100);
+    return `rgb(${r},${g},${b})`;
+  });
+
+  function blockColor(i: number): string {
+    return METER_COLORS[i];
+  }
 
   // File name for file-viewer chrome
   const fileViewerLabel = $derived.by(() => {
@@ -267,6 +290,16 @@
 </script>
 
 <div class="pane-chrome" bind:this={chromeEl}>
+  {#if showActivityFill}
+    <span class="chrome-activity-meter">
+      {#each Array(BLOCK_COUNT) as _, i}
+        <span
+          class="chrome-activity-block"
+          style={i < litBlocks ? `background-color: ${blockColor(i)}` : ''}
+        ></span>
+      {/each}
+    </span>
+  {/if}
   {#if instanceStatus && instanceStatus !== 'idle'}
     <span
       class="status-dot"
@@ -421,6 +454,8 @@
 
 <style>
   .pane-chrome {
+    position: relative;
+    overflow: hidden;
     display: flex;
     align-items: center;
     height: 24px;
@@ -429,6 +464,25 @@
     border-bottom: 1px solid var(--surface-border);
     flex-shrink: 0;
     gap: 4px;
+  }
+
+  .chrome-activity-meter {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    display: flex;
+    gap: 1px;
+    padding: 5px 0;
+    opacity: 0.25;
+    pointer-events: none;
+  }
+
+  .chrome-activity-block {
+    flex: 1;
+    border-radius: 1px;
+    transition: background-color 0.15s ease;
   }
 
   .status-dot {
