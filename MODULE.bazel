@@ -263,6 +263,7 @@ crate_index.spec(
 )
 crate_index.spec(
     features = [
+        "fs",
         "signal",
         "term",
     ],

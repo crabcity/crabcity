@@ -119,12 +119,10 @@ fn write_cache_file(out_dir: &str, content: &[u8]) {
     let hex = hash.to_hex();
     let path = std::path::Path::new(out_dir).join(hex.as_str());
     // Skip if already exists with correct content (idempotent).
-    if path.exists() {
-        if let Ok(existing) = std::fs::read(&path) {
-            if existing == content {
-                return;
-            }
-        }
+    if path.exists()
+        && std::fs::read(&path).is_ok_and(|existing| existing == content)
+    {
+        return;
     }
     std::fs::write(&path, content).expect("failed to write cache file");
 }

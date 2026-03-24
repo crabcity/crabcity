@@ -130,10 +130,10 @@
   <div class="container">
     <h1>Crab City</h1>
     <div class="spinner" id="spinner"></div>
-    <p class="status" id="status">Starting daemon...</p>
+    <p class="status" id="status">Starting server...</p>
     <div class="error" id="error">
-      <p class="error-message" id="error-message">Failed to start daemon</p>
-      <p class="error-hint">Is <code>crab</code> installed and on your PATH?</p>
+      <p class="error-message" id="error-message">Failed to start server</p>
+      <p class="error-hint">Check the logs for details</p>
       <button class="retry-btn" id="retry-btn">Retry</button>
     </div>
   </div>
@@ -180,7 +180,7 @@
       document.getElementById('status').textContent = 'Retrying...';
 
       if (window.__TAURI_INTERNALS__) {
-        window.__TAURI_INTERNALS__.invoke('retry_daemon_startup').catch(function(err) {
+        window.__TAURI_INTERNALS__.invoke('retry_server_startup').catch(function(err) {
           showError(err || 'Retry failed');
           btn.disabled = false;
           btn.textContent = 'Retry';

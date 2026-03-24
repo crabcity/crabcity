@@ -1,11 +1,13 @@
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load(":macos_app.bzl", "macos_app")
 
 package(default_visibility = ["//visibility:public"])
 
 _TAURI_DATA = [
     "tauri.conf.json",
     "loading.html",
+    "Info.plist",
 ] + glob([
     "capabilities/**",
     "icons/**",
@@ -51,20 +53,16 @@ rust_binary(
     tags = ["no-sandbox"],
     deps = [
         ":build_script",
-        "@crate_index//:anyhow",
-        "@crate_index//:dirs",
-        "@crate_index//:nix",
-        "@crate_index//:reqwest",
+        "//packages/crab_city:crab_city_lib_embedded",
+        "@crate_index//:clap",
         "@crate_index//:serde",
         "@crate_index//:serde_json",
         "@crate_index//:tauri",
         "@crate_index//:tauri-plugin-shell",
         "@crate_index//:tauri-plugin-window-state",
-        "@crate_index//:thiserror",
         "@crate_index//:tokio",
         "@crate_index//:tracing",
         "@crate_index//:tracing-subscriber",
-        "@crate_index//:which",
     ],
 )
 
@@ -77,8 +75,12 @@ rust_test(
         "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
     },
     tags = ["no-sandbox"],
-    deps = [
-        "@crate_index//:axum",
-        "@crate_index//:tempfile",
-    ],
+)
+
+macos_app(
+    name = "macos_app",
+    binary = ":crab_city_desktop",
+    binary_name = "crab_city_desktop",
+    bundle_name = "CrabCity",
+    info_plist = "Info.plist",
 )

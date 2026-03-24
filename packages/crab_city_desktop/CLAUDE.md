@@ -1,19 +1,22 @@
 # crab_city_desktop — CLAUDE.md
 
-Native desktop app for Crab City using Tauri 2. Wraps the SvelteKit web UI in a native window, with daemon lifecycle management and native OS integration.
+Native desktop app for Crab City using Tauri 2. Embeds the `crab_city` server in-process (no separate daemon) and wraps the SvelteKit web UI in a native window with native OS integration.
 
 ## Architecture
 
-The Tauri webview loads `http://localhost:{port}` from the daemon's HTTP server. The SvelteKit frontend uses relative paths for API calls and derives WebSocket URLs from `window.location`, so zero frontend changes are needed.
+The desktop app first checks for an existing healthy server (`check_existing_server()`). If found, it connects as an external client. Otherwise, it starts an `EmbeddedServer` in-process. The webview loads `http://127.0.0.1:{port}` either way.
 
 ```
 src/
-├── main.rs      Tauri setup, menus, tray, window lifecycle, daemon startup, health monitor
-├── daemon.rs    Daemon discovery/start/health/stop (mirrors cli/daemon.rs)
-└── config.rs    Minimal path config for daemon file locations
+└── main.rs      Tauri setup, server discovery/lifecycle, menus, tray, window lifecycle
 ```
 
-**Daemon ownership**: The app tracks whether it started the daemon (`we_started` flag). On app exit, it only stops the daemon if it started it — pre-existing daemons (from CLI/TUI) survive.
+**Key types**:
+- `ServerMode` — enum: `Embedded(EmbeddedServer)` (we own it) or `External { port }` (existing daemon)
+- `AppState` — holds `Mutex<Option<ServerMode>>` and `AtomicU16` for the server port
+- `EmbeddedServer` (from `crab_city::server`) — starts/stops the axum server, writes daemon files for CLI discovery
+
+**Custom data directory**: `--data-dir /path/to/data` via clap (defaults to `~/.crabcity`).
 
 ## Native OS Integration
 
@@ -21,7 +24,7 @@ src/
 - **System tray**: Left-click shows window, right-click context menu (Show Window, Quit). Tooltip shows "Crab City"
 - **Window state persistence**: `tauri-plugin-window-state` saves/restores position, size, maximized state across launches. Window starts hidden (visible: false) to prevent flash before state restore
 - **macOS close behavior**: Closing the window (Cmd+W / red X) hides it — the app stays running in the tray. Cmd+Q or tray Quit actually exits
-- **Smooth loading transition**: Loading screen fades out before navigating to the daemon URL (no white flash)
+- **Smooth loading transition**: Loading screen fades out before navigating to the server URL (no white flash)
 
 ## Build & Test
 
@@ -40,11 +43,11 @@ Additionally, `ResolvedCommand` has `#[cfg(debug_assertions)]` fields. Bazel com
 
 ## Dev Workflow
 
-Two terminals:
-1. `cargo run -p crab_city -- server --port 0` — start daemon
-2. `cd packages/crab_city_desktop && cargo tauri dev` — launches Vite dev server automatically (`beforeDevCommand`), then opens Tauri window
+Single terminal: `cd packages/crab_city_desktop && cargo tauri dev`
 
-In dev mode, Tauri loads `http://localhost:5173` (Vite), which proxies `/api/*` and WebSocket to the daemon via `dynamicBackendProxy` in `vite.config.ts`.
+This launches Vite's dev server (`beforeDevCommand`), then opens the Tauri window. The embedded server starts in-process and writes `daemon.port`, which Vite's `dynamicBackendProxy` reads to proxy `/api/*` and WebSocket requests.
+
+In dev mode (`cargo tauri dev`), the webview loads Vite at `http://localhost:5173`. The embedded server still starts (so Vite can proxy to it), but the webview is not navigated away from the Vite URL.
 
 ## Key Patterns
 
@@ -52,17 +55,24 @@ In dev mode, Tauri loads `http://localhost:5173` (Vite), which proxies `/api/*` 
 
 The loading page (`loading.html`) communicates with Rust via two mechanisms:
 - **Rust → JS**: `window.eval()` calls global functions (`setStatus()`, `showError()`, `fadeOutAndNavigate()`)
-- **JS → Rust**: Retry button invokes `retry_daemon_startup` Tauri command via `__TAURI_INTERNALS__.invoke()`
+- **JS → Rust**: Retry button invokes `retry_server_startup` Tauri command via `__TAURI_INTERNALS__.invoke()`
+
+### Server Lifecycle
+
+- **Discovery**: `start_or_discover_server()` first calls `check_existing_server()` — if a healthy daemon is found, sets `ServerMode::External` and spawns a health monitor
+- **Embedded startup**: if no existing server, calls `EmbeddedServer::start()` (which acquires the daemon lock), sets `ServerMode::Embedded`
+- **Health monitor**: for external servers, polls `health_check_port()` every 5s. On failure, shows loading page with "Server disconnected" error and retry button
+- **Shutdown**: `RunEvent::Exit` checks `ServerMode` — `Embedded` triggers `server.shutdown()`, `External` leaves the daemon running
 
 ### macOS Window Lifecycle
 
 - `CloseRequested` → `window.hide()` + `api.prevent_close()` (keeps app in tray)
-- `RunEvent::Exit` → stop daemon if we started it (true quit via Cmd+Q or tray)
-- Non-macOS: `CloseRequested` stops daemon and closes normally
+- `RunEvent::Exit` → shut down embedded server (true quit via Cmd+Q or tray)
 
-## Key Differences from CLI daemon.rs
+## Release Build (macOS .app bundle)
 
-- Uses `which crab` instead of `current_exe()` to find the server binary
-- `ensure_daemon()` returns `(DaemonInfo, we_started: bool)` for ownership tracking
-- No `DaemonError` enum or tungstenite support — simpler error handling via `anyhow`
-- Tests use the same patterns (temp_config, spawn_health_server) as the CLI tests
+```sh
+bazel build //packages/crab_city_desktop:macos_app
+```
+
+Produces `CrabCity.app` with the Tauri binary (which includes the embedded server) in `Contents/MacOS/`. No sidecar binary needed. The `macos_app` rule in `macos_app.bzl` uses a tree artifact (directory output) to assemble the bundle structure. Code signing and notarization are deferred to when public distribution is needed.

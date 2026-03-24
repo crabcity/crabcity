@@ -1,47 +1,62 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod config;
-mod daemon;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU16, Ordering};
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
+use clap::Parser;
 use tauri::Manager;
 use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-use crate::config::CrabCityConfig;
-use crate::daemon::DaemonInfo;
+use crab_city::config::CrabCityConfig;
+use crab_city::server::{self, EmbeddedServer, ServerOptions};
 
 /// Loading page HTML, embedded at compile time. Injected into the webview
 /// via JS rather than Tauri's asset embedding (which requires a writable
 /// OUT_DIR that Bazel doesn't provide).
 const LOADING_HTML: &str = include_str!("../loading.html");
 
+#[derive(Parser)]
+#[command(name = "crab-city-desktop")]
+struct DesktopArgs {
+    /// Custom data directory (defaults to ~/.crabcity)
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+}
+
+/// How the desktop app is connected to the server.
+enum ServerMode {
+    /// We started the server ourselves — shut it down on exit.
+    Embedded(EmbeddedServer),
+    /// We connected to a pre-existing daemon — leave it running on exit.
+    External { port: u16 },
+}
+
 struct AppState {
-    daemon_info: Arc<Mutex<Option<DaemonInfo>>>,
-    config: CrabCityConfig,
-    we_started: AtomicBool,
+    server_mode: Mutex<Option<ServerMode>>,
+    server_port: AtomicU16,
 }
 
 fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = CrabCityConfig::new(None).expect("Failed to initialize config");
+    let args = DesktopArgs::parse();
+
+    let data_dir = args.data_dir.clone();
 
     let state = AppState {
-        daemon_info: Arc::new(Mutex::new(None)),
-        config,
-        we_started: AtomicBool::new(false),
+        server_mode: Mutex::new(None),
+        server_port: AtomicU16::new(0),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(state)
-        .invoke_handler(tauri::generate_handler![retry_daemon_startup])
-        .setup(|app| {
+        .invoke_handler(tauri::generate_handler![retry_server_startup])
+        .setup(move |app| {
             setup_menu(app)?;
             setup_tray(app)?;
 
@@ -56,39 +71,27 @@ fn main() {
 
                 let _ = window.show();
 
-                if !has_dev_frontend {
-                    inject_loading_page(&window);
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        start_and_navigate(handle).await;
-                    });
-                }
+                let handle = app.handle().clone();
+                let data_dir_clone = data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    start_or_discover_server(handle, data_dir_clone, has_dev_frontend).await;
+                });
             }
             Ok(())
         })
         .on_window_event(|window, event| {
-            match event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // macOS: hide window on close instead of destroying
-                tauri::WindowEvent::CloseRequested { api, .. } => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let _ = window.hide();
-                        api.prevent_close();
-                    }
-                    // On non-macOS, let it close and stop daemon if we started it
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = api;
-                        let state = window.state::<AppState>();
-                        if state.we_started.load(Ordering::Relaxed) {
-                            if let Some(info) = state.daemon_info.lock().unwrap().as_ref() {
-                                tracing::info!("Stopping daemon we started (pid={})", info.pid);
-                                daemon::stop_daemon(info);
-                            }
-                        }
-                    }
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = window.hide();
+                    api.prevent_close();
                 }
-                _ => {}
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = api;
+                    let _ = window;
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -97,17 +100,161 @@ fn main() {
             // Handle true app exit (Cmd+Q, tray Quit, etc.)
             if let tauri::RunEvent::Exit = event {
                 let state = app_handle.state::<AppState>();
-                if state.we_started.load(Ordering::Relaxed) {
-                    if let Some(info) = state.daemon_info.lock().unwrap().as_ref() {
-                        tracing::info!(
-                            "App exiting — stopping daemon we started (pid={})",
-                            info.pid
-                        );
-                        daemon::stop_daemon(info);
+                match state.server_mode.lock().unwrap().take() {
+                    Some(ServerMode::Embedded(server)) => {
+                        tracing::info!("App exiting — shutting down embedded server");
+                        let _ = tauri::async_runtime::block_on(server.shutdown());
                     }
+                    Some(ServerMode::External { port }) => {
+                        tracing::info!(
+                            "App exiting — leaving external server running on port {port}"
+                        );
+                    }
+                    None => {}
                 }
             }
         });
+}
+
+// =============================================================================
+// Server Discovery & Startup
+// =============================================================================
+
+/// Discover an existing server or start an embedded one, then navigate the webview.
+async fn start_or_discover_server(
+    handle: tauri::AppHandle,
+    data_dir: Option<PathBuf>,
+    has_dev_frontend: bool,
+) {
+    // Show loading status
+    if !has_dev_frontend {
+        inject_loading_page(&handle);
+        eval_loading(&handle, "setStatus('Checking for running server...')");
+    }
+
+    let config = match CrabCityConfig::new(data_dir) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("Failed to initialize config: {err:#}");
+            show_error(&handle, &err.to_string());
+            return;
+        }
+    };
+
+    // Try to discover an existing healthy server first
+    if let Some(port) = server::check_existing_server(&config) {
+        tracing::info!("Discovered existing server on port {port}");
+        let url = format!("http://127.0.0.1:{}", port);
+
+        let state = handle.state::<AppState>();
+        state.server_port.store(port, Ordering::Relaxed);
+        *state.server_mode.lock().unwrap() = Some(ServerMode::External { port });
+
+        if has_dev_frontend {
+            tracing::info!("Dev frontend detected — external server available for Vite proxy");
+        } else {
+            eval_loading(&handle, "setStatus('Connected to existing server...')");
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            if let Some(window) = handle.get_webview_window("main") {
+                let navigate_js = format!("fadeOutAndNavigate('{}')", url.replace('\'', "\\'"));
+                let _ = window.eval(&navigate_js);
+            }
+        }
+
+        // Spawn health monitor for external server
+        spawn_external_health_monitor(handle.clone(), port);
+        return;
+    }
+
+    // No existing server — start our own
+    if !has_dev_frontend {
+        eval_loading(&handle, "setStatus('Starting server...')");
+    }
+
+    let options = ServerOptions {
+        port: Some(0), // auto-select
+        ..Default::default()
+    };
+
+    match EmbeddedServer::start(config, options).await {
+        Ok(server) => {
+            let port = server.port();
+            let url = format!("http://127.0.0.1:{}", port);
+            tracing::info!("Embedded server ready at {url}");
+
+            let state = handle.state::<AppState>();
+            state.server_port.store(port, Ordering::Relaxed);
+            *state.server_mode.lock().unwrap() = Some(ServerMode::Embedded(server));
+
+            if has_dev_frontend {
+                tracing::info!("Dev frontend detected — server available for Vite proxy");
+            } else {
+                eval_loading(&handle, "setStatus('Connected — loading UI...')");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+                if let Some(window) = handle.get_webview_window("main") {
+                    let navigate_js = format!("fadeOutAndNavigate('{}')", url.replace('\'', "\\'"));
+                    let _ = window.eval(&navigate_js);
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("Failed to start embedded server: {err:#}");
+            show_error(&handle, &err.to_string());
+        }
+    }
+}
+
+/// Background task that polls an external server's health every 5 seconds.
+///
+/// If the external server dies, injects the loading page with an error and
+/// a retry button. On retry, `start_or_discover_server()` runs again —
+/// it may rediscover a restarted daemon or start an embedded server.
+fn spawn_external_health_monitor(handle: tauri::AppHandle, port: u16) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Skip the first tick (immediate) since we just verified health
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+
+            // Only monitor while we're in External mode
+            {
+                let state = handle.state::<AppState>();
+                let mode = state.server_mode.lock().unwrap();
+                match mode.as_ref() {
+                    Some(ServerMode::External { .. }) => {}
+                    _ => break, // switched to embedded or shutting down
+                }
+            }
+
+            if !server::health_check_port(port) {
+                tracing::warn!("External server on port {port} is no longer responding");
+
+                // Clear the stale server mode
+                {
+                    let state = handle.state::<AppState>();
+                    *state.server_mode.lock().unwrap() = None;
+                    state.server_port.store(0, Ordering::Relaxed);
+                }
+
+                // Show error with retry
+                inject_loading_page(&handle);
+                show_error(&handle, "Server disconnected");
+                break;
+            }
+        }
+    });
+}
+
+fn show_error(handle: &tauri::AppHandle, msg: &str) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let escaped = msg.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!("showError('{}')", escaped);
+        let _ = window.eval(&js);
+    }
 }
 
 // =============================================================================
@@ -185,10 +332,12 @@ fn setup_menu(app: &tauri::App) -> tauri::Result<()> {
         }
         "reload" => {
             if let Some(window) = app_handle.get_webview_window("main") {
-                // Re-navigate to the daemon URL to force reload
                 let state = app_handle.state::<AppState>();
-                if let Some(info) = state.daemon_info.lock().unwrap().as_ref() {
-                    let url: tauri::Url = info.base_url().parse().expect("invalid daemon URL");
+                let port = state.server_port.load(Ordering::Relaxed);
+                if port > 0 {
+                    let url: tauri::Url = format!("http://127.0.0.1:{}", port)
+                        .parse()
+                        .expect("invalid server URL");
                     let _ = window.navigate(url);
                 }
             }
@@ -279,82 +428,38 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
 // =============================================================================
 
 /// Called from loading.html when the user clicks "Retry".
-/// Re-runs daemon startup and navigates on success.
 #[tauri::command]
-async fn retry_daemon_startup(handle: tauri::AppHandle) -> Result<(), String> {
-    start_and_navigate(handle).await;
+async fn retry_server_startup(handle: tauri::AppHandle) -> Result<(), String> {
+    start_or_discover_server(handle, None, false).await;
     Ok(())
 }
 
 // =============================================================================
-// Daemon Startup & Health Monitor
+// Loading Page Helpers
 // =============================================================================
 
-/// Start (or discover) the daemon, then navigate the webview to it.
-async fn start_and_navigate(handle: tauri::AppHandle) {
-    let state = handle.state::<AppState>();
-    let config = state.config.clone();
-
-    // Update loading status
-    eval_loading(&handle, "setStatus('Checking for daemon...')");
-
-    match daemon::ensure_daemon(&config).await {
-        Ok((info, we_started)) => {
-            let url = info.base_url();
-            tracing::info!("Daemon ready at {url}");
-
-            state.we_started.store(we_started, Ordering::Relaxed);
-            *state.daemon_info.lock().unwrap() = Some(info);
-
-            eval_loading(&handle, "setStatus('Connected — loading UI...')");
-
-            // Small delay for the status message to render, then fade and navigate
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-            if let Some(window) = handle.get_webview_window("main") {
-                // Fade out the loading screen, then navigate
-                let navigate_js = format!("fadeOutAndNavigate('{}')", url.replace('\'', "\\'"));
-                let _ = window.eval(&navigate_js);
-            }
-
-            spawn_health_monitor(handle);
-        }
-        Err(err) => {
-            tracing::error!("Failed to start daemon: {err:#}");
-            if let Some(window) = handle.get_webview_window("main") {
-                let msg = err.to_string().replace('\\', "\\\\").replace('\'', "\\'");
-                let js = format!("showError('{}')", msg);
-                let _ = window.eval(&js);
-            }
-        }
-    }
-}
-
 /// Inject the loading page into the webview via DOM manipulation.
-///
-/// Uses innerHTML + manual script execution instead of document.write(),
-/// which would clobber Tauri's injected IPC scripts (__TAURI_INTERNALS__).
-fn inject_loading_page(window: &tauri::WebviewWindow) {
-    // Parse out <style> and <body> content from the loading HTML, then inject
-    // via DOM APIs that preserve Tauri's existing script context.
-    let mut js = String::from(
-        "(function() {\
-         var parser = new DOMParser();\
-         var doc = parser.parseFromString(`",
-    );
-    js.push_str(LOADING_HTML);
-    js.push_str(
-        "`, 'text/html');\
-         document.head.innerHTML = doc.head.innerHTML;\
-         document.body.innerHTML = doc.body.innerHTML;\
-         doc.querySelectorAll('script').forEach(function(s) {\
-           var ns = document.createElement('script');\
-           ns.textContent = s.textContent;\
-           document.body.appendChild(ns);\
-         });\
-         })();",
-    );
-    let _ = window.eval(&js);
+fn inject_loading_page(handle: &tauri::AppHandle) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let mut js = String::from(
+            "(function() {\
+             var parser = new DOMParser();\
+             var doc = parser.parseFromString(`",
+        );
+        js.push_str(LOADING_HTML);
+        js.push_str(
+            "`, 'text/html');\
+             document.head.innerHTML = doc.head.innerHTML;\
+             document.body.innerHTML = doc.body.innerHTML;\
+             doc.querySelectorAll('script').forEach(function(s) {\
+               var ns = document.createElement('script');\
+               ns.textContent = s.textContent;\
+               document.body.appendChild(ns);\
+             });\
+             })();",
+        );
+        let _ = window.eval(&js);
+    }
 }
 
 /// Evaluate JS on the loading page (helper to keep main logic clean).
@@ -362,43 +467,4 @@ fn eval_loading(handle: &tauri::AppHandle, js: &str) {
     if let Some(window) = handle.get_webview_window("main") {
         let _ = window.eval(js);
     }
-}
-
-/// Background task that polls daemon health every 5 seconds.
-/// On failure, tries to rediscover the daemon (it may have restarted on a new port).
-fn spawn_health_monitor(handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let interval = std::time::Duration::from_secs(5);
-        loop {
-            tokio::time::sleep(interval).await;
-
-            let state = handle.state::<AppState>();
-            let current_info = state.daemon_info.lock().unwrap().clone();
-
-            let Some(info) = current_info else {
-                continue;
-            };
-
-            if daemon::health_check(&info).await {
-                continue;
-            }
-
-            // Daemon is unhealthy — try to rediscover
-            tracing::warn!("Daemon health check failed, attempting rediscovery...");
-            if let Some(new_info) = daemon::rediscover_daemon(&state.config).await {
-                let new_url = new_info.base_url();
-                tracing::info!("Rediscovered daemon at {new_url}");
-                *state.daemon_info.lock().unwrap() = Some(new_info);
-
-                if let Some(window) = handle.get_webview_window("main") {
-                    let navigate_url: tauri::Url = new_url.parse().expect("invalid daemon URL");
-                    let _ = window.navigate(navigate_url);
-                }
-            } else {
-                // Daemon is truly gone. The SvelteKit reconnection UI handles
-                // the user experience (exponential backoff → "Server Offline").
-                tracing::warn!("Daemon not found — frontend reconnection UI will handle UX");
-            }
-        }
-    });
 }

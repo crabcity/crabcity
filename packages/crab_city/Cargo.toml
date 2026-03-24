@@ -3,6 +3,10 @@ name = "crab_city"
 version = "0.45.1"
 edition = "2024"
 
+[lib]
+name = "crab_city"
+path = "src/lib.rs"
+
 [[bin]]
 name = "crab"
 path = "src/main.rs"
@@ -84,7 +88,7 @@ ratatui = "0.30"
 ignore = "0.4.25"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal", "term"] }
+nix = { version = "0.29", features = ["fs", "signal", "term"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

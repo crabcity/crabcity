@@ -399,6 +399,10 @@ impl CrabCityConfig {
         self.state_dir().join("daemon.port")
     }
 
+    pub fn daemon_lock_path(&self) -> PathBuf {
+        self.state_dir().join("daemon.lock")
+    }
+
     pub fn daemon_log_path(&self) -> PathBuf {
         self.logs_dir.join("daemon.log")
     }

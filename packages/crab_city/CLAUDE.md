@@ -1,12 +1,14 @@
 # crab_city — CLAUDE.md
 
-The main server, CLI client, and TUI picker. This is the largest package in the monorepo.
+The main server, CLI client, and TUI picker. This is a lib+bin crate: the library (`src/lib.rs`) contains the server core, config, handlers, and WebSocket subsystem; the binary (`src/main.rs`) adds the CLI and TUI. The `crab_city_desktop` Tauri app depends on the library crate.
 
 ## Module Map
 
 ```
 src/
-├── main.rs              CLI entry point (clap), server loop, route registration
+├── lib.rs               Library root — public module declarations, re-exports AppState
+├── main.rs              CLI entry point (clap), server loop (uses library server functions)
+├── server.rs            Shared server init, router builder, EmbeddedServer, daemon file helpers
 ├── config.rs            Figment-based layered config (CrabCityConfig, ServerConfig, AuthConfig)
 ├── db.rs                SQLite init + embedded migrations
 ├── models.rs            Shared data types (Instance, Message, Task, User, etc.)
@@ -48,7 +50,7 @@ src/
 ### Adding a New HTTP Endpoint
 
 1. Write the handler in `handlers/<module>.rs`
-2. Add the route in `main.rs` (in the router builder around line 567)
+2. Add the route in `server.rs` (in `build_router()`)
 3. If it mutates shared state, follow the broadcast pattern (mutate DB → broadcast `ServerMessage` → return HTTP response)
 4. Re-export the handler in `handlers/mod.rs`
 
