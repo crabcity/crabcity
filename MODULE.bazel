@@ -389,6 +389,12 @@ crate_index.spec(
     package = "git2",
     version = "0.19",
 )
+
+# Pin to avoid 1.13.0 which made UnicodeWords private, breaking heck 0.4.1
+crate_index.spec(
+    package = "unicode-segmentation",
+    version = "=1.12.0",
+)
 crate_index.from_specs(name = "crate_index")
 use_repo(crate_index, "crate_index")
 
