@@ -13,6 +13,7 @@
   import FleetCommandCenter from './FleetCommandCenter.svelte';
   import InstancePopover from './InstancePopover.svelte';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
+  import BugReportModal from '../BugReportModal.svelte';
 
   function getStatusColor(status: string): string {
     switch (status) {
@@ -71,6 +72,7 @@
 
   let panelOpen = $state(false);
   let showCreateModal = $state(false);
+  let showBugReport = $state(false);
 
   // Instance fleet for the current project (only shown when a project is selected)
   const fleetInstances = $derived($currentProject?.instances ?? []);
@@ -171,6 +173,24 @@
   <div class="header-actions">
     <button
       class="action-btn"
+      onclick={() => (showBugReport = true)}
+      title="Bug Report"
+      aria-label="Submit bug report"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;">
+        <path d="M8 9h8v4.017a4 4 0 01-8 0V9z" />
+        <path d="M10 9V8a2 2 0 014 0v1" />
+        <line x1="12" y1="13" x2="12" y2="17" />
+        <line x1="5" y1="13" x2="8" y2="13" />
+        <line x1="16" y1="13" x2="19" y2="13" />
+        <line x1="5.5" y1="7" x2="8" y2="9" />
+        <line x1="18.5" y1="7" x2="16" y2="9" />
+        <line x1="6.5" y1="17.5" x2="8.6" y2="15.3" />
+        <line x1="17.5" y1="17.5" x2="15.4" y2="15.3" />
+      </svg>
+    </button>
+    <button
+      class="action-btn"
       class:active={$isExplorerOpen}
       onclick={handleFilesClick}
       title="Files"
@@ -229,6 +249,10 @@
 
 {#if showCreateModal}
   <CreateInstanceModal onclose={() => (showCreateModal = false)} />
+{/if}
+
+{#if showBugReport}
+  <BugReportModal onclose={() => (showBugReport = false)} />
 {/if}
 
 <style>
