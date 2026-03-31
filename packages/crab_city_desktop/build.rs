@@ -170,7 +170,6 @@ fn precreate_frontend_cache(out_dir: &str, manifest_path: &std::path::Path) {
         quality: if cfg!(debug_assertions) { 2 } else { 9 },
         ..Default::default()
     };
-    brotli::BrotliCompress(&mut input, &mut output, &params)
-        .expect("failed to brotli compress");
+    brotli::BrotliCompress(&mut input, &mut output, &params).expect("failed to brotli compress");
     std::fs::write(&out_path, &output).expect("failed to write frontend cache");
 }

@@ -293,7 +293,7 @@ async fn run_server(args: ServerArgs, config: CrabCityConfig) -> Result<()> {
         import_from: args.import_from,
     };
 
-    let core = server::init_server_core(config.clone(), &options).await?;
+    let core = server::init_server_core(config.clone(), &options, None).await?;
 
     // Reset admin password if requested (one-time, interactive — not for embedded)
     let cli_profile = args.profile.clone();

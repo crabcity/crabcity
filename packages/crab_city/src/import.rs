@@ -7,6 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::models::{Conversation, ConversationEntry};
 use crate::repository::ConversationRepository;
+use crate::server::StartupProgress;
 
 /// Import format version - increment when import logic extracts more/different data.
 /// This triggers re-import of conversations even if the source file hasn't changed.
@@ -28,11 +29,21 @@ enum ImportResult {
 
 pub struct ConversationImporter {
     repository: ConversationRepository,
+    progress: Option<StartupProgress>,
 }
 
 impl ConversationImporter {
-    pub fn new(repository: ConversationRepository) -> Self {
-        Self { repository }
+    pub fn new(repository: ConversationRepository, progress: Option<StartupProgress>) -> Self {
+        Self {
+            repository,
+            progress,
+        }
+    }
+
+    fn report_progress(&self, msg: &str) {
+        if let Some(p) = &self.progress {
+            p(msg);
+        }
     }
 
     /// Create a ClaudeConvo on demand (it's !Sync so we can't store it in shared state).
@@ -54,13 +65,26 @@ impl ConversationImporter {
             .claude_convo()
             .list_conversations(&project_path.to_string_lossy())?;
 
-        info!(
-            "Found {} conversation sessions to import",
-            session_ids.len()
-        );
+        let total = session_ids.len();
+        info!("Found {} conversation sessions to import", total);
 
-        for session_id in session_ids {
-            match self.import_session(project_path, &session_id).await {
+        let project_name = project_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "project".to_string());
+
+        if total > 20 {
+            self.report_progress(&format!(
+                "Importing {project_name} \u{2014} {total} sessions..."
+            ));
+        }
+
+        for (i, session_id) in session_ids.iter().enumerate() {
+            if total > 20 && i > 0 && i % 10 == 0 {
+                self.report_progress(&format!("Importing {project_name} ({i}/{total})..."));
+            }
+
+            match self.import_session(project_path, session_id).await {
                 Ok(ImportResult::Imported) => {
                     stats.imported += 1;
                     info!("✅ Imported session: {}", session_id);
@@ -103,10 +127,14 @@ impl ConversationImporter {
             }
         };
 
-        info!("Found {} projects with conversations", project_paths.len());
+        let total_projects = project_paths.len();
+        info!("Found {} projects with conversations", total_projects);
+        self.report_progress(&format!(
+            "Syncing conversations (0/{total_projects} projects)..."
+        ));
 
-        for project_path_str in project_paths {
-            let project_path = PathBuf::from(&project_path_str);
+        for (i, project_path_str) in project_paths.iter().enumerate() {
+            let project_path = PathBuf::from(project_path_str);
 
             debug!("Checking project: {}", project_path.display());
 
@@ -127,6 +155,11 @@ impl ConversationImporter {
                     debug!("No conversations in {}: {}", project_path.display(), e);
                 }
             }
+
+            let done = i + 1;
+            self.report_progress(&format!(
+                "Syncing conversations ({done}/{total_projects} projects)..."
+            ));
         }
 
         Ok(total_stats)

@@ -19,6 +19,12 @@ use crate::auth::AuthState;
 use crate::config::{
     AuthConfig, CrabCityConfig, FileConfig, Profile, RuntimeOverrides, ServerConfig, load_config,
 };
+
+/// Callback for reporting startup progress to a host (e.g. the desktop loading page).
+///
+/// The string argument is a human-readable status message like
+/// "Initializing database..." or "Syncing conversations (3/12 projects)...".
+pub type StartupProgress = Arc<dyn Fn(&str) + Send + Sync>;
 use crate::db::Database;
 use crate::handlers;
 use crate::import;
@@ -110,8 +116,12 @@ pub struct AppState {
 pub async fn init_server_core(
     config: Arc<CrabCityConfig>,
     options: &ServerOptions,
+    progress: Option<&StartupProgress>,
 ) -> Result<ServerCore> {
     // Initialize database
+    if let Some(p) = &progress {
+        p("Initializing database...");
+    }
     info!("Initializing database...");
     let db = Arc::new(Database::new(&config).await?);
 
@@ -124,7 +134,11 @@ pub async fn init_server_core(
 
     // Handle import
     {
-        let importer = import::ConversationImporter::new(repository.as_ref().clone());
+        if let Some(p) = &progress {
+            p("Syncing conversation history...");
+        }
+        let importer =
+            import::ConversationImporter::new(repository.as_ref().clone(), progress.cloned());
 
         let stats = if let Some(project_path) = &options.import_from {
             info!("Importing from project: {}", project_path.display());
@@ -144,6 +158,11 @@ pub async fn init_server_core(
         } else if stats.skipped > 0 {
             info!("Database in sync ({} conversations)", stats.skipped);
         }
+    }
+
+    // Starting services phase
+    if let Some(p) = &progress {
+        p("Starting services...");
     }
 
     // Determine default command
@@ -570,7 +589,14 @@ impl EmbeddedServer {
     ///
     /// Acquires an advisory lock on `daemon.lock` to prevent multiple servers
     /// on the same data directory. The lock is held for the server's lifetime.
-    pub async fn start(config: CrabCityConfig, options: ServerOptions) -> Result<Self> {
+    ///
+    /// If `progress` is provided, it will be called with human-readable status
+    /// messages during startup (e.g. "Initializing database...").
+    pub async fn start(
+        config: CrabCityConfig,
+        options: ServerOptions,
+        progress: Option<StartupProgress>,
+    ) -> Result<Self> {
         let config = Arc::new(config);
 
         // Acquire exclusive lock — bail if another server is already running
@@ -589,7 +615,7 @@ impl EmbeddedServer {
             }
         };
 
-        let core = init_server_core(config.clone(), &options).await?;
+        let core = init_server_core(config.clone(), &options, progress.as_ref()).await?;
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 

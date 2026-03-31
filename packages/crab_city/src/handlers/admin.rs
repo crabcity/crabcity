@@ -42,7 +42,8 @@ pub async fn trigger_import(
     State(state): State<AppState>,
     Json(request): Json<ImportRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let importer = crate::import::ConversationImporter::new(state.repository.as_ref().clone());
+    let importer =
+        crate::import::ConversationImporter::new(state.repository.as_ref().clone(), None);
 
     let stats = if request.import_all {
         info!("API: Starting full system import...");

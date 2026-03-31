@@ -11,7 +11,7 @@ use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use crab_city::config::CrabCityConfig;
-use crab_city::server::{self, EmbeddedServer, ServerOptions};
+use crab_city::server::{self, EmbeddedServer, ServerOptions, StartupProgress};
 
 #[derive(Parser)]
 #[command(name = "crab-city-desktop")]
@@ -167,16 +167,22 @@ async fn start_or_discover_server(
     }
 
     // No existing server — start our own
-    if !has_dev_frontend {
-        eval_loading(&handle, "setStatus('Starting server...')");
-    }
+    let progress: Option<StartupProgress> = if !has_dev_frontend {
+        let handle_clone = handle.clone();
+        Some(std::sync::Arc::new(move |msg: &str| {
+            let escaped = msg.replace('\'', "\\'");
+            eval_loading(&handle_clone, &format!("setStatus('{escaped}')"));
+        }))
+    } else {
+        None
+    };
 
     let options = ServerOptions {
         port: Some(0), // auto-select
         ..Default::default()
     };
 
-    match EmbeddedServer::start(config, options).await {
+    match EmbeddedServer::start(config, options, progress).await {
         Ok(server) => {
             let port = server.port();
             let url = format!("http://127.0.0.1:{}", port);
