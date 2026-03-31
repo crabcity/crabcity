@@ -52,14 +52,17 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     flex-shrink: 0;
     opacity: 0;
-    transition: opacity 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      opacity 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .dirty-dot.visible {
     opacity: 1;
+    box-shadow: 0 0 4px var(--chrome-accent-500);
   }
 
   .field-info {
@@ -110,6 +113,6 @@
 
   .provenance-badge.ephemeral {
     background: var(--tint-active);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 </style>

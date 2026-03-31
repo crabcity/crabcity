@@ -64,7 +64,7 @@
   }
 
   /** Color by index for project icons */
-  const projectColors = ['var(--accent-500)', 'var(--thinking-400)', 'var(--status-green)', 'var(--status-red)'];
+  const projectColors = ['var(--chrome-accent-500)', 'var(--thinking-400)', 'var(--status-green)', 'var(--status-red)'];
 </script>
 
 <aside class="sidebar-rail">
@@ -241,7 +241,7 @@
     left: 4px;
     right: 4px;
     height: 2px;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     border-radius: 1px;
   }
 
@@ -262,13 +262,13 @@
     left: 4px;
     right: 4px;
     height: 2px;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     border-radius: 1px;
   }
 
   .rail-project-slot.active {
     background: var(--tint-active);
-    border: 1px solid var(--accent-500);
+    border: 1px solid var(--chrome-accent-500);
     border-radius: 10px;
     padding: 3px 3px 2px;
   }
@@ -285,7 +285,7 @@
   }
 
   .rail-project-slot.active .project-abbr {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .rail-action {
@@ -296,7 +296,7 @@
     height: 16px;
     background: transparent;
     border: none;
-    border-top: 1px solid var(--accent-700);
+    border-top: 1px solid var(--chrome-accent-700);
     color: var(--text-muted);
     font-size: 12px;
     line-height: 1;
@@ -393,7 +393,7 @@
   }
 
   :global([data-theme='analog']) .sidebar-rail::after {
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     width: 1.5px;
   }
 </style>

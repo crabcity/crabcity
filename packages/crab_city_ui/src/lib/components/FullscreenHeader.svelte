@@ -69,7 +69,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   .header-actions {

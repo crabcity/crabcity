@@ -317,8 +317,8 @@
   }
 
   .refresh-btn:hover:not(:disabled) {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .refresh-btn:disabled {
@@ -380,7 +380,7 @@
   }
 
   .search-input:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .pill-row {
@@ -400,7 +400,7 @@
     border-radius: 12px;
     font-size: 11px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
   }
 
@@ -414,7 +414,7 @@
     background: transparent;
     border: none;
     border-radius: 50%;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     opacity: 0.6;
     transition: opacity 0.15s ease;
@@ -435,7 +435,7 @@
     width: 14px;
     height: 14px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -505,7 +505,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-bottom: 16px;
@@ -516,7 +516,7 @@
     height: 64px;
     margin-bottom: 16px;
     opacity: 0.3;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   .empty-icon svg {
@@ -545,9 +545,9 @@
     gap: 8px;
     padding: 12px 20px;
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-size: 12px;
     font-weight: 600;
     font-family: inherit;
@@ -562,8 +562,8 @@
 
   .sync-btn:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--accent-500);
-    color: var(--accent-300);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-300);
     box-shadow:
       0 0 20px var(--tint-focus),
       inset 0 1px 0 var(--tint-focus);
@@ -583,7 +583,7 @@
     width: 14px;
     height: 14px;
     border: 2px solid var(--tint-selection);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -623,14 +623,14 @@
   }
 
   .page-btn:hover:not(:disabled):not(.active) {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .page-btn.active {
     background: var(--tint-active-strong);
-    border-color: var(--accent-500);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-400);
     box-shadow: 0 0 10px var(--tint-focus);
   }
 

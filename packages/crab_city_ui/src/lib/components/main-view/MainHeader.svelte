@@ -20,7 +20,7 @@
         return 'var(--status-green)';
       case 'connecting':
       case 'reconnecting':
-        return 'var(--accent-500)';
+        return 'var(--chrome-accent-500)';
       case 'error':
       case 'server_gone':
         return 'var(--status-red)';
@@ -256,7 +256,7 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis-strong);
     text-transform: uppercase;
     font-family: var(--font-display);
@@ -342,8 +342,8 @@
 
   .action-btn.active {
     background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-active) 100%);
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
     box-shadow: var(--elevation-low);
     text-shadow: var(--emphasis);
   }
@@ -372,7 +372,7 @@
     line-height: 14px;
     text-align: center;
     border-radius: 7px;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     color: var(--surface-900);
     box-shadow: var(--elevation-low);
   }

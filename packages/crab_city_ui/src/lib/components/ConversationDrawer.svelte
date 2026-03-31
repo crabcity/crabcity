@@ -178,7 +178,7 @@
     padding: 1px 5px;
     border-radius: 3px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .drawer-content {
@@ -201,7 +201,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -231,6 +231,6 @@
   }
 
   .drawer-content::-webkit-scrollbar-thumb:hover {
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
   }
 </style>

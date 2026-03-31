@@ -577,7 +577,7 @@
   .filename {
     font-size: 13px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
     white-space: nowrap;
     overflow: hidden;
@@ -595,7 +595,7 @@
   }
 
   .filepath.copied {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .header-actions {
@@ -642,13 +642,13 @@
   .close-btn:hover {
     background: var(--surface-600);
     border-color: var(--surface-border);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .action-btn.preview-toggle.active {
     background: var(--surface-600);
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .action-btn svg,
@@ -663,8 +663,8 @@
 
   .diff-toggle.active {
     background: var(--surface-600);
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .diff-label {
@@ -693,7 +693,7 @@
     border-radius: 4px;
   }
   .panel-content::-webkit-scrollbar-thumb:hover {
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
   }
 
   /* Loading / empty states */
@@ -711,7 +711,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -779,7 +779,7 @@
 
   .line-jump input:focus {
     outline: none;
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     box-shadow: 0 0 8px var(--tint-focus);
   }
 
@@ -789,7 +789,7 @@
 
   .current-line {
     font-size: 10px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-weight: 600;
     letter-spacing: 0.05em;
   }

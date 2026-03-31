@@ -150,7 +150,7 @@
 
   .boot-cursor {
     opacity: 0;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
     font-size: 13px;
   }
 

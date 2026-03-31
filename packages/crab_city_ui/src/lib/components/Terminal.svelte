@@ -476,7 +476,7 @@
     width: 14px;
     height: 14px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -518,7 +518,7 @@
   .status-banner.info {
     background: var(--tint-active-strong);
     border-bottom: 1px solid var(--tint-focus);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .status-banner svg {
@@ -560,7 +560,7 @@
     border-radius: 4px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .lock-banner {
@@ -603,7 +603,7 @@
     font-family: inherit;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -636,7 +636,7 @@
     font-weight: 600;
     font-family: inherit;
     letter-spacing: 0.1em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     z-index: 10;
     transition: all 0.15s ease;
@@ -660,7 +660,7 @@
 
   /* Terminal cursor glow */
   .terminal-container :global(.xterm-cursor-block) {
-    box-shadow: 0 0 8px var(--accent-500);
+    box-shadow: 0 0 8px var(--chrome-accent-500);
   }
 
   /* Mobile responsive */

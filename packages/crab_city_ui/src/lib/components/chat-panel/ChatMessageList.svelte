@@ -216,7 +216,7 @@
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     opacity: 0.4;
     animation: dot-pulse 1.2s ease-in-out infinite;
   }
@@ -289,7 +289,7 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.04em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-transform: uppercase;
   }
 
@@ -312,8 +312,8 @@
   }
 
   .select-all-topic:hover {
-    color: var(--accent-400);
-    border-color: var(--accent-600);
+    color: var(--chrome-accent-400);
+    border-color: var(--chrome-accent-600);
   }
 
   .topic-view-all {
@@ -332,7 +332,7 @@
   }
 
   .topic-view-all:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   /* Message inline (for grouped view) */
@@ -416,8 +416,8 @@
   }
 
   .msg-checkbox input:checked + .checkmark {
-    background: var(--accent-600);
-    border-color: var(--accent-500);
+    background: var(--chrome-accent-600);
+    border-color: var(--chrome-accent-500);
   }
 
   .msg-checkbox input:checked + .checkmark::after {
@@ -431,7 +431,7 @@
   }
 
   .msg-checkbox:hover .checkmark {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .message-header {

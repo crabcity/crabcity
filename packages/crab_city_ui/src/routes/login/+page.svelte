@@ -85,7 +85,7 @@
   h1 {
     margin: 0 0 4px;
     font-size: 1.4em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-align: center;
   }
 
@@ -135,12 +135,12 @@
 
   input:focus {
     outline: none;
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   button {
     padding: 10px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -152,7 +152,7 @@
   }
 
   button:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   button:disabled {
@@ -168,7 +168,7 @@
   }
 
   .footer-link a {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 

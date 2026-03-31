@@ -190,7 +190,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -208,9 +208,9 @@
   .send-next-btn {
     padding: 3px 10px;
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 3px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-size: 10px;
     font-weight: 600;
     font-family: inherit;
@@ -223,8 +223,8 @@
 
   .send-next-btn:hover {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--accent-500);
-    color: var(--accent-300);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-300);
     box-shadow: var(--elevation-low);
   }
 
@@ -288,7 +288,7 @@
 
   .queue-item.drag-over {
     background: var(--tint-active);
-    border-top: 2px solid var(--accent-500);
+    border-top: 2px solid var(--chrome-accent-500);
   }
 
   .drag-handle {
@@ -343,8 +343,8 @@
   }
 
   .item-stage:hover {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .item-delete {

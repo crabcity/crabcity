@@ -176,7 +176,7 @@
 
   .hs-result.selected {
     background: var(--tint-active);
-    border-left: 2px solid var(--accent-500);
+    border-left: 2px solid var(--chrome-accent-500);
     padding-left: 12px;
   }
 
@@ -200,7 +200,7 @@
   }
 
   .hs-result.selected .hs-result-title {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .hs-result-time {
@@ -236,7 +236,7 @@
 
   .hs-snippet-text :global(mark) {
     background: var(--tint-selection);
-    color: var(--accent-300);
+    color: var(--chrome-accent-300);
     border-radius: 2px;
     padding: 0 2px;
     box-shadow: var(--emphasis);
@@ -302,7 +302,7 @@
     width: 12px;
     height: 12px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: hs-spin 0.8s linear infinite;
   }

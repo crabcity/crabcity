@@ -117,11 +117,11 @@
   }
 
   .qs-select:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .qs-select:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
   }
 
   .qs-select option {
@@ -154,7 +154,7 @@
 
   .qs-open-btn:hover {
     background: var(--tint-hover);
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 </style>

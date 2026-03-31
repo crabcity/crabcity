@@ -229,8 +229,8 @@
 
   .mobile-tab.active {
     background: var(--surface-600);
-    color: var(--accent-400);
-    border-top: 2px solid var(--accent-500);
+    color: var(--chrome-accent-400);
+    border-top: 2px solid var(--chrome-accent-500);
     text-shadow: var(--emphasis);
   }
 
@@ -241,7 +241,7 @@
   }
 
   .mobile-tab.add-tab:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .tab-label {
@@ -281,7 +281,7 @@
 
   .tab-status-dot.responding,
   .tab-status-dot.tool {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   @keyframes tab-dot-pulse {

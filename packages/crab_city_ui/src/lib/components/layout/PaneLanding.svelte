@@ -86,7 +86,7 @@
     height: 80px;
     margin: 0 auto 20px;
     opacity: 0.3;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
     cursor: pointer;
     transition:
       opacity 0.2s ease,
@@ -134,9 +134,9 @@
     font-family: inherit;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     background: transparent;
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 3px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -144,7 +144,7 @@
 
   .new-project-btn:hover {
     background: var(--tint-hover);
-    border-color: var(--accent-400);
+    border-color: var(--chrome-accent-400);
   }
 
   .new-project-btn svg {

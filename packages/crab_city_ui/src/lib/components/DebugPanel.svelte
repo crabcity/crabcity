@@ -189,7 +189,7 @@
     bottom: 1rem;
     right: 1rem;
     background: var(--surface-900);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
     padding: 12px;
     font-size: 11px;
@@ -211,7 +211,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: grab;
     user-select: none;
     touch-action: none;
@@ -238,7 +238,7 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   .metric {
@@ -305,13 +305,13 @@
   }
 
   .backend-btn:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     color: var(--text-secondary);
   }
 
   .backend-btn.active {
-    border-color: var(--accent-500);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
   }
 

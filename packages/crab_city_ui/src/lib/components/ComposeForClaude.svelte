@@ -321,13 +321,13 @@
   .sent-flash svg {
     width: 36px;
     height: 36px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .sent-flash span {
     font-size: 13px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     letter-spacing: 0.06em;
     text-shadow: var(--emphasis);
   }
@@ -363,14 +363,14 @@
   .compose-icon {
     width: 16px;
     height: 16px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .compose-title {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.12em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -424,7 +424,7 @@
   .section-label-count {
     font-size: 9px;
     font-weight: 600;
-    color: var(--accent-600);
+    color: var(--chrome-accent-600);
     background: var(--tint-active);
     padding: 1px 6px;
     border-radius: 8px;
@@ -552,7 +552,7 @@
   }
 
   .compose-textarea:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     box-shadow: var(--elevation-low);
   }
 
@@ -615,7 +615,7 @@
   }
 
   .instance-picker-btn:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-hover);
   }
 
@@ -633,7 +633,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
     flex-shrink: 0;
   }
 
@@ -683,11 +683,11 @@
 
   .instance-option:hover {
     background: var(--tint-active-strong);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .instance-option.active {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .inst-label {
@@ -772,7 +772,7 @@
     gap: 6px;
     padding: 7px 16px;
     background: var(--btn-primary-bg);
-    border: 1px solid var(--accent-500);
+    border: 1px solid var(--chrome-accent-500);
     border-radius: 3px;
     color: var(--btn-primary-text);
     font-size: 11px;
@@ -785,7 +785,7 @@
   }
 
   .send-btn:hover:not(:disabled) {
-    background: linear-gradient(180deg, var(--accent-500) 0%, var(--accent-600) 100%);
+    background: linear-gradient(180deg, var(--chrome-accent-500) 0%, var(--chrome-accent-600) 100%);
   }
 
   .send-btn:disabled {

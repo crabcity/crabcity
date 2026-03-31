@@ -82,7 +82,7 @@
   h1 {
     margin: 0 0 4px;
     font-size: 1.4em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .subtitle {
@@ -113,7 +113,7 @@
   .back-link {
     display: inline-block;
     margin-top: 12px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
     font-size: 0.85em;
   }
@@ -126,7 +126,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     margin: 0 auto;
     animation: spin 0.6s linear infinite;

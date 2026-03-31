@@ -237,7 +237,7 @@
     font-size: 0.8rem;
     font-weight: 700;
     letter-spacing: 0.15em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis, 0 0 4px currentColor);
     margin: 0 0 1.25rem;
     text-align: center;
@@ -286,7 +286,7 @@
   }
 
   .field-input:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .error {
@@ -341,10 +341,10 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     padding: 0.5rem 1rem;
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     background: var(
       --btn-primary-bg,
-      linear-gradient(180deg, var(--accent-600) 0%, var(--accent-700, var(--accent-600)) 100%)
+      linear-gradient(180deg, var(--chrome-accent-600) 0%, var(--chrome-accent-700, var(--chrome-accent-600)) 100%)
     );
     color: var(--surface-900);
     cursor: pointer;
@@ -424,7 +424,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   /* Full-screen project layout (inline — parent handles placement) */

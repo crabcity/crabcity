@@ -149,13 +149,13 @@
   .topic-pill:hover {
     background: var(--tint-active-strong);
     border-color: var(--tint-selection);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .topic-pill.has-topic {
     background: var(--tint-active-strong);
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .topic-pill .chevron {
@@ -181,7 +181,7 @@
   }
 
   .topic-clear:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     background: var(--tint-active-strong);
   }
 
@@ -232,11 +232,11 @@
 
   .topic-option:hover {
     background: var(--tint-active-strong);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .topic-option.active {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
   }
 
@@ -275,6 +275,6 @@
   }
 
   .topic-name-input:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 </style>

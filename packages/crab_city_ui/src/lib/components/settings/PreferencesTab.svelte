@@ -200,7 +200,8 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -250,7 +251,8 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     border: none;
     cursor: pointer;
   }
@@ -259,7 +261,8 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     border: none;
     cursor: pointer;
   }
@@ -278,11 +281,12 @@
   }
 
   .setting-select:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-select:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
   }
 
   .setting-select option {
@@ -303,11 +307,12 @@
   }
 
   .setting-input:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-input:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
@@ -335,7 +340,7 @@
   }
 
   .indicator-btn:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .indicator-dot {
@@ -348,7 +353,8 @@
   }
 
   .indicator-btn.on .indicator-dot {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     opacity: 1;
   }
 
@@ -360,6 +366,6 @@
   }
 
   .indicator-btn.on .indicator-label {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 </style>

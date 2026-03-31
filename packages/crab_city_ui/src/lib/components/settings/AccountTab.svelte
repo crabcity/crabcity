@@ -136,7 +136,8 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -163,7 +164,7 @@
   }
 
   .about-value.admin-badge {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-size: 10px;
     letter-spacing: 0.08em;
   }
@@ -194,11 +195,12 @@
   }
 
   .setting-input:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-input:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
@@ -235,7 +237,7 @@
 
   .action-btn {
     padding: 6px 12px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -246,11 +248,15 @@
     cursor: pointer;
     align-self: flex-start;
     margin-top: 4px;
-    transition: background 0.15s ease;
+    box-shadow: var(--depth-up);
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .action-btn:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: var(--elevation-high);
   }
 
   .action-btn:disabled {

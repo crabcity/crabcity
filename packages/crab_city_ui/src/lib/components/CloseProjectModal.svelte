@@ -186,7 +186,7 @@
   .title {
     font-size: 0.8rem;
     font-weight: 700;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     letter-spacing: 0.15em;
     margin-bottom: 1rem;
   }
@@ -240,7 +240,7 @@
   }
 
   .instance-row:hover:not(:disabled) {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-hover);
   }
 
@@ -250,7 +250,7 @@
   }
 
   .instance-row.active {
-    border-left: 2px solid var(--accent-500);
+    border-left: 2px solid var(--chrome-accent-500);
   }
 
   .instance-row.deleting {
@@ -288,7 +288,7 @@
     width: 8px;
     height: 8px;
     border: 1.5px solid var(--text-muted);
-    border-top-color: var(--accent-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;

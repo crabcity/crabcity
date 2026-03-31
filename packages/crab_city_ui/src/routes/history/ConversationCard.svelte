@@ -89,7 +89,7 @@
 
   .conversation-card:hover {
     background: linear-gradient(180deg, var(--tint-active) 0%, var(--tint-hover) 100%);
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     box-shadow: 0 0 15px var(--tint-active);
   }
 
@@ -132,7 +132,7 @@
   }
 
   .conversation-card:hover .card-title {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .match-badge {
@@ -143,7 +143,7 @@
     border-radius: 10px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
   }
 
@@ -198,7 +198,7 @@
 
   .snippet-text :global(mark) {
     background: var(--tint-focus);
-    color: var(--accent-300);
+    color: var(--chrome-accent-300);
     border-radius: 2px;
     padding: 0 2px;
     box-shadow: 0 0 6px var(--tint-selection);
@@ -218,7 +218,7 @@
 
   .conversation-card:hover .card-arrow {
     opacity: 1;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   @media (max-width: 639px) {

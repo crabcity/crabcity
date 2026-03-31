@@ -299,24 +299,25 @@
   }
 
   .segment-bar.user {
-    fill: var(--status-green);
-    filter: drop-shadow(0 0 2px var(--status-green-border));
+    fill: var(--minimap-user);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-user) 40%, transparent));
   }
 
   .segment-bar.user:hover {
-    filter: drop-shadow(0 0 4px var(--status-green-border)) brightness(1.2);
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--minimap-user) 60%, transparent)) brightness(1.2);
   }
 
   .segment-bar.assistant {
-    fill: var(--accent-500);
+    fill: var(--minimap-assistant);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-assistant) 40%, transparent));
   }
 
   .segment-bar.assistant:hover {
-    filter: brightness(1.2);
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--minimap-assistant) 60%, transparent)) brightness(1.2);
   }
 
   .segment-bar.system {
-    fill: var(--text-muted);
+    fill: var(--minimap-system);
     opacity: 0.7;
   }
 
@@ -325,8 +326,8 @@
   }
 
   .segment-bar.unknown {
-    fill: var(--text-secondary);
-    stroke: var(--text-muted);
+    fill: var(--minimap-system);
+    stroke: color-mix(in srgb, var(--minimap-system) 60%, transparent);
     stroke-width: 1;
     stroke-dasharray: 2 2;
     opacity: 0.8;
@@ -337,12 +338,14 @@
   }
 
   .tool-dot {
-    fill: var(--thinking-400);
+    fill: var(--minimap-tool);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-tool) 40%, transparent));
     pointer-events: none;
   }
 
   .thinking-marker {
-    fill: var(--thinking-500);
+    fill: var(--minimap-thinking);
+    filter: drop-shadow(0 0 3px var(--tint-thinking-strong));
     pointer-events: none;
   }
 
@@ -351,8 +354,8 @@
   }
 
   .viewport {
-    fill: var(--tint-active);
-    stroke: var(--accent-500);
+    fill: var(--minimap-viewport-fill);
+    stroke: var(--minimap-viewport-stroke);
     stroke-width: 1.5;
     pointer-events: none;
   }

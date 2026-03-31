@@ -227,11 +227,11 @@
 
   .branch-entry.expanded {
     background: var(--tint-active);
-    border-left-color: var(--accent-500);
+    border-left-color: var(--chrome-accent-500);
   }
 
   .branch-entry.current {
-    border-left-color: var(--accent-500);
+    border-left-color: var(--chrome-accent-500);
     background: var(--tint-hover);
   }
 
@@ -247,7 +247,7 @@
   }
 
   .branch-indicator {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-size: 8px;
     flex-shrink: 0;
   }
@@ -259,7 +259,7 @@
   }
 
   .branch-entry.current .branch-name {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .branch-sync {
@@ -271,7 +271,7 @@
   }
 
   .sync-ahead {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
   .sync-behind {
     color: var(--text-muted);
@@ -279,7 +279,7 @@
 
   .instance-dot {
     font-size: 7px;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   .branch-meta {
@@ -344,7 +344,7 @@
   .branch-expansion {
     padding: 4px 0;
     background: var(--surface-800);
-    border-left: 2px solid var(--accent-600);
+    border-left: 2px solid var(--chrome-accent-600);
     margin-bottom: 2px;
   }
 
@@ -377,7 +377,7 @@
     font-family: inherit;
     font-size: 11px;
     font-weight: 700;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     flex-shrink: 0;
   }
 
@@ -414,7 +414,7 @@
     letter-spacing: 0.1em;
     border-radius: 3px;
     background: var(--surface-600);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
     text-transform: none;
@@ -432,9 +432,9 @@
   }
 
   .base-branch-name {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
-    border-bottom: 1px dashed var(--accent-600);
+    border-bottom: 1px dashed var(--chrome-accent-600);
     font-weight: 700;
     text-transform: none;
     letter-spacing: 0;
@@ -442,8 +442,8 @@
   }
 
   .base-branch-name:hover {
-    color: var(--accent-300);
-    border-bottom-color: var(--accent-400);
+    color: var(--chrome-accent-300);
+    border-bottom-color: var(--chrome-accent-400);
   }
 
   .base-picker {
@@ -485,7 +485,7 @@
   }
 
   .base-picker-option.active {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-weight: 600;
   }
 
@@ -515,14 +515,14 @@
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
   .branch-action-btn:hover {
     background: var(--tint-active);
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .diff-stats-mini {
@@ -534,7 +534,7 @@
   }
 
   .stat-add {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
   .stat-del {
     color: var(--text-muted);
@@ -578,7 +578,7 @@
 
   .diff-file-status[data-status='modified'] {
     background: var(--tint-focus);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
   .diff-file-status[data-status='added'] {
     background: var(--status-green-border);
@@ -608,7 +608,7 @@
   }
 
   .num-add {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
   .num-del {
     color: var(--text-muted);
@@ -629,7 +629,7 @@
     width: 20px;
     height: 20px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }

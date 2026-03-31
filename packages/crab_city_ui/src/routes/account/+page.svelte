@@ -366,13 +366,13 @@
   }
 
   .back-link:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   h1 {
     margin: 0 0 20px;
     font-size: 1.4em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-align: center;
   }
 
@@ -410,7 +410,7 @@
     background: var(--tint-active-strong);
     border: 1px solid var(--tint-selection);
     border-radius: 3px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-size: 0.75em;
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -473,12 +473,12 @@
 
   input:focus {
     outline: none;
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   button[type='submit'] {
     padding: 10px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -490,7 +490,7 @@
   }
 
   button[type='submit']:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   button[type='submit']:disabled {
@@ -523,7 +523,7 @@
   }
 
   .footer-link a {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 
@@ -611,7 +611,7 @@
 
   .badge.expired {
     background: var(--tint-active-strong);
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
   }
 
   .badge.used-up {
@@ -636,7 +636,7 @@
   }
 
   .small-btn:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     color: var(--text-primary);
   }
 

@@ -31,7 +31,7 @@
 
   .inset-btn:hover {
     border-color: var(--surface-border);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
   }
 

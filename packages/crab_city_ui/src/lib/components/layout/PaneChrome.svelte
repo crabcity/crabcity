@@ -519,7 +519,7 @@
 
   .status-dot.responding,
   .status-dot.tool {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   @keyframes dot-pulse {
@@ -581,13 +581,13 @@
   }
 
   .command-input:focus {
-    border-bottom-color: var(--accent-600);
+    border-bottom-color: var(--chrome-accent-600);
     color: var(--text-primary);
   }
 
   .chrome-btn.restart:hover {
     background: var(--tint-hover);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .chrome-sep {
@@ -617,7 +617,7 @@
   }
 
   .instance-select:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .instance-select option {
@@ -651,7 +651,7 @@
 
   .chrome-label-btn:hover {
     background: var(--tint-hover);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .pane-spacer {
@@ -728,11 +728,11 @@
   }
 
   .split-popover-item.hovered .split-popover-icon {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .split-popover-item.hovered .split-popover-label {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .split-popover-icon {

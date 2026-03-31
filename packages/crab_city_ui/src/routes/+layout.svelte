@@ -187,6 +187,26 @@
     --accent-400: #fdba74;
     --accent-300: #fed7aa;
 
+    /*
+     * Chrome accent vs content accent:
+     *
+     * --chrome-accent-*  UI chrome: sidebar, headers, tabs, settings panels,
+     *                    status indicators, fleet controls. Themes may tint
+     *                    chrome independently (e.g. Solarized uses teal chrome).
+     *
+     * --accent-*         Content areas: conversation messages, notebook cells,
+     *                    diffs, code highlights, game canvases.
+     *
+     * Defaults: chrome-accent inherits from accent unless a theme overrides it.
+     * Rule of thumb: if the element is part of the application frame, use
+     * --chrome-accent-*; if it lives inside user content, use --accent-*.
+     */
+    --chrome-accent-700: var(--accent-700);
+    --chrome-accent-600: var(--accent-600);
+    --chrome-accent-500: var(--accent-500);
+    --chrome-accent-400: var(--accent-400);
+    --chrome-accent-300: var(--accent-300);
+
     /* Purple (thinking state) */
     --thinking-500: #8b5cf6;
     --thinking-400: #a78bfa;
@@ -312,6 +332,15 @@
     /* Active indicator — how "this is selected" is expressed */
     --active-border: 1px solid var(--accent-600);
     --active-accent-width: 0px;
+
+    /* Minimap segment colors — muted indicators, tuned per theme */
+    --minimap-user: #5a9a5a;
+    --minimap-assistant: #d4944a;
+    --minimap-system: #666666;
+    --minimap-tool: #9a7ab0;
+    --minimap-thinking: #8b5cf6;
+    --minimap-viewport-fill: rgba(212, 148, 74, 0.2);
+    --minimap-viewport-stroke: rgba(212, 148, 74, 0.6);
   }
 
   /* Ambient state overrides - the whole room shifts */
@@ -492,6 +521,15 @@
     --active-border: 2px solid var(--accent-600);
     --active-accent-width: 3px;
 
+    /* Minimap — ink-wash muted tones */
+    --minimap-user: #3a6a4a;
+    --minimap-assistant: #5a4538;
+    --minimap-system: #7a7470;
+    --minimap-tool: #4a5a7a;
+    --minimap-thinking: #1a4a7a;
+    --minimap-viewport-fill: rgba(42, 31, 24, 0.12);
+    --minimap-viewport-stroke: rgba(42, 31, 24, 0.4);
+
     /* === SCROLLING GRAIN — applied directly to element backgrounds === */
     /* Fine fiber — sharp micro-detail for small elements (buttons, badges, inline code) */
     --grain-fine: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='8' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23f)' opacity='0.14'/%3E%3C/svg%3E");
@@ -549,12 +587,18 @@
      ========================================================================== */
 
   :global([data-theme='solarized-dark']) {
-    /* Primary accent — solarized blue (not yellow; yellow is status-only) */
+    /* Primary accent — solarized blue (content: notebook cells, diffs, code) */
     --accent-700: #1a6ba0;
     --accent-600: #1e7ab8;
     --accent-500: #268bd2;
     --accent-400: #4a9cd8;
     --accent-300: #6eafde;
+    /* Chrome accent — muted blue-gray for UI chrome (base01/base00 blended ~35% toward blue) */
+    --chrome-accent-700: #345c6f;
+    --chrome-accent-600: #466f84;
+    --chrome-accent-500: #568095;
+    --chrome-accent-400: #6791a8;
+    --chrome-accent-300: #7ba0b4;
     /* Thinking — solarized violet */
     --thinking-500: #6c71c4;
     --thinking-400: #8085cc;
@@ -580,25 +624,25 @@
     --status-red: #dc322f;
     --status-yellow: #b58900;
 
-    /* Ambient */
-    --ambient-glow: rgba(38, 139, 210, 0.35);
-    --ambient-accent: #268bd2;
-    --ambient-tint: rgba(38, 139, 210, 0.01);
+    /* Ambient — yellow for emphasis */
+    --ambient-glow: rgba(181, 137, 0, 0.08);
+    --ambient-accent: #b58900;
+    --ambient-tint: rgba(181, 137, 0, 0.008);
     --ambient-scanline-opacity: 0;
 
-    /* Tints — blue-based */
-    --tint-hover: rgba(38, 139, 210, 0.06);
-    --tint-active: rgba(38, 139, 210, 0.1);
-    --tint-active-strong: rgba(38, 139, 210, 0.15);
-    --tint-focus: rgba(38, 139, 210, 0.2);
-    --tint-subtle: rgba(38, 139, 210, 0.02);
+    /* Tints — base01 neutral shifts (warm gray, not accent-colored) */
+    --tint-hover: rgba(88, 110, 117, 0.06);
+    --tint-active: rgba(88, 110, 117, 0.10);
+    --tint-active-strong: rgba(88, 110, 117, 0.15);
+    --tint-focus: rgba(88, 110, 117, 0.12);
+    --tint-subtle: rgba(88, 110, 117, 0.02);
     --tint-thinking: rgba(108, 113, 196, 0.06);
     --tint-thinking-strong: rgba(108, 113, 196, 0.1);
-    --tint-selection: rgba(38, 139, 210, 0.3);
+    --tint-selection: rgba(88, 110, 117, 0.30);
 
-    /* Emphasis — subtle glow */
-    --emphasis: 0 0 8px rgba(38, 139, 210, 0.2);
-    --emphasis-strong: 0 0 12px rgba(38, 139, 210, 0.3);
+    /* Emphasis — subtle blue glow */
+    --emphasis: 0 0 6px rgba(38, 139, 210, 0.12);
+    --emphasis-strong: 0 0 10px rgba(38, 139, 210, 0.2);
 
     /* Elevation */
     --elevation-low: 0 0 8px rgba(0, 0, 0, 0.3);
@@ -606,10 +650,10 @@
 
     /* Recess */
     --recess: inset 0 0 20px rgba(0, 0, 0, 0.15);
-    --recess-border: inset 0 1px 0 rgba(38, 139, 210, 0.06);
+    --recess-border: inset 0 1px 0 rgba(0, 0, 0, 0.1);
 
     /* Depth */
-    --depth-up: 0 0 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(38, 139, 210, 0.08);
+    --depth-up: 0 0 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(0, 0, 0, 0.1);
     --depth-down: inset 0 0 16px rgba(0, 0, 0, 0.2);
 
     /* No scanlines, no grain */
@@ -622,7 +666,7 @@
     --tint-presence-border: rgba(108, 113, 196, 0.3);
 
     --panel-inset: rgba(0, 0, 0, 0.2);
-    --spinner-track: rgba(38, 139, 210, 0.3);
+    --spinner-track: rgba(88, 110, 117, 0.4);
 
     /* Backdrops */
     --backdrop: rgba(0, 43, 54, 0.8);
@@ -630,8 +674,8 @@
     --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.5);
     --scanline-color: rgba(0, 0, 0, 0.04);
 
-    /* Primary buttons — solarized blue */
-    --btn-primary-bg: linear-gradient(180deg, #268bd2 0%, #1e7ab8 100%);
+    /* Primary buttons — solarized yellow (emphasis element) */
+    --btn-primary-bg: linear-gradient(180deg, #b58900 0%, #8a6800 100%);
     --btn-primary-text: #002b36;
     --btn-primary-text-shadow: none;
 
@@ -650,8 +694,17 @@
 
     --on-status: #ffffff;
 
-    --active-border: 1px solid #268bd2;
+    --active-border: 1px solid #b58900;
     --active-accent-width: 0px;
+
+    /* Minimap — solarized muted tones */
+    --minimap-user: #5a7a30;
+    --minimap-assistant: #4a7aa0;
+    --minimap-system: #586e75;
+    --minimap-tool: #7a70a0;
+    --minimap-thinking: #6c71c4;
+    --minimap-viewport-fill: rgba(38, 139, 210, 0.15);
+    --minimap-viewport-stroke: rgba(38, 139, 210, 0.5);
   }
 
   /* Solarized Dark ambient overrides */
@@ -662,9 +715,9 @@
   }
 
   :global([data-theme='solarized-dark'][data-claude-state='responding']) {
-    --ambient-glow: rgba(38, 139, 210, 0.08);
-    --ambient-accent: #268bd2;
-    --ambient-tint: rgba(38, 139, 210, 0.02);
+    --ambient-glow: rgba(181, 137, 0, 0.08);
+    --ambient-accent: #b58900;
+    --ambient-tint: rgba(181, 137, 0, 0.008);
   }
 
   :global([data-theme='solarized-dark'][data-claude-state='tool_executing']) {
@@ -675,7 +728,7 @@
 
   :global([data-theme='solarized-dark'][data-connection='error']),
   :global([data-theme='solarized-dark'][data-connection='disconnected']) {
-    --ambient-glow: rgba(38, 139, 210, 0.04);
+    --ambient-glow: rgba(88, 110, 117, 0.04);
     --ambient-tint: rgba(0, 0, 0, 0.03);
   }
 
@@ -722,6 +775,12 @@
     --accent-500: #268bd2;
     --accent-400: #4a9cd8;
     --accent-300: #6eafde;
+    /* Chrome accent — muted blue-gray for UI chrome (darker for light bg) */
+    --chrome-accent-700: #285066;
+    --chrome-accent-600: #346078;
+    --chrome-accent-500: #3c6e88;
+    --chrome-accent-400: #457998;
+    --chrome-accent-300: #5f8da8;
 
     --thinking-500: #6c71c4;
     --thinking-400: #5a5fba;
@@ -745,19 +804,19 @@
     --status-red: #dc322f;
     --status-yellow: #b58900;
 
-    --ambient-glow: rgba(38, 139, 210, 0.08);
-    --ambient-accent: #268bd2;
-    --ambient-tint: rgba(38, 139, 210, 0.008);
+    --ambient-glow: rgba(181, 137, 0, 0.08);
+    --ambient-accent: #b58900;
+    --ambient-tint: rgba(181, 137, 0, 0.008);
     --ambient-scanline-opacity: 0;
 
-    --tint-hover: rgba(38, 139, 210, 0.06);
-    --tint-active: rgba(38, 139, 210, 0.1);
-    --tint-active-strong: rgba(38, 139, 210, 0.15);
-    --tint-focus: rgba(38, 139, 210, 0.12);
-    --tint-subtle: rgba(38, 139, 210, 0.02);
+    --tint-hover: rgba(147, 161, 161, 0.08);
+    --tint-active: rgba(147, 161, 161, 0.12);
+    --tint-active-strong: rgba(147, 161, 161, 0.18);
+    --tint-focus: rgba(147, 161, 161, 0.15);
+    --tint-subtle: rgba(147, 161, 161, 0.03);
     --tint-thinking: rgba(108, 113, 196, 0.06);
     --tint-thinking-strong: rgba(108, 113, 196, 0.12);
-    --tint-selection: rgba(38, 139, 210, 0.15);
+    --tint-selection: rgba(147, 161, 161, 0.25);
 
     --emphasis: none;
     --emphasis-strong: 0 0 2px rgba(38, 139, 210, 0.15);
@@ -768,7 +827,7 @@
     --recess: inset 0 1px 4px rgba(0, 0, 0, 0.06);
     --recess-border: inset 0 1px 0 rgba(0, 0, 0, 0.04);
 
-    --depth-up: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --depth-up: 0 1px 3px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(0, 0, 0, 0.04);
     --depth-down: inset 0 1px 4px rgba(0, 0, 0, 0.06);
 
     --texture-overlay: none;
@@ -779,14 +838,14 @@
     --tint-presence-border: rgba(108, 113, 196, 0.2);
 
     --panel-inset: rgba(0, 0, 0, 0.04);
-    --spinner-track: rgba(38, 139, 210, 0.3);
+    --spinner-track: rgba(88, 110, 117, 0.4);
 
     --backdrop: rgba(253, 246, 227, 0.8);
     --shadow-panel: -2px 0 8px rgba(0, 0, 0, 0.08);
     --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.12);
     --scanline-color: rgba(0, 0, 0, 0.03);
 
-    --btn-primary-bg: linear-gradient(180deg, #268bd2 0%, #1e7ab8 100%);
+    --btn-primary-bg: linear-gradient(180deg, #b58900 0%, #8a6800 100%);
     --btn-primary-text: #fdf6e3;
     --btn-primary-text-shadow: none;
 
@@ -804,8 +863,17 @@
 
     --on-status: #ffffff;
 
-    --active-border: 2px solid #268bd2;
+    --active-border: 2px solid #b58900;
     --active-accent-width: 2px;
+
+    /* Minimap — solarized light muted tones */
+    --minimap-user: #6a8a40;
+    --minimap-assistant: #5a8ab0;
+    --minimap-system: #93a1a1;
+    --minimap-tool: #8a80b0;
+    --minimap-thinking: #6c71c4;
+    --minimap-viewport-fill: rgba(38, 139, 210, 0.12);
+    --minimap-viewport-stroke: rgba(38, 139, 210, 0.4);
   }
 
   /* Solarized Light ambient overrides */
@@ -816,9 +884,9 @@
   }
 
   :global([data-theme='solarized-light'][data-claude-state='responding']) {
-    --ambient-glow: rgba(38, 139, 210, 0.15);
-    --ambient-accent: #268bd2;
-    --ambient-tint: rgba(38, 139, 210, 0.02);
+    --ambient-glow: rgba(181, 137, 0, 0.08);
+    --ambient-accent: #b58900;
+    --ambient-tint: rgba(181, 137, 0, 0.008);
   }
 
   :global([data-theme='solarized-light'][data-claude-state='tool_executing']) {
@@ -829,7 +897,7 @@
 
   :global([data-theme='solarized-light'][data-connection='error']),
   :global([data-theme='solarized-light'][data-connection='disconnected']) {
-    --ambient-glow: rgba(38, 139, 210, 0.04);
+    --ambient-glow: rgba(88, 110, 117, 0.04);
     --ambient-tint: rgba(0, 0, 0, 0.02);
   }
 
@@ -913,8 +981,8 @@
     --tint-thinking-strong: rgba(152, 118, 170, 0.1);
     --tint-selection: rgba(33, 66, 131, 0.45);
 
-    --emphasis: none;
-    --emphasis-strong: 0 0 2px rgba(74, 109, 167, 0.15);
+    --emphasis: 0 0 4px rgba(74, 109, 167, 0.10);
+    --emphasis-strong: 0 0 6px rgba(74, 109, 167, 0.18);
 
     --elevation-low: 0 0 8px rgba(0, 0, 0, 0.3);
     --elevation-high: 0 0 16px rgba(0, 0, 0, 0.4);
@@ -960,6 +1028,15 @@
 
     --active-border: 1px solid #4a6da7;
     --active-accent-width: 0px;
+
+    /* Minimap — darcula muted tones */
+    --minimap-user: #5a7a50;
+    --minimap-assistant: #a07050;
+    --minimap-system: #606366;
+    --minimap-tool: #806a90;
+    --minimap-thinking: #9876aa;
+    --minimap-viewport-fill: rgba(204, 120, 50, 0.15);
+    --minimap-viewport-stroke: rgba(204, 120, 50, 0.5);
   }
 
   /* Darcula ambient overrides */
@@ -1114,6 +1191,15 @@
 
     --active-border: 2px solid #2470c0;
     --active-accent-width: 2px;
+
+    /* Minimap — IntelliJ light muted tones */
+    --minimap-user: #4a8a4a;
+    --minimap-assistant: #5a80b0;
+    --minimap-system: #8c8c8c;
+    --minimap-tool: #8a6aa0;
+    --minimap-thinking: #871094;
+    --minimap-viewport-fill: rgba(36, 112, 192, 0.1);
+    --minimap-viewport-stroke: rgba(36, 112, 192, 0.4);
   }
 
   /* IntelliJ Light ambient overrides */
@@ -1219,7 +1305,7 @@
 
   /* Light selection */
   :global([data-theme='solarized-light'] ::selection) {
-    background: rgba(38, 139, 210, 0.2);
+    background: rgba(147, 161, 161, 0.25);
     color: var(--text-primary);
   }
 
@@ -1586,8 +1672,8 @@
   }
 
   :global(::-webkit-scrollbar-thumb:hover) {
-    background: var(--ambient-accent, var(--accent-600));
-    border-color: var(--ambient-accent, var(--accent-500));
+    background: var(--ambient-accent, var(--chrome-accent-600));
+    border-color: var(--ambient-accent, var(--chrome-accent-500));
     transition:
       background 0.8s ease,
       border-color 0.8s ease;

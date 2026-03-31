@@ -179,7 +179,7 @@
   }
 
   .instance-item.active .instance-name {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -189,7 +189,7 @@
     font-family: var(--font-mono);
     color: var(--text-primary);
     background: var(--surface-600);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 2px;
     padding: 1px 4px;
     outline: none;
@@ -294,11 +294,11 @@
     padding: 0 4px;
     margin-left: 6px;
     background: var(--tint-active-strong);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 8px;
     font-size: 9px;
     font-weight: 700;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-variant-numeric: tabular-nums;
     transition: all 0.15s ease;
   }

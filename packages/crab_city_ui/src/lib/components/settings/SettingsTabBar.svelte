@@ -51,6 +51,7 @@
     padding: 8px 24px;
     background: var(--surface-800);
     border-bottom: 1px solid var(--surface-border);
+    box-shadow: var(--recess-border);
     flex-shrink: 0;
     position: sticky;
     top: 0;
@@ -78,7 +79,8 @@
   }
 
   .tab-pill.active {
-    color: var(--accent-400);
-    border-bottom-color: var(--accent-500);
+    color: var(--chrome-accent-400);
+    border-bottom-color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
   }
 </style>

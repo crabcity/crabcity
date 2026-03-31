@@ -129,12 +129,12 @@
   }
 
   .action-card.warning {
-    border-left-color: var(--accent-600);
-    background: color-mix(in srgb, var(--accent-500) 4%, transparent);
+    border-left-color: var(--chrome-accent-600);
+    background: color-mix(in srgb, var(--chrome-accent-500) 4%, transparent);
   }
 
   .action-card.warning.highlighted {
-    background: color-mix(in srgb, var(--accent-500) 10%, var(--surface-700));
+    background: color-mix(in srgb, var(--chrome-accent-500) 10%, var(--surface-700));
   }
 
   .card-header {
@@ -194,7 +194,7 @@
   }
 
   .warning .card-summary {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .card-time {
@@ -237,20 +237,20 @@
   }
 
   .action-btn:hover {
-    color: var(--accent-400);
-    border-color: var(--accent-600);
+    color: var(--chrome-accent-400);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-active);
   }
 
   .action-btn.primary {
     color: var(--surface-900);
-    background: var(--accent-500);
-    border-color: var(--accent-400);
+    background: var(--chrome-accent-500);
+    border-color: var(--chrome-accent-400);
   }
 
   .action-btn.primary:hover {
-    background: var(--accent-400);
-    border-color: var(--accent-300);
+    background: var(--chrome-accent-400);
+    border-color: var(--chrome-accent-300);
   }
 
   .action-btn.dismiss {

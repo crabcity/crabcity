@@ -17,7 +17,7 @@
     stale?: boolean;
   }
 
-  let { level = 0, active = false, color = 'var(--accent-500)', stale = false }: Props = $props();
+  let { level = 0, active = false, color = 'var(--chrome-accent-500)', stale = false }: Props = $props();
 
   // Simulated activity for non-focused active instances
   let simulatedLevel = $state(0);

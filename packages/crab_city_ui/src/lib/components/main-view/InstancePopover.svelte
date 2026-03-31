@@ -211,7 +211,7 @@
   }
 
   .popover-name:hover {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .edit-icon {
@@ -234,7 +234,7 @@
   .rename-input {
     flex: 1;
     background: var(--surface-700);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 2px;
     color: var(--text-primary);
     font-size: 11px;
@@ -278,7 +278,7 @@
 
   .popover-item:hover {
     background: var(--tint-active-strong);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .popover-item.danger {

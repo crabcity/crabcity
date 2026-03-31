@@ -714,7 +714,7 @@
     font-size: 32px;
     font-weight: 800;
     letter-spacing: 0.3em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .lobby-sub {
@@ -727,9 +727,9 @@
     margin-top: 8px;
     padding: 12px 48px;
     background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-hover) 100%);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-family: inherit;
     font-size: 14px;
     font-weight: 700;
@@ -843,7 +843,7 @@
 
   .score-val {
     font-weight: 700;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     min-width: 16px;
     text-align: right;
   }

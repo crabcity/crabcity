@@ -239,19 +239,19 @@
 
   .kind-card:hover,
   .kind-card.focused {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-hover);
     box-shadow: var(--elevation-low);
   }
 
   .kind-card:hover .kind-icon,
   .kind-card.focused .kind-icon {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .kind-card:hover .kind-label,
   .kind-card.focused .kind-label {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
   }
 

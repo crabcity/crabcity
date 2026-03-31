@@ -405,7 +405,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
     font-family: var(--font-display);
   }
@@ -442,7 +442,7 @@
   }
 
   .view-tab.active {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
     border-color: var(--surface-border);
   }
@@ -462,8 +462,8 @@
   }
 
   .close-btn:hover {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .close-btn svg {
@@ -502,7 +502,7 @@
   }
 
   .add-input:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .expand-body-btn {
@@ -522,8 +522,8 @@
 
   .expand-body-btn:hover,
   .expand-body-btn.active {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .add-btn {
@@ -573,7 +573,7 @@
   }
 
   .add-body:focus {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   /* === Task list === */
@@ -631,7 +631,7 @@
   }
 
   .task-list::-webkit-scrollbar-thumb:hover {
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
   }
 
   /* === Responsive === */

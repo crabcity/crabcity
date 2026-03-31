@@ -447,8 +447,8 @@
   }
 
   .back-link:hover {
-    border-color: var(--accent-600);
-    color: var(--accent-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
   }
 
@@ -463,7 +463,7 @@
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.05em;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -482,7 +482,7 @@
   }
 
   .error-link {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 
@@ -526,7 +526,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--accent-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-bottom: 16px;

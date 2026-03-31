@@ -98,7 +98,7 @@
   }
 
   .toggle-label.active {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   .toggle-track {
@@ -125,7 +125,7 @@
 
   .toggle-thumb.on {
     transform: translateX(12px);
-    background: var(--accent-400);
+    background: var(--chrome-accent-400);
   }
 
   .pane-content-inner {

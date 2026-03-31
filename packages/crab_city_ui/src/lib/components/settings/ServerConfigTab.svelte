@@ -388,7 +388,8 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--accent-500);
+    color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -453,11 +454,11 @@
   }
 
   .profile-select:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .profile-select:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
   }
 
   .profile-select option {
@@ -473,7 +474,7 @@
     letter-spacing: 0.02em;
     background: var(--tint-active);
     border: 1px solid var(--tint-active);
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     line-height: 1.4;
   }
 
@@ -517,13 +518,14 @@
   }
 
   .inline-input:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
   .inline-create-btn {
     padding: 4px 10px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 3px;
     color: var(--surface-900);
@@ -537,7 +539,7 @@
   }
 
   .inline-create-btn:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   .inline-create-btn:disabled {
@@ -563,7 +565,7 @@
   .tab-link {
     background: none;
     border: none;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
@@ -575,7 +577,7 @@
   }
 
   .tab-link:hover {
-    color: var(--accent-300);
+    color: var(--chrome-accent-300);
   }
 
   /* Field inputs */
@@ -592,11 +594,12 @@
   }
 
   .field-input:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .field-input:focus {
-    border-color: var(--accent-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
@@ -627,7 +630,7 @@
   }
 
   .indicator-btn:hover {
-    border-color: var(--accent-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .indicator-dot {
@@ -640,7 +643,8 @@
   }
 
   .indicator-btn.on .indicator-dot {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     opacity: 1;
   }
 
@@ -652,7 +656,7 @@
   }
 
   .indicator-btn.on .indicator-label {
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
   }
 
   /* Action bar */
@@ -687,20 +691,24 @@
   .apply-btn {
     padding: 6px 12px;
     background: var(--surface-700);
-    border: 1px solid var(--accent-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
-    color: var(--accent-400);
+    color: var(--chrome-accent-400);
     font-family: inherit;
     font-weight: 700;
     font-size: 10px;
     letter-spacing: 0.05em;
     cursor: pointer;
-    transition: all 0.15s ease;
+    box-shadow: var(--elevation-low);
+    transition:
+      all 0.15s ease,
+      box-shadow 0.15s ease;
     margin-left: auto;
   }
 
   .apply-btn:hover:not(:disabled) {
     background: var(--surface-600);
+    box-shadow: var(--elevation-high);
   }
 
   .apply-btn:disabled {
@@ -710,7 +718,7 @@
 
   .save-apply-btn {
     padding: 6px 12px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -719,11 +727,15 @@
     font-size: 10px;
     letter-spacing: 0.05em;
     cursor: pointer;
-    transition: background 0.15s ease;
+    box-shadow: var(--depth-up);
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .save-apply-btn:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
+    box-shadow: var(--elevation-high);
   }
 
   .save-apply-btn:disabled {
@@ -733,7 +745,7 @@
 
   .action-btn {
     padding: 6px 12px;
-    background: var(--accent-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -746,7 +758,7 @@
   }
 
   .action-btn:hover:not(:disabled) {
-    background: var(--accent-500);
+    background: var(--chrome-accent-500);
   }
 
   /* Status feedback */
