@@ -32,6 +32,8 @@ cargo_build_script(
     ],
     # no-sandbox: tauri-build reads tauri.conf.json, capabilities/, icons/ from disk
     tags = ["no-sandbox"],
+    # Tauri requires system WebView/GTK libs — only available on macOS in CI
+    target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "@crate_index//:blake3",
         "@crate_index//:brotli",
@@ -53,6 +55,7 @@ rust_binary(
     },
     # no-sandbox: tauri proc macros read config and icon files from disk
     tags = ["no-sandbox"],
+    target_compatible_with = ["@platforms//os:macos"],
     deps = [
         ":build_script",
         "//packages/crab_city:crab_city_lib_embedded",
@@ -77,6 +80,7 @@ rust_test(
         "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
     },
     tags = ["no-sandbox"],
+    target_compatible_with = ["@platforms//os:macos"],
 )
 
 macos_app(
@@ -85,4 +89,5 @@ macos_app(
     binary_name = "crab_city_desktop",
     bundle_name = "CrabCity",
     info_plist = "Info.plist",
+    target_compatible_with = ["@platforms//os:macos"],
 )
