@@ -4,8 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.crabcity.desktop",
   "build": {
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "cd ../crab_city_ui && pnpm dev"
+    "frontendDist": "loading-dist"
   },
   "app": {
     "withGlobalTauri": false,

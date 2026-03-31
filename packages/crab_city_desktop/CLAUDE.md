@@ -37,31 +37,39 @@ bazel test //packages/crab_city_desktop:crab_city_desktop_test
 
 ### Bazel + Tauri Compatibility
 
-Tauri's `generate_context!()` proc macro writes cache files to `OUT_DIR` during compilation (icon hashes, plist). In Bazel, `OUT_DIR` is read-only after the build script runs. The workaround is in `build.rs`: pre-create the exact cache files during the build script phase (where `OUT_DIR` IS writable), so `write_if_changed()` finds matching content and skips the write. The build-deps `png`, `blake3`, `plist`, and `serde_json` exist solely for this pre-creation.
+Tauri's `generate_context!()` proc macro writes cache files to `OUT_DIR` during compilation (icon hashes, plist, frontend assets). In Bazel, `OUT_DIR` is read-only after the build script runs. The workaround is in `build.rs`: pre-create the exact cache files during the build script phase (where `OUT_DIR` IS writable), so the proc macro finds matching content and skips the write. The build-deps `png`, `blake3`, `brotli`, `plist`, and `serde_json` exist solely for this pre-creation.
+
+Frontend assets (`frontendDist`) are brotli-compressed into `$OUT_DIR/tauri-codegen-assets/{blake3_hash}.{ext}`. The `precreate_frontend_cache()` function in `build.rs` replicates this exactly so the proc macro's write is a no-op in Bazel.
 
 Additionally, `ResolvedCommand` has `#[cfg(debug_assertions)]` fields. Bazel compiles proc macros in exec config (default: `opt`, no debug_assertions) but targets in `fastbuild` (with debug_assertions). This mismatch is fixed by `--host_compilation_mode=fastbuild` in `.bazelrc`.
 
 ## Dev Workflow
 
-Single terminal: `cd packages/crab_city_desktop && cargo tauri dev`
+Single terminal: `cd packages/crab_city_desktop && cargo tauri dev --config tauri.dev.conf.json`
 
-This launches Vite's dev server (`beforeDevCommand`), then opens the Tauri window. The embedded server starts in-process and writes `daemon.port`, which Vite's `dynamicBackendProxy` reads to proxy `/api/*` and WebSocket requests.
+The `--config` flag merges `tauri.dev.conf.json` (which adds `devUrl` and `beforeDevCommand`) into the base config. This launches Vite's dev server, then opens the Tauri window. The embedded server starts in-process and writes `daemon.port`, which Vite's `dynamicBackendProxy` reads to proxy `/api/*` and WebSocket requests.
 
-In dev mode (`cargo tauri dev`), the webview loads Vite at `http://localhost:5173`. The embedded server still starts (so Vite can proxy to it), but the webview is not navigated away from the Vite URL.
+The base `tauri.conf.json` has no `devUrl` — production builds (Bazel) never reference external dev servers. In dev mode, the webview loads Vite at `http://localhost:5173`. The embedded server still starts (so Vite can proxy to it), but the webview is not navigated away from the Vite URL.
 
 ## Key Patterns
 
-### Loading Screen IPC
+### Loading Screen
 
-The loading page (`loading.html`) communicates with Rust via two mechanisms:
+The loading page (`loading-dist/index.html`) is embedded natively via Tauri's `frontendDist` config. Tauri serves it at `tauri://localhost/` — the webview shows it immediately on launch, before `setup()` runs. No JS injection or blank-page flash.
+
+In `cargo tauri dev`, `generate_context!()` ignores `frontendDist` and uses `devUrl` instead, so Vite hot-reload works normally.
+
+**IPC** with the loading page:
 - **Rust → JS**: `window.eval()` calls global functions (`setStatus()`, `showError()`, `fadeOutAndNavigate()`)
 - **JS → Rust**: Retry button invokes `retry_server_startup` Tauri command via `__TAURI_INTERNALS__.invoke()`
+
+When the external server dies, the health monitor navigates back to `tauri://localhost/` (the embedded loading page) and shows the error.
 
 ### Server Lifecycle
 
 - **Discovery**: `start_or_discover_server()` first calls `check_existing_server()` — if a healthy daemon is found, sets `ServerMode::External` and spawns a health monitor
 - **Embedded startup**: if no existing server, calls `EmbeddedServer::start()` (which acquires the daemon lock), sets `ServerMode::Embedded`
-- **Health monitor**: for external servers, polls `health_check_port()` every 5s. On failure, shows loading page with "Server disconnected" error and retry button
+- **Health monitor**: for external servers, polls `health_check_port()` every 5s. On failure, navigates back to `tauri://localhost/` and shows "Server disconnected" error with retry button
 - **Shutdown**: `RunEvent::Exit` checks `ServerMode` — `Embedded` triggers `server.shutdown()`, `External` leaves the daemon running
 
 ### macOS Window Lifecycle

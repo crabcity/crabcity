@@ -13,11 +13,6 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use crab_city::config::CrabCityConfig;
 use crab_city::server::{self, EmbeddedServer, ServerOptions};
 
-/// Loading page HTML, embedded at compile time. Injected into the webview
-/// via JS rather than Tauri's asset embedding (which requires a writable
-/// OUT_DIR that Bazel doesn't provide).
-const LOADING_HTML: &str = include_str!("../loading.html");
-
 #[derive(Parser)]
 #[command(name = "crab-city-desktop")]
 struct DesktopArgs {
@@ -62,8 +57,8 @@ fn main() {
 
             if let Some(window) = app.get_webview_window("main") {
                 // In `cargo tauri dev`, the webview loads devUrl (Vite) before
-                // setup runs. Don't inject the loading page or navigate away —
-                // Vite proxies to the daemon and handles its own reconnection.
+                // setup runs. Don't navigate away — Vite proxies to the daemon
+                // and handles its own reconnection.
                 let has_dev_frontend = window
                     .url()
                     .map(|u| u.scheme() == "http" || u.scheme() == "https")
@@ -126,9 +121,9 @@ async fn start_or_discover_server(
     data_dir: Option<PathBuf>,
     has_dev_frontend: bool,
 ) {
-    // Show loading status
+    // Update loading status — the loading page is already showing natively
+    // via Tauri's frontendDist embedding (tauri://localhost/)
     if !has_dev_frontend {
-        inject_loading_page(&handle);
         eval_loading(&handle, "setStatus('Checking for running server...')");
     }
 
@@ -141,8 +136,12 @@ async fn start_or_discover_server(
         }
     };
 
-    // Try to discover an existing healthy server first
-    if let Some(port) = server::check_existing_server(&config) {
+    // Try to discover an existing healthy server first.
+    // check_existing_server uses reqwest::blocking internally, which panics
+    // inside a tokio spawn task. block_in_place tells tokio we're about to
+    // block so it can move other tasks to different threads.
+    let existing = tokio::task::block_in_place(|| server::check_existing_server(&config));
+    if let Some(port) = existing {
         tracing::info!("Discovered existing server on port {port}");
         let url = format!("http://127.0.0.1:{}", port);
 
@@ -208,9 +207,10 @@ async fn start_or_discover_server(
 
 /// Background task that polls an external server's health every 5 seconds.
 ///
-/// If the external server dies, injects the loading page with an error and
-/// a retry button. On retry, `start_or_discover_server()` runs again —
-/// it may rediscover a restarted daemon or start an embedded server.
+/// If the external server dies, navigates back to the embedded loading page
+/// (`tauri://localhost/`) and shows an error with a retry button. On retry,
+/// `start_or_discover_server()` runs again — it may rediscover a restarted
+/// daemon or start an embedded server.
 fn spawn_external_health_monitor(handle: tauri::AppHandle, port: u16) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -230,7 +230,7 @@ fn spawn_external_health_monitor(handle: tauri::AppHandle, port: u16) {
                 }
             }
 
-            if !server::health_check_port(port) {
+            if !tokio::task::block_in_place(|| server::health_check_port(port)) {
                 tracing::warn!("External server on port {port} is no longer responding");
 
                 // Clear the stale server mode
@@ -240,8 +240,13 @@ fn spawn_external_health_monitor(handle: tauri::AppHandle, port: u16) {
                     state.server_port.store(0, Ordering::Relaxed);
                 }
 
-                // Show error with retry
-                inject_loading_page(&handle);
+                // Navigate back to the embedded loading page
+                if let Some(window) = handle.get_webview_window("main") {
+                    let url: tauri::Url = "tauri://localhost/".parse().unwrap();
+                    let _ = window.navigate(url);
+                    // Brief delay for the page to load before showing error
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
                 show_error(&handle, "Server disconnected");
                 break;
             }
@@ -252,7 +257,10 @@ fn spawn_external_health_monitor(handle: tauri::AppHandle, port: u16) {
 fn show_error(handle: &tauri::AppHandle, msg: &str) {
     if let Some(window) = handle.get_webview_window("main") {
         let escaped = msg.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!("showError('{}')", escaped);
+        let js = format!(
+            "(function _p(){{if(typeof showError==='function'){{showError('{}')}}else{{setTimeout(_p,10)}}}})()",
+            escaped
+        );
         let _ = window.eval(&js);
     }
 }
@@ -427,7 +435,7 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
 // Tauri IPC Commands
 // =============================================================================
 
-/// Called from loading.html when the user clicks "Retry".
+/// Called from the loading page when the user clicks "Retry".
 #[tauri::command]
 async fn retry_server_startup(handle: tauri::AppHandle) -> Result<(), String> {
     start_or_discover_server(handle, None, false).await;
@@ -438,33 +446,16 @@ async fn retry_server_startup(handle: tauri::AppHandle) -> Result<(), String> {
 // Loading Page Helpers
 // =============================================================================
 
-/// Inject the loading page into the webview via DOM manipulation.
-fn inject_loading_page(handle: &tauri::AppHandle) {
-    if let Some(window) = handle.get_webview_window("main") {
-        let mut js = String::from(
-            "(function() {\
-             var parser = new DOMParser();\
-             var doc = parser.parseFromString(`",
-        );
-        js.push_str(LOADING_HTML);
-        js.push_str(
-            "`, 'text/html');\
-             document.head.innerHTML = doc.head.innerHTML;\
-             document.body.innerHTML = doc.body.innerHTML;\
-             doc.querySelectorAll('script').forEach(function(s) {\
-               var ns = document.createElement('script');\
-               ns.textContent = s.textContent;\
-               document.body.appendChild(ns);\
-             });\
-             })();",
-        );
-        let _ = window.eval(&js);
-    }
-}
-
-/// Evaluate JS on the loading page (helper to keep main logic clean).
+/// Evaluate JS on the loading page, polling until the page is ready.
+///
+/// The webview loads `tauri://localhost/` asynchronously — the loading page's
+/// script may not have executed yet when setup() fires. This wraps the call
+/// in a poll that retries every 10ms until `setStatus` is defined.
 fn eval_loading(handle: &tauri::AppHandle, js: &str) {
     if let Some(window) = handle.get_webview_window("main") {
-        let _ = window.eval(js);
+        let safe = format!(
+            "(function _p(){{if(typeof setStatus==='function'){{{js}}}else{{setTimeout(_p,10)}}}})()"
+        );
+        let _ = window.eval(&safe);
     }
 }

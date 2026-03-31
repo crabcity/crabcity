@@ -179,6 +179,8 @@ rust_test(
 test_suite(
     name = "crab_city_tests",
     tests = [":" + name for name in _LIB_TEST_FILTERS.keys()] +
-            [":" + name for name in _BIN_TEST_FILTERS.keys()] +
-            [":lib_misc_test", ":bin_misc_test"],
+            [":" + name for name in _BIN_TEST_FILTERS.keys()] + [
+        ":bin_misc_test",
+        ":lib_misc_test",
+    ],
 )

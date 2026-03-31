@@ -412,6 +412,11 @@ crate_index.spec(
     version = "1",
 )
 crate_index.spec(
+    features = ["std"],
+    package = "brotli",
+    version = "8",
+)
+crate_index.spec(
     package = "plist",
     version = "1",
 )

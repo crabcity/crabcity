@@ -1,6 +1,15 @@
 use std::io::Cursor;
 
 fn main() {
+    // Propagate DEP_TAURI_DEV to the compilation environment so
+    // generate_context!() can read it. In Cargo, DEP_* vars from linked
+    // crates are automatically available during compilation. In Bazel,
+    // they're only available during build.rs (via build_script_env /
+    // link_deps) unless explicitly re-emitted as cargo:rustc-env.
+    if let Ok(dev) = std::env::var("DEP_TAURI_DEV") {
+        println!("cargo:rustc-env=DEP_TAURI_DEV={dev}");
+    }
+
     tauri_build::build();
     precreate_codegen_cache();
 }
@@ -12,10 +21,11 @@ fn main() {
 /// (only writable during build.rs). By pre-creating these files here, the proc
 /// macro's `write_if_changed()` finds matching content and skips the write.
 ///
-/// Three cache files are needed (on macOS dev mode):
+/// Cache files:
 /// 1. RGBA-decoded icon bytes (default window icon)
 /// 2. Raw PNG icon bytes (macOS app icon)
-/// 3. Info.plist XML (macOS embed-plist)
+/// 3. Info.plist XML (macOS embed-plist, dev mode only)
+/// 4. Brotli-compressed frontend assets (frontendDist)
 fn precreate_codegen_cache() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
@@ -27,6 +37,8 @@ fn precreate_codegen_cache() {
     if cfg!(target_os = "macos") && std::env::var("DEP_TAURI_DEV").as_deref() == Ok("true") {
         precreate_plist_cache(&out_dir, manifest_path);
     }
+
+    precreate_frontend_cache(&out_dir, manifest_path);
 }
 
 /// Pre-create icon hash files matching `CachedIcon::new_png()` and
@@ -119,10 +131,46 @@ fn write_cache_file(out_dir: &str, content: &[u8]) {
     let hex = hash.to_hex();
     let path = std::path::Path::new(out_dir).join(hex.as_str());
     // Skip if already exists with correct content (idempotent).
-    if path.exists()
-        && std::fs::read(&path).is_ok_and(|existing| existing == content)
-    {
+    if path.exists() && std::fs::read(&path).is_ok_and(|existing| existing == content) {
         return;
     }
     std::fs::write(&path, content).expect("failed to write cache file");
+}
+
+/// Pre-create brotli-compressed frontend asset cache for Bazel compatibility.
+///
+/// When `frontendDist` is set in tauri.conf.json, `generate_context!()` reads
+/// each file, blake3-hashes the raw bytes, brotli-compresses them, and writes
+/// to `$OUT_DIR/tauri-codegen-assets/{hash}.{ext}`. In Bazel, OUT_DIR is
+/// read-only during proc macro execution, so we pre-create the file here.
+fn precreate_frontend_cache(out_dir: &str, manifest_path: &std::path::Path) {
+    let index_path = manifest_path.join("loading-dist/index.html");
+    if !index_path.exists() {
+        return;
+    }
+
+    let raw_bytes = std::fs::read(&index_path).expect("failed to read index.html");
+
+    // Hash raw bytes — with csp=null, tauri-codegen does not modify the HTML
+    let hash = blake3::hash(&raw_bytes);
+    let hex = hash.to_hex();
+
+    let assets_dir = std::path::Path::new(out_dir).join("tauri-codegen-assets");
+    std::fs::create_dir_all(&assets_dir).expect("failed to create tauri-codegen-assets dir");
+
+    let out_path = assets_dir.join(format!("{}.html", hex));
+    if out_path.exists() {
+        return; // already cached
+    }
+
+    // Brotli compress — match tauri-codegen's compression_settings()
+    let mut input = Cursor::new(&raw_bytes);
+    let mut output = Vec::new();
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: if cfg!(debug_assertions) { 2 } else { 9 },
+        ..Default::default()
+    };
+    brotli::BrotliCompress(&mut input, &mut output, &params)
+        .expect("failed to brotli compress");
+    std::fs::write(&out_path, &output).expect("failed to write frontend cache");
 }
