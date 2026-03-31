@@ -10,17 +10,22 @@
     currentViewMode,
     isDiffLoading,
     diffError,
+    currentDiffContext,
+    allDiffFiles,
+    currentFileIndex,
     closeFileViewer,
     goToLine,
     toggleViewMode,
     setDiffData,
     setDiffError,
     setFileContent,
+    setAllDiffFiles,
+    navigateDiffFile,
     rootDirectory,
     fetchFileContent
   } from '$lib/stores/files';
   import { diffEngine } from '$lib/stores/settings';
-  import { gitFileStatuses, fetchGitDiff, gitDiff } from '$lib/stores/git';
+  import { gitFileStatuses, fetchGitDiff, fetchDiffDirect, gitDiff } from '$lib/stores/git';
   import { currentInstance } from '$lib/stores/instances';
   import { updateUrl } from '$lib/utils/url';
   import DiffView from './file-viewer/DiffView.svelte';
@@ -35,6 +40,22 @@
   let { embedded = false, oninset }: Props = $props();
 
   const isVisible = $derived(embedded || $isFileViewerOpen);
+
+  // Track whether the drawer was already open to suppress re-animation
+  let wasOpen = $state(false);
+  let animateOnMount = $state(true);
+
+  $effect(() => {
+    const open = $isFileViewerOpen;
+    if (open && !wasOpen) {
+      // Transitioning from closed → open: animate
+      animateOnMount = true;
+    } else if (open && wasOpen) {
+      // Already open, content changing (e.g. file navigation): skip animation
+      animateOnMount = false;
+    }
+    wasOpen = open;
+  });
 
   // Panel width state with resize support
   let panelWidth = $state(Math.min(800, window.innerWidth * 0.5));
@@ -163,8 +184,17 @@
     return relPath ? $gitFileStatuses.has(relPath) : false;
   });
 
+  let transitioning = $state(false);
+  let transitionTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Handle diff toggle
   function handleDiffToggle() {
+    transitioning = true;
+    if (transitionTimer) clearTimeout(transitionTimer);
+    transitionTimer = setTimeout(() => {
+      transitionTimer = null;
+      transitioning = false;
+    }, 200);
     if ($currentViewMode === 'diff') {
       toggleViewMode();
       if (!$currentFileContent && $currentFilePath) {
@@ -301,6 +331,62 @@
       $currentFileContent?.startsWith('Access denied:') ||
       $currentFileContent?.startsWith('Failed to load')
   );
+
+  // Generation counter to prevent stale fetches from stomping current state
+  let contextFetchGen = 0;
+  // Engine reported by the most recent context-aware fetch (avoids reading global gitDiff)
+  let contextActualEngine: string | undefined = $state();
+
+  // Fetch the full multi-file diff when a diffContext is present
+  $effect(() => {
+    const ctx = $currentDiffContext;
+    const instance = $currentInstance;
+    const filePath = $currentFilePath;
+    if (!ctx || !instance || !filePath) return;
+
+    const gen = ++contextFetchGen;
+    fetchDiffDirect(instance.id, ctx.commit, undefined, $diffEngine, {
+      base: ctx.base,
+      head: ctx.head,
+      diffMode: ctx.diffMode
+    })
+      .then((diff) => {
+        if (gen !== contextFetchGen) return;
+        contextActualEngine = diff.engine;
+        if (diff.files.length > 0) {
+          const idx = diff.files.findIndex((f) => f.path === filePath);
+          setAllDiffFiles(diff.files, idx >= 0 ? idx : 0);
+        } else {
+          setDiffError('No changes found');
+        }
+      })
+      .catch(() => {
+        if (gen !== contextFetchGen) return;
+        setDiffError();
+      });
+  });
+
+  function handleFileSelect(index: number) {
+    navigateDiffFile(index);
+  }
+
+  // Local cache for context content — avoids writing to global fileViewerState
+  // (which would re-emit all derived stores and trigger spurious reactivity).
+  let contextContentCache: string | null = null;
+  $effect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    $currentFilePath;
+    contextContentCache = null;
+  });
+  async function fetchContentForContext(): Promise<string> {
+    if (contextContentCache) return contextContentCache;
+    if ($currentFileContent) return $currentFileContent;
+    const path = $currentFilePath;
+    if (!path) throw new Error('No file path');
+    const content = await fetchFileContent(path);
+    contextContentCache = content;
+    return content;
+  }
 </script>
 
 <svelte:window onmousemove={handleMouseMove} onmouseup={stopResize} />
@@ -310,7 +396,7 @@
     <button class="backdrop" onclick={closeFileViewer} aria-label="Close file viewer"></button>
   {/if}
 
-  <aside class="file-viewer-panel" class:embedded style="width: {!embedded ? panelWidth : undefined}px">
+  <aside class="file-viewer-panel" class:embedded class:animate-in={animateOnMount && !embedded} style="width: {!embedded ? panelWidth : undefined}px">
     {#if !embedded}
       <button class="resize-handle" onmousedown={startResize} aria-label="Resize panel"></button>
     {/if}
@@ -336,19 +422,6 @@
         {/if}
         {#if $currentViewMode !== 'diff'}
           <span class="line-count">{lineCount} lines</span>
-        {/if}
-        {#if $currentDiffData || fileHasGitChanges || $currentViewMode === 'diff'}
-          <button
-            class="action-btn diff-toggle"
-            class:active={$currentViewMode === 'diff'}
-            onclick={handleDiffToggle}
-            title={$currentViewMode === 'diff' ? 'Show file content' : 'Show diff'}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 3v18M3 12h18" />
-            </svg>
-            <span class="diff-label">Diff</span>
-          </button>
         {/if}
         {#if isMarkdown}
           <button
@@ -376,6 +449,31 @@
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
+        {#if $currentDiffData || fileHasGitChanges || $currentViewMode === 'diff'}
+          {#if transitioning}
+            <div class="action-btn diff-toggle toggle-loading">
+              <div class="toggle-spinner"></div>
+            </div>
+          {:else}
+            <button
+              class="action-btn diff-toggle"
+              class:active={$currentViewMode === 'diff'}
+              onclick={handleDiffToggle}
+              title={$currentViewMode === 'diff' ? 'Show file content' : 'Show diff'}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                {#if $currentViewMode === 'diff'}
+                  <rect x="3" y="3" width="8" height="18" rx="1.5" />
+                  <rect x="13" y="3" width="8" height="18" rx="1.5" fill="currentColor" opacity="0.5" />
+                {:else}
+                  <rect x="3" y="3" width="8" height="18" rx="1.5" fill="currentColor" opacity="0.5" />
+                  <rect x="13" y="3" width="8" height="18" rx="1.5" />
+                {/if}
+              </svg>
+              <span class="diff-label">{$currentViewMode === 'diff' ? 'Diff' : 'Src'}</span>
+            </button>
+          {/if}
+        {/if}
         {#if !embedded && oninset}
           <InsetButton onclick={oninset} />
         {/if}
@@ -392,24 +490,32 @@
 
     <!-- Content -->
     <div class="panel-content" bind:this={contentEl}>
-      {#if $currentViewMode === 'diff' && $isDiffLoading && !$currentDiffData}
-        <div class="loading-state">
-          <div class="spinner"></div>
-          <p>Loading diff...</p>
-        </div>
-      {:else if $currentViewMode === 'diff' && $diffError && !$currentDiffData}
-        <div class="diff-empty-state">
-          <span class="diff-empty-text">{$diffError}</span>
-        </div>
-      {:else if $currentViewMode === 'diff' && $currentDiffData}
-        <DiffView
-          diffData={$currentDiffData}
-          diffEngine={$diffEngine}
-          actualEngine={$gitDiff?.engine}
-          {refreshStatus}
-          {showRefreshOverlay}
-          onengineToggle={handleEngineToggle}
-        />
+      {#if transitioning}
+        <!-- Held blank while button spinner shows -->
+      {:else if $currentViewMode === 'diff'}
+        {#if $isDiffLoading && !$currentDiffData}
+          <div class="loading-state">
+            <div class="spinner"></div>
+            <p>Loading diff...</p>
+          </div>
+        {:else if $diffError && !$currentDiffData}
+          <div class="diff-empty-state">
+            <span class="diff-empty-text">{$diffError}</span>
+          </div>
+        {:else if $currentDiffData}
+          <DiffView
+            diffData={$currentDiffData}
+            diffEngine={$diffEngine}
+            actualEngine={$currentDiffContext ? contextActualEngine : $gitDiff?.engine}
+            {refreshStatus}
+            {showRefreshOverlay}
+            onengineToggle={handleEngineToggle}
+            onfetchContent={fetchContentForContext}
+            allFiles={$allDiffFiles}
+            currentFileIndex={$currentFileIndex}
+            onfileSelect={handleFileSelect}
+          />
+        {/if}
       {:else if $currentFileContent}
         <SourceView
           bind:this={sourceViewRef}
@@ -422,7 +528,7 @@
       {:else}
         <div class="loading-state">
           <div class="spinner"></div>
-          <p>Loading file content...</p>
+          <p>Loading...</p>
         </div>
       {/if}
     </div>
@@ -479,6 +585,9 @@
     min-width: 320px;
     max-width: 85vw;
     box-shadow: var(--shadow-panel);
+  }
+
+  .file-viewer-panel.animate-in {
     animation: slideIn 0.2s ease-out;
   }
 
@@ -659,6 +768,7 @@
 
   .diff-toggle {
     gap: 4px;
+    min-width: 52px;
   }
 
   .diff-toggle.active {
@@ -672,6 +782,25 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+
+  .toggle-loading {
+    cursor: default;
+  }
+
+  .toggle-spinner {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid var(--surface-border);
+    border-top-color: var(--amber-400);
+    border-radius: 50%;
+    animation: toggle-spin 0.6s linear infinite;
+  }
+
+  @keyframes toggle-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* Content area */

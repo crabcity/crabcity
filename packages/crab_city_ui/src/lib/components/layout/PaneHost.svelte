@@ -61,7 +61,7 @@
       {:else if content.kind === 'tasks'}
         <PaneTasks />
       {:else if content.kind === 'file-viewer'}
-        <PaneFileViewer filePath={content.filePath} lineNumber={content.lineNumber} paneId={pane.id} />
+        <PaneFileViewer filePath={content.filePath} lineNumber={content.lineNumber} diffContext={content.diffContext} paneId={pane.id} />
       {:else if content.kind === 'git'}
         <PaneGit />
       {:else if content.kind === 'settings'}

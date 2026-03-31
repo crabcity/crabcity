@@ -229,17 +229,7 @@ export async function fetchGitDiff(
   gitLoading.set(true);
   gitError.set(null);
   try {
-    const params = new URLSearchParams();
-    if (commit) params.set('commit', commit);
-    if (path) params.set('path', path);
-    if (engine) params.set('engine', engine);
-    if (opts?.base) params.set('base', opts.base);
-    if (opts?.head) params.set('head', opts.head);
-    if (opts?.diffMode) params.set('diff_mode', opts.diffMode);
-    if (opts?.statOnly) params.set('stat_only', 'true');
-    const qs = params.toString();
-    const url = `/api/instances/${instanceId}/git/diff${qs ? '?' + qs : ''}`;
-    const data = await apiGet<GitDiffData>(url);
+    const data = await fetchDiffDirect(instanceId, commit, path, engine, opts);
     gitDiff.set(data);
     gitDiffTarget.set(commit ?? null);
   } catch (e) {
@@ -247,6 +237,30 @@ export async function fetchGitDiff(
   } finally {
     gitLoading.set(false);
   }
+}
+
+/**
+ * Fetch diff data directly — returns the result without writing to any store.
+ * Use this in reactive effects to avoid stomping the global gitDiff store
+ * when multiple fetches race.
+ */
+export async function fetchDiffDirect(
+  instanceId: string,
+  commit?: string,
+  path?: string,
+  engine?: 'standard' | 'patience' | 'structural',
+  opts?: { base?: string; head?: string; diffMode?: 'twodot' | 'threedot'; statOnly?: boolean }
+): Promise<GitDiffData> {
+  const params = new URLSearchParams();
+  if (commit) params.set('commit', commit);
+  if (path) params.set('path', path);
+  if (engine) params.set('engine', engine);
+  if (opts?.base) params.set('base', opts.base);
+  if (opts?.head) params.set('head', opts.head);
+  if (opts?.diffMode) params.set('diff_mode', opts.diffMode);
+  if (opts?.statOnly) params.set('stat_only', 'true');
+  const qs = params.toString();
+  return apiGet<GitDiffData>(`/api/instances/${instanceId}/git/diff${qs ? '?' + qs : ''}`);
 }
 
 export function selectCommit(hash: string | null): void {

@@ -29,7 +29,13 @@ export type PaneContent =
   | { kind: 'landing' }
   | { kind: 'terminal'; instanceId: string | null }
   | { kind: 'conversation'; instanceId: string | null; viewMode: 'structured' | 'raw' }
-  | { kind: 'file-viewer'; filePath: string | null; lineNumber?: number; workingDir: string | null }
+  | {
+      kind: 'file-viewer';
+      filePath: string | null;
+      lineNumber?: number;
+      workingDir: string | null;
+      diffContext?: { commit?: string; base?: string; head?: string; diffMode?: string };
+    }
   | { kind: 'file-explorer'; workingDir: string | null }
   | { kind: 'chat'; scope: 'global' | string }
   | { kind: 'tasks'; workingDir: string | null }
