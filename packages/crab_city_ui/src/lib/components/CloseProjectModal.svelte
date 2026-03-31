@@ -144,7 +144,7 @@
     position: fixed;
     inset: 0;
     z-index: 200;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--backdrop);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -168,7 +168,7 @@
     border: 1px solid var(--surface-border-light);
     border-radius: 6px;
     background: var(--surface-700);
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-dropdown);
     animation: modal-in 0.2s ease;
   }
 
@@ -186,7 +186,7 @@
   .title {
     font-size: 0.8rem;
     font-weight: 700;
-    color: var(--amber-400);
+    color: var(--accent-400);
     letter-spacing: 0.15em;
     margin-bottom: 1rem;
   }
@@ -240,7 +240,7 @@
   }
 
   .instance-row:hover:not(:disabled) {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     background: var(--tint-hover);
   }
 
@@ -250,7 +250,7 @@
   }
 
   .instance-row.active {
-    border-left: 2px solid var(--amber-500);
+    border-left: 2px solid var(--accent-500);
   }
 
   .instance-row.deleting {
@@ -288,7 +288,7 @@
     width: 8px;
     height: 8px;
     border: 1.5px solid var(--text-muted);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--accent-400);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;

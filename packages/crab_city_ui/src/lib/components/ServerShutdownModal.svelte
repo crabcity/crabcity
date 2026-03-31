@@ -37,7 +37,7 @@
     position: fixed;
     inset: 0;
     z-index: 200;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--backdrop);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -60,9 +60,9 @@
     padding: 2rem;
     border: 1px solid var(--surface-border-light);
     background: var(--surface-800);
-    box-shadow: var(--depth-up, 0 4px 24px rgba(0, 0, 0, 0.5));
+    box-shadow: var(--depth-up);
     text-align: center;
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-family: var(--font-mono);
     animation: modal-in 0.2s ease;
   }
 
@@ -80,7 +80,7 @@
   .icon {
     font-size: 2.5rem;
     margin-bottom: 0.75rem;
-    color: var(--status-red, #ef4444);
+    color: var(--status-red);
     text-shadow: var(--emphasis-strong, 0 0 8px currentColor);
   }
 

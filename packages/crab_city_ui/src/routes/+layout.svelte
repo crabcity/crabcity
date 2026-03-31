@@ -181,17 +181,16 @@
 
   :global(:root) {
     /* Amber phosphor palette */
-    --amber-600: #d97706;
-    --amber-500: #fb923c;
-    --amber-400: #fdba74;
-    --amber-300: #fed7aa;
-    --amber-glow: rgba(251, 146, 60, 0.35);
-    --amber-glow-strong: rgba(251, 146, 60, 0.6);
+    --accent-700: #b45309;
+    --accent-600: #d97706;
+    --accent-500: #fb923c;
+    --accent-400: #fdba74;
+    --accent-300: #fed7aa;
 
     /* Purple (thinking state) */
-    --purple-500: #8b5cf6;
-    --purple-400: #a78bfa;
-    --purple-glow: rgba(139, 92, 246, 0.5);
+    --thinking-500: #8b5cf6;
+    --thinking-400: #a78bfa;
+    --thinking-300: #c4b5fd;
 
     /* Surfaces */
     --surface-900: #0a0806;
@@ -287,9 +286,10 @@
     --backdrop: rgba(0, 0, 0, 0.7);
     --shadow-panel: -4px 0 20px rgba(0, 0, 0, 0.4);
     --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --scanline-color: rgba(0, 0, 0, 0.04);
 
     /* Primary action buttons */
-    --btn-primary-bg: linear-gradient(180deg, var(--amber-600) 0%, #b45309 100%);
+    --btn-primary-bg: linear-gradient(180deg, var(--accent-600) 0%, #b45309 100%);
     --btn-primary-text: #000;
     --btn-primary-text-shadow: 0 1px 0 rgba(255, 255, 255, 0.1);
 
@@ -298,6 +298,7 @@
     --status-red-border: rgba(239, 68, 68, 0.2);
     --status-red-strong: rgba(239, 68, 68, 0.2);
     --status-red-text: #f87171;
+    --status-red-muted: #fca5a5;
     --status-green-tint: rgba(34, 197, 94, 0.1);
     --status-green-border: rgba(34, 197, 94, 0.2);
     --status-green-text: #6ee7b7;
@@ -305,15 +306,16 @@
     --status-blue-tint: rgba(96, 165, 250, 0.2);
     --status-blue-text: #93c5fd;
 
+    /* Text that contrasts with solid status-color backgrounds */
+    --on-status: #ffffff;
+
     /* Active indicator — how "this is selected" is expressed */
-    --active-border: 1px solid var(--amber-600);
+    --active-border: 1px solid var(--accent-600);
     --active-accent-width: 0px;
   }
 
   /* Ambient state overrides - the whole room shifts */
   :global([data-claude-state='thinking']) {
-    --amber-glow: rgba(139, 92, 246, 0.5);
-    --amber-glow-strong: rgba(139, 92, 246, 0.8);
     --ambient-glow: rgba(139, 92, 246, 0.5);
     --ambient-accent: #8b5cf6;
     --ambient-tint: rgba(139, 92, 246, 0.02);
@@ -321,8 +323,6 @@
   }
 
   :global([data-claude-state='responding']) {
-    --amber-glow: rgba(251, 146, 60, 0.5);
-    --amber-glow-strong: rgba(251, 146, 60, 0.8);
     --ambient-glow: rgba(251, 146, 60, 0.5);
     --ambient-accent: #fb923c;
     --ambient-tint: rgba(251, 146, 60, 0.025);
@@ -330,8 +330,6 @@
   }
 
   :global([data-claude-state='tool_executing']) {
-    --amber-glow: rgba(251, 191, 36, 0.5);
-    --amber-glow-strong: rgba(251, 191, 36, 0.8);
     --ambient-glow: rgba(251, 191, 36, 0.5);
     --ambient-accent: #fbbf24;
     --ambient-tint: rgba(251, 191, 36, 0.02);
@@ -339,8 +337,6 @@
   }
 
   :global([data-claude-state='active']) {
-    --amber-glow: rgba(251, 146, 60, 0.5);
-    --amber-glow-strong: rgba(251, 146, 60, 0.8);
     --ambient-glow: rgba(251, 146, 60, 0.5);
     --ambient-accent: #fb923c;
     --ambient-tint: rgba(251, 146, 60, 0.02);
@@ -350,16 +346,12 @@
   /* Signal lost — the whole UI loses signal when disconnected */
   :global([data-connection='error']),
   :global([data-connection='disconnected']) {
-    --amber-glow: rgba(251, 146, 60, 0.15);
-    --amber-glow-strong: rgba(251, 146, 60, 0.3);
     --ambient-scanline-opacity: 0.15;
     --ambient-glow: rgba(251, 146, 60, 0.2);
     --ambient-tint: rgba(0, 0, 0, 0.03);
   }
 
   :global([data-connection='reconnecting']) {
-    --amber-glow: rgba(251, 191, 36, 0.3);
-    --amber-glow-strong: rgba(251, 191, 36, 0.5);
     --ambient-scanline-opacity: 0.12;
     --ambient-glow: rgba(251, 191, 36, 0.4);
     --ambient-tint: rgba(251, 191, 36, 0.01);
@@ -367,8 +359,6 @@
 
   /* Server offline — more muted than transient disconnection */
   :global([data-connection='server_gone']) {
-    --amber-glow: rgba(251, 146, 60, 0.08);
-    --amber-glow-strong: rgba(251, 146, 60, 0.15);
     --ambient-scanline-opacity: 0.18;
     --ambient-glow: rgba(251, 146, 60, 0.1);
     --ambient-tint: rgba(0, 0, 0, 0.05);
@@ -382,17 +372,15 @@
   :global([data-theme='analog']) {
     /* === INK — fountain pen, real pigment, pools and bleeds === */
     /* Iron gall ink — the classic. Near-black with blue-violet undertone. */
-    --amber-600: #2a1f18; /* concentrated iron gall — nearly black */
-    --amber-500: #4a3528; /* mid-stroke density */
-    --amber-400: #3a2a1e; /* nib-lift, slightly less saturated */
-    --amber-300: #1a1410; /* full saturation pool */
-    --amber-glow: rgba(42, 31, 24, 0.08);
-    --amber-glow-strong: rgba(42, 31, 24, 0.18);
-
+    --accent-700: #1a1410; /* deep pool */
+    --accent-600: #2a1f18; /* concentrated iron gall — nearly black */
+    --accent-500: #4a3528; /* mid-stroke density */
+    --accent-400: #3a2a1e; /* nib-lift, slightly less saturated */
+    --accent-300: #1a1410; /* full saturation pool */
     /* Thinking — Pilot Iroshizuku Kon-peki (deep cerulean) */
-    --purple-500: #1a4a7a;
-    --purple-400: #2a5a8a;
-    --purple-glow: rgba(26, 74, 122, 0.12);
+    --thinking-500: #1a4a7a;
+    --thinking-400: #2a5a8a;
+    --thinking-300: #3a6a9a;
 
     /* === PAPER — pure white stock === */
     --surface-900: #ffffff; /* top sheet — white */
@@ -478,6 +466,7 @@
     --backdrop: rgba(254, 254, 254, 0.75);
     --shadow-panel: -2px 0 6px rgba(20, 18, 16, 0.1);
     --shadow-dropdown: 0 2px 6px rgba(20, 18, 16, 0.12), 0 0 1px rgba(20, 18, 16, 0.15);
+    --scanline-color: rgba(0, 0, 0, 0.03);
 
     /* Primary action buttons — ink stamp, heavy impression */
     --btn-primary-bg: linear-gradient(180deg, #3a2a1e 0%, #1a1410 100%);
@@ -489,6 +478,7 @@
     --status-red-border: rgba(138, 32, 32, 0.25);
     --status-red-strong: rgba(138, 32, 32, 0.14);
     --status-red-text: #8a2020;
+    --status-red-muted: #a54040;
     --status-green-tint: rgba(26, 94, 42, 0.08);
     --status-green-border: rgba(26, 94, 42, 0.25);
     --status-green-text: #1a5e2a;
@@ -496,8 +486,10 @@
     --status-blue-tint: rgba(26, 74, 122, 0.1);
     --status-blue-text: #1a4a7a;
 
+    --on-status: #ffffff;
+
     /* Active indicator — heavy pen stroke down the left margin */
-    --active-border: 2px solid var(--amber-600);
+    --active-border: 2px solid var(--accent-600);
     --active-accent-width: 3px;
 
     /* === SCROLLING GRAIN — applied directly to element backgrounds === */
@@ -511,57 +503,745 @@
 
   /* Analog ambient overrides — ink changes character under pressure */
   :global([data-theme='analog'][data-claude-state='thinking']) {
-    --amber-glow: rgba(26, 74, 122, 0.1);
-    --amber-glow-strong: rgba(26, 74, 122, 0.2);
-    --ambient-glow: rgba(26, 74, 122, 0.1);
+    --ambient-glow: rgba(26, 74, 122, 0.06);
     --ambient-accent: #1a4a7a;
     --ambient-tint: rgba(26, 74, 122, 0.015);
   }
 
   :global([data-theme='analog'][data-claude-state='responding']) {
-    --amber-glow: rgba(42, 31, 24, 0.12);
-    --amber-glow-strong: rgba(42, 31, 24, 0.22);
-    --ambient-glow: rgba(42, 31, 24, 0.12);
+    --ambient-glow: rgba(42, 31, 24, 0.06);
     --ambient-accent: #4a3528;
     --ambient-tint: rgba(42, 31, 24, 0.02);
   }
 
   :global([data-theme='analog'][data-claude-state='tool_executing']) {
-    --amber-glow: rgba(106, 85, 16, 0.1);
-    --amber-glow-strong: rgba(106, 85, 16, 0.2);
-    --ambient-glow: rgba(106, 85, 16, 0.1);
+    --ambient-glow: rgba(106, 85, 16, 0.06);
     --ambient-accent: #6a5510;
     --ambient-tint: rgba(106, 85, 16, 0.015);
   }
 
   :global([data-theme='analog'][data-claude-state='active']) {
-    --amber-glow: rgba(42, 31, 24, 0.12);
-    --amber-glow-strong: rgba(42, 31, 24, 0.22);
-    --ambient-glow: rgba(42, 31, 24, 0.12);
+    --ambient-glow: rgba(42, 31, 24, 0.06);
     --ambient-accent: #4a3528;
     --ambient-tint: rgba(42, 31, 24, 0.015);
   }
 
   :global([data-theme='analog'][data-connection='error']),
   :global([data-theme='analog'][data-connection='disconnected']) {
-    --amber-glow: rgba(42, 31, 24, 0.03);
-    --amber-glow-strong: rgba(42, 31, 24, 0.06);
     --ambient-glow: rgba(42, 31, 24, 0.03);
     --ambient-tint: rgba(20, 18, 16, 0.02);
   }
 
   :global([data-theme='analog'][data-connection='reconnecting']) {
-    --amber-glow: rgba(106, 85, 16, 0.06);
-    --amber-glow-strong: rgba(106, 85, 16, 0.12);
-    --ambient-glow: rgba(106, 85, 16, 0.06);
+    --ambient-glow: rgba(106, 85, 16, 0.04);
     --ambient-tint: rgba(106, 85, 16, 0.01);
   }
 
   :global([data-theme='analog'][data-connection='server_gone']) {
-    --amber-glow: rgba(42, 31, 24, 0.02);
-    --amber-glow-strong: rgba(42, 31, 24, 0.04);
     --ambient-glow: rgba(42, 31, 24, 0.02);
     --ambient-tint: rgba(20, 18, 16, 0.03);
+  }
+
+  /* ==========================================================================
+     SOLARIZED DARK THEME
+     Ethan Schoonover's Solarized palette — dark variant.
+     Precision-engineered color relationships with L*a*b* symmetry.
+     ========================================================================== */
+
+  :global([data-theme='solarized-dark']) {
+    /* Primary accent — solarized blue (not yellow; yellow is status-only) */
+    --accent-700: #1a6ba0;
+    --accent-600: #1e7ab8;
+    --accent-500: #268bd2;
+    --accent-400: #4a9cd8;
+    --accent-300: #6eafde;
+    /* Thinking — solarized violet */
+    --thinking-500: #6c71c4;
+    --thinking-400: #8085cc;
+    --thinking-300: #9a9ed6;
+
+    /* Solarized base03..base01 surfaces (interpolated with desaturation) */
+    --surface-900: #002b36;
+    --surface-800: #04313c;
+    --surface-700: #073642;
+    --surface-600: #0f3c47;
+    --surface-500: #17414c;
+    --surface-400: #1f4751;
+    --surface-border: #274c56;
+    --surface-border-light: #30525c;
+
+    /* Solarized base0/base1 text */
+    --text-primary: #839496;
+    --text-secondary: #657b83;
+    --text-muted: #586e75;
+
+    /* Status */
+    --status-green: #859900;
+    --status-red: #dc322f;
+    --status-yellow: #b58900;
+
+    /* Ambient */
+    --ambient-glow: rgba(38, 139, 210, 0.35);
+    --ambient-accent: #268bd2;
+    --ambient-tint: rgba(38, 139, 210, 0.01);
+    --ambient-scanline-opacity: 0;
+
+    /* Tints — blue-based */
+    --tint-hover: rgba(38, 139, 210, 0.06);
+    --tint-active: rgba(38, 139, 210, 0.1);
+    --tint-active-strong: rgba(38, 139, 210, 0.15);
+    --tint-focus: rgba(38, 139, 210, 0.2);
+    --tint-subtle: rgba(38, 139, 210, 0.02);
+    --tint-thinking: rgba(108, 113, 196, 0.06);
+    --tint-thinking-strong: rgba(108, 113, 196, 0.1);
+    --tint-selection: rgba(38, 139, 210, 0.3);
+
+    /* Emphasis — subtle glow */
+    --emphasis: 0 0 8px rgba(38, 139, 210, 0.2);
+    --emphasis-strong: 0 0 12px rgba(38, 139, 210, 0.3);
+
+    /* Elevation */
+    --elevation-low: 0 0 8px rgba(0, 0, 0, 0.3);
+    --elevation-high: 0 0 16px rgba(0, 0, 0, 0.4);
+
+    /* Recess */
+    --recess: inset 0 0 20px rgba(0, 0, 0, 0.15);
+    --recess-border: inset 0 1px 0 rgba(38, 139, 210, 0.06);
+
+    /* Depth */
+    --depth-up: 0 0 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(38, 139, 210, 0.08);
+    --depth-down: inset 0 0 16px rgba(0, 0, 0, 0.2);
+
+    /* No scanlines, no grain */
+    --texture-overlay: none;
+    --texture-opacity: 0;
+    --vignette: none;
+
+    /* Presence */
+    --tint-presence: rgba(108, 113, 196, 0.2);
+    --tint-presence-border: rgba(108, 113, 196, 0.3);
+
+    --panel-inset: rgba(0, 0, 0, 0.2);
+    --spinner-track: rgba(38, 139, 210, 0.3);
+
+    /* Backdrops */
+    --backdrop: rgba(0, 43, 54, 0.8);
+    --shadow-panel: -4px 0 20px rgba(0, 0, 0, 0.4);
+    --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --scanline-color: rgba(0, 0, 0, 0.04);
+
+    /* Primary buttons — solarized blue */
+    --btn-primary-bg: linear-gradient(180deg, #268bd2 0%, #1e7ab8 100%);
+    --btn-primary-text: #002b36;
+    --btn-primary-text-shadow: none;
+
+    /* Status tints */
+    --status-red-tint: rgba(220, 50, 47, 0.1);
+    --status-red-border: rgba(220, 50, 47, 0.2);
+    --status-red-strong: rgba(220, 50, 47, 0.2);
+    --status-red-text: #dc322f;
+    --status-red-muted: #e06060;
+    --status-green-tint: rgba(133, 153, 0, 0.1);
+    --status-green-border: rgba(133, 153, 0, 0.2);
+    --status-green-text: #859900;
+    --status-blue: #268bd2;
+    --status-blue-tint: rgba(38, 139, 210, 0.2);
+    --status-blue-text: #268bd2;
+
+    --on-status: #ffffff;
+
+    --active-border: 1px solid #268bd2;
+    --active-accent-width: 0px;
+  }
+
+  /* Solarized Dark ambient overrides */
+  :global([data-theme='solarized-dark'][data-claude-state='thinking']) {
+    --ambient-glow: rgba(108, 113, 196, 0.08);
+    --ambient-accent: #6c71c4;
+    --ambient-tint: rgba(108, 113, 196, 0.02);
+  }
+
+  :global([data-theme='solarized-dark'][data-claude-state='responding']) {
+    --ambient-glow: rgba(38, 139, 210, 0.08);
+    --ambient-accent: #268bd2;
+    --ambient-tint: rgba(38, 139, 210, 0.02);
+  }
+
+  :global([data-theme='solarized-dark'][data-claude-state='tool_executing']) {
+    --ambient-glow: rgba(42, 161, 152, 0.08);
+    --ambient-accent: #2aa198;
+    --ambient-tint: rgba(42, 161, 152, 0.02);
+  }
+
+  :global([data-theme='solarized-dark'][data-connection='error']),
+  :global([data-theme='solarized-dark'][data-connection='disconnected']) {
+    --ambient-glow: rgba(38, 139, 210, 0.04);
+    --ambient-tint: rgba(0, 0, 0, 0.03);
+  }
+
+  /* Solarized Dark syntax */
+  :global([data-theme='solarized-dark'] .hljs) {
+    background: var(--surface-700);
+    color: #839496;
+  }
+  :global([data-theme='solarized-dark'] .hljs-comment),
+  :global([data-theme='solarized-dark'] .hljs-quote) { color: #586e75; font-style: italic; }
+  :global([data-theme='solarized-dark'] .hljs-keyword),
+  :global([data-theme='solarized-dark'] .hljs-selector-tag) { color: #859900; font-weight: 500; }
+  :global([data-theme='solarized-dark'] .hljs-string),
+  :global([data-theme='solarized-dark'] .hljs-addition) { color: #2aa198; }
+  :global([data-theme='solarized-dark'] .hljs-number),
+  :global([data-theme='solarized-dark'] .hljs-literal) { color: #d33682; }
+  :global([data-theme='solarized-dark'] .hljs-built_in),
+  :global([data-theme='solarized-dark'] .hljs-type) { color: #b58900; }
+  :global([data-theme='solarized-dark'] .hljs-variable) { color: #cb4b16; }
+  :global([data-theme='solarized-dark'] .hljs-attr) { color: #b58900; }
+  :global([data-theme='solarized-dark'] .hljs-title),
+  :global([data-theme='solarized-dark'] .hljs-title.function_),
+  :global([data-theme='solarized-dark'] .hljs-section) { color: #268bd2; font-weight: 500; }
+  :global([data-theme='solarized-dark'] .hljs-title.class_) { color: #b58900; font-weight: 600; }
+  :global([data-theme='solarized-dark'] .hljs-regexp),
+  :global([data-theme='solarized-dark'] .hljs-symbol) { color: #d33682; }
+  :global([data-theme='solarized-dark'] .hljs-deletion) { color: #dc322f; background: rgba(220, 50, 47, 0.1); }
+  :global([data-theme='solarized-dark'] .hljs-meta) { color: #2aa198; }
+  :global([data-theme='solarized-dark'] .hljs-operator) { color: #93a1a1; }
+  :global([data-theme='solarized-dark'] .hljs-property) { color: #268bd2; }
+  :global([data-theme='solarized-dark'] .hljs-punctuation) { color: #586e75; }
+  :global([data-theme='solarized-dark'] .hljs-tag) { color: #268bd2; }
+  :global([data-theme='solarized-dark'] .hljs-selector-class),
+  :global([data-theme='solarized-dark'] .hljs-selector-id) { color: #268bd2; font-weight: 600; }
+
+  /* ==========================================================================
+     SOLARIZED LIGHT THEME
+     Solarized palette — light variant. Same hues, swapped base tones.
+     ========================================================================== */
+
+  :global([data-theme='solarized-light']) {
+    --accent-700: #1a6ba0;
+    --accent-600: #1e7ab8;
+    --accent-500: #268bd2;
+    --accent-400: #4a9cd8;
+    --accent-300: #6eafde;
+
+    --thinking-500: #6c71c4;
+    --thinking-400: #5a5fba;
+    --thinking-300: #8085cc;
+
+    /* Solarized base3..base00 surfaces (light) */
+    --surface-900: #fdf6e3;
+    --surface-800: #f5efd6;
+    --surface-700: #eee8d5;
+    --surface-600: #e6e0cb;
+    --surface-500: #ddd8c2;
+    --surface-400: #d0cab5;
+    --surface-border: #b8b09a;
+    --surface-border-light: #c8c0a8;
+
+    --text-primary: #586e75;
+    --text-secondary: #657b83;
+    --text-muted: #93a1a1;
+
+    --status-green: #859900;
+    --status-red: #dc322f;
+    --status-yellow: #b58900;
+
+    --ambient-glow: rgba(38, 139, 210, 0.08);
+    --ambient-accent: #268bd2;
+    --ambient-tint: rgba(38, 139, 210, 0.008);
+    --ambient-scanline-opacity: 0;
+
+    --tint-hover: rgba(38, 139, 210, 0.06);
+    --tint-active: rgba(38, 139, 210, 0.1);
+    --tint-active-strong: rgba(38, 139, 210, 0.15);
+    --tint-focus: rgba(38, 139, 210, 0.12);
+    --tint-subtle: rgba(38, 139, 210, 0.02);
+    --tint-thinking: rgba(108, 113, 196, 0.06);
+    --tint-thinking-strong: rgba(108, 113, 196, 0.12);
+    --tint-selection: rgba(38, 139, 210, 0.15);
+
+    --emphasis: none;
+    --emphasis-strong: 0 0 2px rgba(38, 139, 210, 0.15);
+
+    --elevation-low: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --elevation-high: 0 2px 6px rgba(0, 0, 0, 0.12);
+
+    --recess: inset 0 1px 4px rgba(0, 0, 0, 0.06);
+    --recess-border: inset 0 1px 0 rgba(0, 0, 0, 0.04);
+
+    --depth-up: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --depth-down: inset 0 1px 4px rgba(0, 0, 0, 0.06);
+
+    --texture-overlay: none;
+    --texture-opacity: 0;
+    --vignette: none;
+
+    --tint-presence: rgba(108, 113, 196, 0.1);
+    --tint-presence-border: rgba(108, 113, 196, 0.2);
+
+    --panel-inset: rgba(0, 0, 0, 0.04);
+    --spinner-track: rgba(38, 139, 210, 0.3);
+
+    --backdrop: rgba(253, 246, 227, 0.8);
+    --shadow-panel: -2px 0 8px rgba(0, 0, 0, 0.08);
+    --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.12);
+    --scanline-color: rgba(0, 0, 0, 0.03);
+
+    --btn-primary-bg: linear-gradient(180deg, #268bd2 0%, #1e7ab8 100%);
+    --btn-primary-text: #fdf6e3;
+    --btn-primary-text-shadow: none;
+
+    --status-red-tint: rgba(220, 50, 47, 0.08);
+    --status-red-border: rgba(220, 50, 47, 0.2);
+    --status-red-strong: rgba(220, 50, 47, 0.14);
+    --status-red-text: #dc322f;
+    --status-red-muted: #c44040;
+    --status-green-tint: rgba(133, 153, 0, 0.08);
+    --status-green-border: rgba(133, 153, 0, 0.2);
+    --status-green-text: #859900;
+    --status-blue: #268bd2;
+    --status-blue-tint: rgba(38, 139, 210, 0.1);
+    --status-blue-text: #268bd2;
+
+    --on-status: #ffffff;
+
+    --active-border: 2px solid #268bd2;
+    --active-accent-width: 2px;
+  }
+
+  /* Solarized Light ambient overrides */
+  :global([data-theme='solarized-light'][data-claude-state='thinking']) {
+    --ambient-glow: rgba(108, 113, 196, 0.12);
+    --ambient-accent: #6c71c4;
+    --ambient-tint: rgba(108, 113, 196, 0.015);
+  }
+
+  :global([data-theme='solarized-light'][data-claude-state='responding']) {
+    --ambient-glow: rgba(38, 139, 210, 0.15);
+    --ambient-accent: #268bd2;
+    --ambient-tint: rgba(38, 139, 210, 0.02);
+  }
+
+  :global([data-theme='solarized-light'][data-claude-state='tool_executing']) {
+    --ambient-glow: rgba(42, 161, 152, 0.12);
+    --ambient-accent: #2aa198;
+    --ambient-tint: rgba(42, 161, 152, 0.015);
+  }
+
+  :global([data-theme='solarized-light'][data-connection='error']),
+  :global([data-theme='solarized-light'][data-connection='disconnected']) {
+    --ambient-glow: rgba(38, 139, 210, 0.04);
+    --ambient-tint: rgba(0, 0, 0, 0.02);
+  }
+
+  /* Solarized Light syntax */
+  :global([data-theme='solarized-light'] .hljs) {
+    background: var(--surface-700);
+    color: #586e75;
+  }
+  :global([data-theme='solarized-light'] .hljs-comment),
+  :global([data-theme='solarized-light'] .hljs-quote) { color: #93a1a1; font-style: italic; }
+  :global([data-theme='solarized-light'] .hljs-keyword),
+  :global([data-theme='solarized-light'] .hljs-selector-tag) { color: #859900; font-weight: 500; }
+  :global([data-theme='solarized-light'] .hljs-string),
+  :global([data-theme='solarized-light'] .hljs-addition) { color: #2aa198; }
+  :global([data-theme='solarized-light'] .hljs-number),
+  :global([data-theme='solarized-light'] .hljs-literal) { color: #d33682; }
+  :global([data-theme='solarized-light'] .hljs-built_in),
+  :global([data-theme='solarized-light'] .hljs-type) { color: #b58900; }
+  :global([data-theme='solarized-light'] .hljs-variable) { color: #cb4b16; }
+  :global([data-theme='solarized-light'] .hljs-attr) { color: #b58900; }
+  :global([data-theme='solarized-light'] .hljs-title),
+  :global([data-theme='solarized-light'] .hljs-title.function_),
+  :global([data-theme='solarized-light'] .hljs-section) { color: #268bd2; font-weight: 500; }
+  :global([data-theme='solarized-light'] .hljs-title.class_) { color: #b58900; font-weight: 600; }
+  :global([data-theme='solarized-light'] .hljs-regexp),
+  :global([data-theme='solarized-light'] .hljs-symbol) { color: #d33682; }
+  :global([data-theme='solarized-light'] .hljs-deletion) { color: #dc322f; background: rgba(220, 50, 47, 0.08); }
+  :global([data-theme='solarized-light'] .hljs-meta) { color: #2aa198; }
+  :global([data-theme='solarized-light'] .hljs-operator) { color: #657b83; }
+  :global([data-theme='solarized-light'] .hljs-property) { color: #268bd2; }
+  :global([data-theme='solarized-light'] .hljs-punctuation) { color: #93a1a1; }
+  :global([data-theme='solarized-light'] .hljs-tag) { color: #268bd2; }
+  :global([data-theme='solarized-light'] .hljs-selector-class),
+  :global([data-theme='solarized-light'] .hljs-selector-id) { color: #268bd2; font-weight: 600; }
+
+  /* ==========================================================================
+     DARCULA THEME (IntelliJ Dark)
+     JetBrains Darcula palette — warm dark with blue-gray undertones.
+     ========================================================================== */
+
+  :global([data-theme='darcula']) {
+    --accent-700: #365880;
+    --accent-600: #4a6da7;
+    --accent-500: #5a82ba;
+    --accent-400: #7096c8;
+    --accent-300: #88aad4;
+
+    --thinking-500: #9876aa;
+    --thinking-400: #ab8cbf;
+    --thinking-300: #bfa0d0;
+
+    /* Darcula surfaces */
+    --surface-900: #2b2b2b;
+    --surface-800: #2f2f2f;
+    --surface-700: #3c3f41;
+    --surface-600: #45484a;
+    --surface-500: #4e5254;
+    --surface-400: #5a5d5f;
+    --surface-border: #616365;
+    --surface-border-light: #6e7072;
+
+    --text-primary: #a9b7c6;
+    --text-secondary: #808890;
+    --text-muted: #606870;
+
+    --status-green: #6a8759;
+    --status-red: #cf6a4c;
+    --status-yellow: #bbb529;
+
+    --ambient-glow: rgba(74, 109, 167, 0.08);
+    --ambient-accent: #4a6da7;
+    --ambient-tint: rgba(74, 109, 167, 0.01);
+    --ambient-scanline-opacity: 0;
+
+    --tint-hover: rgba(74, 109, 167, 0.06);
+    --tint-active: rgba(74, 109, 167, 0.1);
+    --tint-active-strong: rgba(74, 109, 167, 0.15);
+    --tint-focus: rgba(74, 109, 167, 0.2);
+    --tint-subtle: rgba(74, 109, 167, 0.02);
+    --tint-thinking: rgba(152, 118, 170, 0.06);
+    --tint-thinking-strong: rgba(152, 118, 170, 0.1);
+    --tint-selection: rgba(33, 66, 131, 0.45);
+
+    --emphasis: none;
+    --emphasis-strong: 0 0 2px rgba(74, 109, 167, 0.15);
+
+    --elevation-low: 0 0 8px rgba(0, 0, 0, 0.3);
+    --elevation-high: 0 0 16px rgba(0, 0, 0, 0.4);
+
+    --recess: inset 0 0 20px rgba(0, 0, 0, 0.15);
+    --recess-border: inset 0 1px 0 rgba(74, 109, 167, 0.06);
+
+    --depth-up: 0 0 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(74, 109, 167, 0.08);
+    --depth-down: inset 0 0 16px rgba(0, 0, 0, 0.2);
+
+    --texture-overlay: none;
+    --texture-opacity: 0;
+    --vignette: none;
+
+    --tint-presence: rgba(152, 118, 170, 0.2);
+    --tint-presence-border: rgba(152, 118, 170, 0.3);
+
+    --panel-inset: rgba(0, 0, 0, 0.15);
+    --spinner-track: rgba(74, 109, 167, 0.3);
+
+    --backdrop: rgba(43, 43, 43, 0.85);
+    --shadow-panel: -4px 0 20px rgba(0, 0, 0, 0.4);
+    --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.5);
+    --scanline-color: rgba(0, 0, 0, 0.04);
+
+    --btn-primary-bg: linear-gradient(180deg, #4a6da7 0%, #365880 100%);
+    --btn-primary-text: #bbc7d4;
+    --btn-primary-text-shadow: none;
+
+    --status-red-tint: rgba(207, 106, 76, 0.1);
+    --status-red-border: rgba(207, 106, 76, 0.2);
+    --status-red-strong: rgba(207, 106, 76, 0.2);
+    --status-red-text: #cf6a4c;
+    --status-red-muted: #d48070;
+    --status-green-tint: rgba(106, 135, 89, 0.1);
+    --status-green-border: rgba(106, 135, 89, 0.2);
+    --status-green-text: #6a8759;
+    --status-blue: #6897bb;
+    --status-blue-tint: rgba(104, 151, 187, 0.2);
+    --status-blue-text: #6897bb;
+
+    --on-status: #ffffff;
+
+    --active-border: 1px solid #4a6da7;
+    --active-accent-width: 0px;
+  }
+
+  /* Darcula ambient overrides */
+  :global([data-theme='darcula'][data-claude-state='thinking']) {
+    --ambient-glow: rgba(152, 118, 170, 0.08);
+    --ambient-accent: #9876aa;
+    --ambient-tint: rgba(152, 118, 170, 0.02);
+  }
+
+  :global([data-theme='darcula'][data-claude-state='responding']) {
+    --ambient-glow: rgba(74, 109, 167, 0.12);
+    --ambient-accent: #4a6da7;
+    --ambient-tint: rgba(74, 109, 167, 0.02);
+  }
+
+  :global([data-theme='darcula'][data-claude-state='tool_executing']) {
+    --ambient-glow: rgba(104, 151, 187, 0.12);
+    --ambient-accent: #6897bb;
+    --ambient-tint: rgba(104, 151, 187, 0.015);
+  }
+
+  :global([data-theme='darcula'][data-connection='error']),
+  :global([data-theme='darcula'][data-connection='disconnected']) {
+    --ambient-glow: rgba(74, 109, 167, 0.04);
+    --ambient-tint: rgba(0, 0, 0, 0.03);
+  }
+
+  /* Darcula syntax */
+  :global([data-theme='darcula'] .hljs) {
+    background: var(--surface-700);
+    color: #a9b7c6;
+  }
+  :global([data-theme='darcula'] .hljs-comment),
+  :global([data-theme='darcula'] .hljs-quote) { color: #808080; font-style: italic; }
+  :global([data-theme='darcula'] .hljs-keyword),
+  :global([data-theme='darcula'] .hljs-selector-tag) { color: #cc7832; font-weight: 500; }
+  :global([data-theme='darcula'] .hljs-string),
+  :global([data-theme='darcula'] .hljs-addition) { color: #6a8759; }
+  :global([data-theme='darcula'] .hljs-number),
+  :global([data-theme='darcula'] .hljs-literal) { color: #6897bb; }
+  :global([data-theme='darcula'] .hljs-built_in),
+  :global([data-theme='darcula'] .hljs-type) { color: #ffc66d; }
+  :global([data-theme='darcula'] .hljs-variable) { color: #9876aa; }
+  :global([data-theme='darcula'] .hljs-attr) { color: #bababa; }
+  :global([data-theme='darcula'] .hljs-title),
+  :global([data-theme='darcula'] .hljs-title.function_),
+  :global([data-theme='darcula'] .hljs-section) { color: #ffc66d; font-weight: 500; }
+  :global([data-theme='darcula'] .hljs-title.class_) { color: #a9b7c6; font-weight: 600; text-decoration: underline; }
+  :global([data-theme='darcula'] .hljs-regexp),
+  :global([data-theme='darcula'] .hljs-symbol) { color: #e0c46c; }
+  :global([data-theme='darcula'] .hljs-deletion) { color: #cf6a4c; background: rgba(207, 106, 76, 0.1); }
+  :global([data-theme='darcula'] .hljs-meta) { color: #bbb529; }
+  :global([data-theme='darcula'] .hljs-operator) { color: #a9b7c6; }
+  :global([data-theme='darcula'] .hljs-property) { color: #9876aa; }
+  :global([data-theme='darcula'] .hljs-punctuation) { color: #a9b7c6; }
+  :global([data-theme='darcula'] .hljs-tag) { color: #e8bf6a; }
+  :global([data-theme='darcula'] .hljs-selector-class),
+  :global([data-theme='darcula'] .hljs-selector-id) { color: #ffc66d; font-weight: 600; }
+
+  /* ==========================================================================
+     INTELLIJ LIGHT THEME
+     JetBrains IntelliJ Light — clean, neutral, professional.
+     ========================================================================== */
+
+  :global([data-theme='intellij-light']) {
+    --accent-700: #144a88;
+    --accent-600: #1a5da8;
+    --accent-500: #2470c0;
+    --accent-400: #4a8ad0;
+    --accent-300: #6ea0dc;
+
+    --thinking-500: #871094;
+    --thinking-400: #9c1aab;
+    --thinking-300: #b030c0;
+
+    /* IntelliJ light surfaces */
+    --surface-900: #ffffff;
+    --surface-800: #f7f8fa;
+    --surface-700: #f0f0f0;
+    --surface-600: #e8e8e8;
+    --surface-500: #d8d8d8;
+    --surface-400: #c0c0c0;
+    --surface-border: #b0b0b0;
+    --surface-border-light: #c8c8c8;
+
+    --text-primary: #080808;
+    --text-secondary: #3b3b3b;
+    --text-muted: #787878;
+
+    --status-green: #067d17;
+    --status-red: #c7222d;
+    --status-yellow: #9e880d;
+
+    --ambient-glow: rgba(36, 112, 192, 0.08);
+    --ambient-accent: #2470c0;
+    --ambient-tint: rgba(36, 112, 192, 0.008);
+    --ambient-scanline-opacity: 0;
+
+    --tint-hover: rgba(36, 112, 192, 0.06);
+    --tint-active: rgba(36, 112, 192, 0.1);
+    --tint-active-strong: rgba(36, 112, 192, 0.15);
+    --tint-focus: rgba(36, 112, 192, 0.12);
+    --tint-subtle: rgba(36, 112, 192, 0.02);
+    --tint-thinking: rgba(135, 16, 148, 0.06);
+    --tint-thinking-strong: rgba(135, 16, 148, 0.12);
+    --tint-selection: rgba(36, 112, 192, 0.18);
+
+    --emphasis: none;
+    --emphasis-strong: 0 0 2px rgba(36, 112, 192, 0.15);
+
+    --elevation-low: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --elevation-high: 0 2px 6px rgba(0, 0, 0, 0.1);
+
+    --recess: inset 0 1px 3px rgba(0, 0, 0, 0.04);
+    --recess-border: inset 0 1px 0 rgba(0, 0, 0, 0.03);
+
+    --depth-up: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --depth-down: inset 0 1px 3px rgba(0, 0, 0, 0.04);
+
+    --texture-overlay: none;
+    --texture-opacity: 0;
+    --vignette: none;
+
+    --tint-presence: rgba(135, 16, 148, 0.08);
+    --tint-presence-border: rgba(135, 16, 148, 0.2);
+
+    --panel-inset: rgba(0, 0, 0, 0.03);
+    --spinner-track: rgba(36, 112, 192, 0.3);
+
+    --backdrop: rgba(255, 255, 255, 0.8);
+    --shadow-panel: -2px 0 6px rgba(0, 0, 0, 0.06);
+    --shadow-dropdown: 0 2px 6px rgba(0, 0, 0, 0.1);
+    --scanline-color: rgba(0, 0, 0, 0.03);
+
+    --btn-primary-bg: linear-gradient(180deg, #4a86c8 0%, #3574b8 100%);
+    --btn-primary-text: #ffffff;
+    --btn-primary-text-shadow: none;
+
+    --status-red-tint: rgba(199, 34, 45, 0.08);
+    --status-red-border: rgba(199, 34, 45, 0.2);
+    --status-red-strong: rgba(199, 34, 45, 0.14);
+    --status-red-text: #c7222d;
+    --status-red-muted: #d04050;
+    --status-green-tint: rgba(6, 125, 23, 0.08);
+    --status-green-border: rgba(6, 125, 23, 0.2);
+    --status-green-text: #067d17;
+    --status-blue: #2470c0;
+    --status-blue-tint: rgba(36, 112, 192, 0.1);
+    --status-blue-text: #2470c0;
+
+    --on-status: #ffffff;
+
+    --active-border: 2px solid #2470c0;
+    --active-accent-width: 2px;
+  }
+
+  /* IntelliJ Light ambient overrides */
+  :global([data-theme='intellij-light'][data-claude-state='thinking']) {
+    --ambient-glow: rgba(135, 16, 148, 0.08);
+    --ambient-accent: #871094;
+    --ambient-tint: rgba(135, 16, 148, 0.015);
+  }
+
+  :global([data-theme='intellij-light'][data-claude-state='responding']) {
+    --ambient-glow: rgba(36, 112, 192, 0.08);
+    --ambient-accent: #2470c0;
+    --ambient-tint: rgba(36, 112, 192, 0.02);
+  }
+
+  :global([data-theme='intellij-light'][data-claude-state='tool_executing']) {
+    --ambient-glow: rgba(158, 136, 13, 0.08);
+    --ambient-accent: #9e880d;
+    --ambient-tint: rgba(158, 136, 13, 0.015);
+  }
+
+  :global([data-theme='intellij-light'][data-connection='error']),
+  :global([data-theme='intellij-light'][data-connection='disconnected']) {
+    --ambient-glow: rgba(36, 112, 192, 0.04);
+    --ambient-tint: rgba(0, 0, 0, 0.02);
+  }
+
+  /* IntelliJ Light syntax */
+  :global([data-theme='intellij-light'] .hljs) {
+    background: var(--surface-700);
+    color: #080808;
+  }
+  :global([data-theme='intellij-light'] .hljs-comment),
+  :global([data-theme='intellij-light'] .hljs-quote) { color: #8c8c8c; font-style: italic; }
+  :global([data-theme='intellij-light'] .hljs-keyword),
+  :global([data-theme='intellij-light'] .hljs-selector-tag) { color: #0033b3; font-weight: 700; }
+  :global([data-theme='intellij-light'] .hljs-string),
+  :global([data-theme='intellij-light'] .hljs-addition) { color: #067d17; }
+  :global([data-theme='intellij-light'] .hljs-number),
+  :global([data-theme='intellij-light'] .hljs-literal) { color: #1750eb; }
+  :global([data-theme='intellij-light'] .hljs-built_in),
+  :global([data-theme='intellij-light'] .hljs-type) { color: #0033b3; }
+  :global([data-theme='intellij-light'] .hljs-variable) { color: #871094; }
+  :global([data-theme='intellij-light'] .hljs-attr) { color: #174ad4; }
+  :global([data-theme='intellij-light'] .hljs-title),
+  :global([data-theme='intellij-light'] .hljs-title.function_),
+  :global([data-theme='intellij-light'] .hljs-section) { color: #00627a; font-weight: 500; }
+  :global([data-theme='intellij-light'] .hljs-title.class_) { color: #0033b3; font-weight: 600; }
+  :global([data-theme='intellij-light'] .hljs-regexp),
+  :global([data-theme='intellij-light'] .hljs-symbol) { color: #067d17; }
+  :global([data-theme='intellij-light'] .hljs-deletion) { color: #c7222d; background: rgba(199, 34, 45, 0.06); }
+  :global([data-theme='intellij-light'] .hljs-meta) { color: #9e880d; }
+  :global([data-theme='intellij-light'] .hljs-operator) { color: #080808; }
+  :global([data-theme='intellij-light'] .hljs-property) { color: #871094; }
+  :global([data-theme='intellij-light'] .hljs-punctuation) { color: #080808; }
+  :global([data-theme='intellij-light'] .hljs-tag) { color: #0033b3; }
+  :global([data-theme='intellij-light'] .hljs-selector-class),
+  :global([data-theme='intellij-light'] .hljs-selector-id) { color: #00627a; font-weight: 600; }
+
+  /* ==========================================================================
+     LIGHT THEME SHARED OVERRIDES
+     Common adjustments for all light themes (solarized-light, intellij-light).
+     These handle body background, scrollbar, selection, and pseudo-element
+     cleanup that dark themes don't need.
+     ========================================================================== */
+
+  :global([data-theme='solarized-light'] html),
+  :global([data-theme='solarized-light'] body),
+  :global([data-theme='intellij-light'] html),
+  :global([data-theme='intellij-light'] body) {
+    background: var(--surface-900);
+    color: var(--text-primary);
+  }
+
+  /* Kill the vignette/tint overlay on light themes */
+  :global([data-theme='solarized-light'] body::before),
+  :global([data-theme='intellij-light'] body::before) {
+    background: none;
+  }
+
+  /* Kill the texture overlay on light themes */
+  :global([data-theme='solarized-light'] body::after),
+  :global([data-theme='intellij-light'] body::after) {
+    display: none;
+  }
+
+  /* Light scrollbars */
+  :global([data-theme='solarized-light'] ::-webkit-scrollbar-track),
+  :global([data-theme='intellij-light'] ::-webkit-scrollbar-track) {
+    background: var(--surface-800);
+  }
+
+  :global([data-theme='solarized-light'] ::-webkit-scrollbar-thumb),
+  :global([data-theme='intellij-light'] ::-webkit-scrollbar-thumb) {
+    background: var(--surface-400);
+    border: 1px solid var(--surface-border-light);
+  }
+
+  :global([data-theme='solarized-light'] ::-webkit-scrollbar-thumb:hover),
+  :global([data-theme='intellij-light'] ::-webkit-scrollbar-thumb:hover) {
+    background: var(--text-muted);
+  }
+
+  /* Light selection */
+  :global([data-theme='solarized-light'] ::selection) {
+    background: rgba(38, 139, 210, 0.2);
+    color: var(--text-primary);
+  }
+
+  :global([data-theme='intellij-light'] ::selection) {
+    background: rgba(36, 112, 192, 0.2);
+    color: var(--text-primary);
+  }
+
+  /* Solarized Dark — kill overlays (clean dark, not CRT) */
+  :global([data-theme='solarized-dark'] body::before) {
+    background: none;
+  }
+  :global([data-theme='solarized-dark'] body::after) {
+    display: none;
+  }
+
+  /* Darcula — kill overlays (clean dark, not CRT) */
+  :global([data-theme='darcula'] body::before) {
+    background: none;
+  }
+  :global([data-theme='darcula'] body::after) {
+    display: none;
   }
 
   /* Analog: font family swap — serif for body, keep mono for code */
@@ -627,7 +1307,7 @@
   /* File links — underline drawn with a ruling pen, ink bleeds on hover */
   :global([data-theme='analog'] .file-link) {
     color: var(--text-primary);
-    border-bottom: 1.5px solid var(--amber-600);
+    border-bottom: 1.5px solid var(--accent-600);
     transition:
       border-color 0.2s ease,
       text-shadow 0.3s ease;
@@ -657,7 +1337,7 @@
     background-image: var(--grain-fine), var(--grain-coarse);
     background-blend-mode: multiply, multiply;
     color: #201c18;
-    border-left: 3px solid var(--amber-600);
+    border-left: 3px solid var(--accent-600);
     box-shadow: inset 2px 0 4px rgba(42, 31, 24, 0.06);
   }
 
@@ -831,7 +1511,7 @@
     background-color: var(--surface-800);
     background-image: var(--grain-fine), var(--ink-wash);
     background-blend-mode: multiply, normal;
-    border-left: 3px solid var(--amber-600);
+    border-left: 3px solid var(--accent-600);
   }
 
   /* Keep monospace for code elements (global HTML, not component-scoped) */
@@ -906,8 +1586,8 @@
   }
 
   :global(::-webkit-scrollbar-thumb:hover) {
-    background: var(--ambient-accent, var(--amber-600));
-    border-color: var(--ambient-accent, var(--amber-500));
+    background: var(--ambient-accent, var(--accent-600));
+    border-color: var(--ambient-accent, var(--accent-500));
     transition:
       background 0.8s ease,
       border-color 0.8s ease;
@@ -916,7 +1596,7 @@
   /* Selection color */
   :global(::selection) {
     background: var(--tint-selection);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   /* ==========================================================================
@@ -1122,9 +1802,9 @@
 	   ========================================================================== */
 
   :global(.file-link) {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-decoration: none;
-    border-bottom: 1px dashed var(--amber-600);
+    border-bottom: 1px dashed var(--accent-600);
     cursor: pointer;
     transition: all 0.15s ease;
     padding: 0 2px;
@@ -1134,8 +1814,7 @@
 
   :global(.file-link:hover) {
     background: rgba(251, 146, 60, 0.15);
-    border-bottom-color: var(--amber-400);
-    text-shadow: 0 0 8px var(--amber-glow);
+    border-bottom-color: var(--accent-400);
   }
 
   :global(.file-link:focus) {

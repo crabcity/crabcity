@@ -388,7 +388,7 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--amber-500);
+    color: var(--accent-500);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -407,7 +407,7 @@
 
   .error-text {
     font-size: 11px;
-    color: #ef4444;
+    color: var(--status-red);
     margin: 0 0 12px 0;
   }
 
@@ -453,11 +453,11 @@
   }
 
   .profile-select:hover {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .profile-select:focus {
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
   }
 
   .profile-select option {
@@ -471,9 +471,9 @@
     border-radius: 4px;
     font-size: 10px;
     letter-spacing: 0.02em;
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.2);
-    color: var(--amber-400);
+    background: var(--tint-active);
+    border: 1px solid var(--tint-active);
+    color: var(--accent-400);
     line-height: 1.4;
   }
 
@@ -493,7 +493,7 @@
 
   .inline-error {
     font-size: 10px;
-    color: #ef4444;
+    color: var(--status-red);
     letter-spacing: 0.02em;
   }
 
@@ -517,13 +517,13 @@
   }
 
   .inline-input:focus {
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
     color: var(--text-primary);
   }
 
   .inline-create-btn {
     padding: 4px 10px;
-    background: var(--amber-600);
+    background: var(--accent-600);
     border: none;
     border-radius: 3px;
     color: var(--surface-900);
@@ -537,7 +537,7 @@
   }
 
   .inline-create-btn:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--accent-500);
   }
 
   .inline-create-btn:disabled {
@@ -551,9 +551,9 @@
     border-radius: 4px;
     font-size: 10px;
     letter-spacing: 0.02em;
-    background: rgba(16, 185, 129, 0.08);
-    border: 1px solid rgba(16, 185, 129, 0.2);
-    color: #10b981;
+    background: var(--status-green-tint);
+    border: 1px solid var(--status-green-tint);
+    color: var(--status-green-text);
     line-height: 1.4;
     display: flex;
     align-items: center;
@@ -563,7 +563,7 @@
   .tab-link {
     background: none;
     border: none;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
@@ -575,7 +575,7 @@
   }
 
   .tab-link:hover {
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   /* Field inputs */
@@ -592,16 +592,16 @@
   }
 
   .field-input:hover {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .field-input:focus {
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
     color: var(--text-primary);
   }
 
   .field-input.invalid {
-    border-color: #ef4444;
+    border-color: var(--status-red);
   }
 
   .field-input.port-input {
@@ -627,7 +627,7 @@
   }
 
   .indicator-btn:hover {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .indicator-dot {
@@ -640,9 +640,8 @@
   }
 
   .indicator-btn.on .indicator-dot {
-    background: var(--amber-500);
+    background: var(--accent-500);
     opacity: 1;
-    box-shadow: 0 0 4px var(--amber-glow);
   }
 
   .indicator-label {
@@ -653,7 +652,7 @@
   }
 
   .indicator-btn.on .indicator-label {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* Action bar */
@@ -688,9 +687,9 @@
   .apply-btn {
     padding: 6px 12px;
     background: var(--surface-700);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 4px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-family: inherit;
     font-weight: 700;
     font-size: 10px;
@@ -711,7 +710,7 @@
 
   .save-apply-btn {
     padding: 6px 12px;
-    background: var(--amber-600);
+    background: var(--accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -724,7 +723,7 @@
   }
 
   .save-apply-btn:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--accent-500);
   }
 
   .save-apply-btn:disabled {
@@ -734,7 +733,7 @@
 
   .action-btn {
     padding: 6px 12px;
-    background: var(--amber-600);
+    background: var(--accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -747,7 +746,7 @@
   }
 
   .action-btn:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--accent-500);
   }
 
   /* Status feedback */
@@ -760,14 +759,14 @@
   }
 
   .success-msg {
-    background: rgba(16, 185, 129, 0.1);
-    border: 1px solid rgba(16, 185, 129, 0.25);
-    color: #10b981;
+    background: var(--status-green-tint);
+    border: 1px solid var(--status-green-tint);
+    color: var(--status-green-text);
   }
 
   .error-msg {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    color: #ef4444;
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-tint);
+    color: var(--status-red);
   }
 </style>

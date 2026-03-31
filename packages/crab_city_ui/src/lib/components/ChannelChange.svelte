@@ -97,15 +97,15 @@
       0deg,
       transparent,
       transparent 3px,
-      rgba(253, 186, 116, 0.1) 3px,
-      rgba(253, 186, 116, 0.1) 4px
+      var(--tint-active) 3px,
+      var(--tint-active) 4px
     );
     opacity: 0.6;
   }
 
   /* Phase 3: Fade out */
   .channel-change.fade {
-    background: rgba(10, 8, 6, 0.4);
+    background: var(--backdrop);
     opacity: 0;
     transition: opacity 0.1s ease;
   }

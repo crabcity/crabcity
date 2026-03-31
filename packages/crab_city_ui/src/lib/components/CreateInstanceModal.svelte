@@ -194,7 +194,7 @@
     position: fixed;
     inset: 0;
     z-index: 200;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--backdrop);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -217,8 +217,8 @@
     padding: 1.5rem;
     border: 1px solid var(--surface-border-light);
     background: var(--surface-700);
-    box-shadow: var(--depth-up, 0 4px 24px rgba(0, 0, 0, 0.5));
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    box-shadow: var(--depth-up);
+    font-family: var(--font-mono);
     animation: modal-in 0.2s ease;
   }
 
@@ -237,7 +237,7 @@
     font-size: 0.8rem;
     font-weight: 700;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis, 0 0 4px currentColor);
     margin: 0 0 1.25rem;
     text-align: center;
@@ -286,16 +286,16 @@
   }
 
   .field-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .error {
     font-size: 0.7rem;
-    color: var(--status-red, #ef4444);
+    color: var(--status-red);
     margin: 0;
     padding: 0.4rem 0.6rem;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.2);
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-border);
   }
 
   .actions {
@@ -341,10 +341,10 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     padding: 0.5rem 1rem;
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     background: var(
       --btn-primary-bg,
-      linear-gradient(180deg, var(--amber-600) 0%, var(--amber-700, var(--amber-600)) 100%)
+      linear-gradient(180deg, var(--accent-600) 0%, var(--accent-700, var(--accent-600)) 100%)
     );
     color: var(--surface-900);
     cursor: pointer;
@@ -368,7 +368,7 @@
   .spinner {
     width: 10px;
     height: 10px;
-    border: 1.5px solid rgba(0, 0, 0, 0.3);
+    border: 1.5px solid var(--surface-border);
     border-top-color: var(--surface-900);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -424,7 +424,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   /* Full-screen project layout (inline — parent handles placement) */
@@ -433,8 +433,8 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    background: var(--surface-900, #0a0a0a);
-    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    background: var(--surface-900);
+    font-family: var(--font-mono);
   }
 
   .fullscreen-panel {

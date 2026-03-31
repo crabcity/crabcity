@@ -24,19 +24,19 @@ export function getStateInfo(instanceId: string, state: ClaudeState | undefined,
     case 'Initializing':
       return { label: 'init', color: 'var(--text-muted)', animate: true, stale: false };
     case 'Starting':
-      return { label: 'starting', color: 'var(--amber-500)', animate: true, stale: false };
+      return { label: 'starting', color: 'var(--accent-500)', animate: true, stale: false };
     case 'Idle':
       return { label: '', color: 'var(--status-green)', animate: false, stale: false };
     case 'Thinking': {
       const verb = getInstanceVerb(instanceId, 'Thinking').toLowerCase();
-      return { label: stale ? `${verb}?` : verb, color: 'var(--purple-500)', animate: !stale, stale };
+      return { label: stale ? `${verb}?` : verb, color: 'var(--thinking-500)', animate: !stale, stale };
     }
     case 'Responding': {
       const verb = getInstanceVerb(instanceId, 'Responding').toLowerCase();
-      return { label: stale ? `${verb}?` : verb, color: 'var(--amber-500)', animate: !stale, stale };
+      return { label: stale ? `${verb}?` : verb, color: 'var(--accent-500)', animate: !stale, stale };
     }
     case 'ToolExecuting':
-      return { label: stale ? `${state.tool}?` : state.tool, color: 'var(--amber-400)', animate: !stale, stale };
+      return { label: stale ? `${state.tool}?` : state.tool, color: 'var(--accent-400)', animate: !stale, stale };
     case 'WaitingForInput':
       return { label: 'ready', color: 'var(--status-green)', animate: false, stale: false };
     default:

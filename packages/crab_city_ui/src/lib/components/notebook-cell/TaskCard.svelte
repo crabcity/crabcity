@@ -157,7 +157,7 @@
 
 <style>
   .task-card {
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 4px;
     background: var(--surface-800);
     overflow: hidden;
@@ -165,8 +165,8 @@
   }
 
   .task-card.running {
-    border-color: var(--amber-500);
-    box-shadow: 0 0 12px rgba(251, 146, 60, 0.08);
+    border-color: var(--accent-500);
+    box-shadow: var(--elevation-low);
   }
 
   .task-card.complete {
@@ -175,7 +175,7 @@
   }
 
   .task-card.error {
-    border-color: #dc2626;
+    border-color: var(--status-red);
   }
 
   /* ── Header ──────────────────────────────── */
@@ -198,21 +198,21 @@
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
-    text-shadow: 0 0 8px rgba(251, 146, 60, 0.3);
+    color: var(--accent-400);
+    text-shadow: var(--emphasis);
   }
 
   .agent-chip {
     display: inline-block;
     padding: 1px 6px;
-    background: var(--tint-active, rgba(251, 146, 60, 0.08));
-    border: 1px solid var(--amber-600);
+    background: var(--tint-active);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.1em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .status-led {
@@ -223,10 +223,8 @@
   }
 
   .status-led.led-running {
-    background: var(--amber-500);
-    box-shadow:
-      0 0 6px var(--amber-500),
-      0 0 12px rgba(251, 146, 60, 0.4);
+    background: var(--accent-500);
+    box-shadow: 0 0 6px var(--accent-500);
     animation: led-pulse 1s ease-in-out infinite alternate;
   }
 
@@ -257,7 +255,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     margin-bottom: 4px;
   }
 
@@ -285,7 +283,7 @@
   }
 
   .section-toggle:hover .section-label {
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .toggle-icon {
@@ -347,7 +345,7 @@
 
   .activity-arrow {
     flex-shrink: 0;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-size: 10px;
     width: 14px;
     text-align: center;
@@ -380,7 +378,7 @@
     border: 1px solid var(--surface-border);
     border-radius: 3px;
     font-size: 9px;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .atb-icon {
@@ -407,7 +405,7 @@
   }
 
   .waiting-dots {
-    color: var(--amber-400);
+    color: var(--accent-400);
     animation: dots-pulse 1.4s ease-in-out infinite;
   }
 
@@ -427,15 +425,15 @@
   }
 
   .result-section.error-result {
-    border-top-color: #dc2626;
+    border-top-color: var(--status-red);
   }
 
   .result-section.error-result .section-label {
-    color: #ef4444;
+    color: var(--status-red-text);
   }
 
   .result-section.error-result .section-body {
-    color: #fca5a5;
+    color: var(--status-red-muted);
   }
 
   /* Scanline overlay on result */
@@ -447,8 +445,8 @@
       0deg,
       transparent,
       transparent 2px,
-      rgba(0, 0, 0, 0.03) 2px,
-      rgba(0, 0, 0, 0.03) 4px
+      var(--scanline-color) 2px,
+      var(--scanline-color) 4px
     );
     pointer-events: none;
     border-radius: 2px;
@@ -472,7 +470,7 @@
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .raw-field {
@@ -525,7 +523,7 @@
 
   .toggle-raw:hover {
     background: var(--surface-500);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* ── Animations ──────────────────────────── */

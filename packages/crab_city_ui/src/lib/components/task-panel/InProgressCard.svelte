@@ -124,11 +124,11 @@
 
   .task-instance-link {
     font-size: 10px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     flex-shrink: 0;
     padding: 1px 5px;
     background: var(--tint-active);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     cursor: pointer;
     transition: all 0.15s ease;
@@ -137,7 +137,7 @@
 
   .task-instance-link:hover {
     background: var(--tint-active-strong);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .task-instance-tag {
@@ -218,13 +218,13 @@
   }
 
   .detail-btn.send-btn {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .detail-btn.send-btn:hover {
     background: var(--tint-active);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   /* === Analog theme === */

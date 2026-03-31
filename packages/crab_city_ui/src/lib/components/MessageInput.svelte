@@ -594,13 +594,13 @@
 
   .status-banner.info {
     background: var(--tint-active-strong);
-    color: var(--amber-400);
+    color: var(--accent-400);
     border-bottom: 1px solid var(--tint-focus);
   }
 
   .status-banner.startup {
     background: var(--tint-active-strong);
-    color: var(--amber-400);
+    color: var(--accent-400);
     border-bottom: 1px solid var(--tint-focus);
     animation: staged-slide-in 0.2s ease-out;
   }
@@ -657,7 +657,7 @@
     border-radius: 4px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .input-row {
@@ -685,7 +685,7 @@
 
   textarea:focus {
     outline: none;
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     box-shadow: var(--elevation-low);
   }
 
@@ -715,14 +715,14 @@
   }
 
   .send-btn {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .voice-btn:hover {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .voice-btn.listening {
@@ -734,8 +734,8 @@
 
   .voice-btn.transcribing {
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     cursor: wait;
   }
 
@@ -761,8 +761,8 @@
 
   .send-btn:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--amber-500);
-    color: var(--amber-300);
+    border-color: var(--accent-500);
+    color: var(--accent-300);
     box-shadow: var(--elevation-high);
   }
 
@@ -782,7 +782,7 @@
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
     border: 1px solid var(--tint-focus);
     border-radius: 4px;
-    color: var(--amber-500);
+    color: var(--accent-500);
     cursor: pointer;
     transition: all 0.15s ease;
     flex-shrink: 0;
@@ -795,8 +795,8 @@
 
   .queue-btn:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--amber-500);
-    color: var(--amber-300);
+    border-color: var(--accent-500);
+    color: var(--accent-300);
     box-shadow: var(--elevation-low);
   }
 
@@ -813,8 +813,8 @@
 
   @keyframes queue-flash {
     0% {
-      background: var(--amber-600);
-      border-color: var(--amber-400);
+      background: var(--accent-600);
+      border-color: var(--accent-400);
     }
     100% {
       background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
@@ -828,7 +828,7 @@
     gap: 8px;
     padding: 6px 16px;
     background: var(--tint-active-strong);
-    border-bottom: 1px solid var(--amber-600);
+    border-bottom: 1px solid var(--accent-600);
     animation: staged-slide-in 0.2s ease-out;
   }
 
@@ -840,7 +840,7 @@
     width: 12px;
     height: 12px;
     flex-shrink: 0;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .voice-draft-label {
@@ -848,7 +848,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .voice-draft-hint {
@@ -863,7 +863,7 @@
     font-style: italic;
     font-weight: 500;
     letter-spacing: 0.04em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   textarea.voice-draft,
@@ -874,7 +874,7 @@
 
   textarea.voice-draft {
     border-style: dashed;
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   /* Mobile responsive */
@@ -917,7 +917,7 @@
     gap: 8px;
     padding: 8px 16px;
     background: var(--tint-active-strong);
-    border-bottom: 1px solid var(--amber-600);
+    border-bottom: 1px solid var(--accent-600);
     animation: staged-slide-in 0.2s ease-out;
   }
 
@@ -935,7 +935,7 @@
   .staged-icon {
     width: 14px;
     height: 14px;
-    color: var(--amber-500);
+    color: var(--accent-500);
     flex-shrink: 0;
   }
 
@@ -944,7 +944,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     flex-shrink: 0;
   }
 

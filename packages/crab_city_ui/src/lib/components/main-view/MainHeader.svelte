@@ -20,7 +20,7 @@
         return 'var(--status-green)';
       case 'connecting':
       case 'reconnecting':
-        return 'var(--amber-500)';
+        return 'var(--accent-500)';
       case 'error':
       case 'server_gone':
         return 'var(--status-red)';
@@ -256,7 +256,7 @@
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis-strong);
     text-transform: uppercase;
     font-family: var(--font-display);
@@ -342,8 +342,8 @@
 
   .action-btn.active {
     background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-active) 100%);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     box-shadow: var(--elevation-low);
     text-shadow: var(--emphasis);
   }
@@ -372,7 +372,7 @@
     line-height: 14px;
     text-align: center;
     border-radius: 7px;
-    background: var(--amber-500);
+    background: var(--accent-500);
     color: var(--surface-900);
     box-shadow: var(--elevation-low);
   }
@@ -443,6 +443,6 @@
 
   :global([data-theme='analog']) .chat-badge {
     animation: none;
-    box-shadow: 0 0 2px rgba(42, 31, 24, 0.2);
+    box-shadow: var(--elevation-low);
   }
 </style>

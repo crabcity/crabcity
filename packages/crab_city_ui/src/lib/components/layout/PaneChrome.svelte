@@ -23,7 +23,7 @@
   } from '$lib/stores/instances';
   import { sendRefresh } from '$lib/stores/websocket';
   import { openExplorerPicker } from '$lib/stores/files';
-  import { userSettings } from '$lib/stores/settings';
+  import { userSettings, theme } from '$lib/stores/settings';
   import { activityLevel } from '$lib/stores/activity';
   import CreateInstanceModal from '../CreateInstanceModal.svelte';
 
@@ -92,18 +92,38 @@
   // Keeps the visual action in the middle where oscillation is most readable.
   const litBlocks = $derived(Math.max(1, Math.ceil(Math.sqrt($activityLevel) * BLOCK_COUNT)));
 
-  // Phosphor palette — matches VoiceVisualizer's ember→amber ramp
-  // rgb(160,65,10) brown ember → rgb(245,180,110) hot amber
-  const METER_COLORS = Array.from({ length: BLOCK_COUNT }, (_, i) => {
-    const t = i / (BLOCK_COUNT - 1);
-    const r = Math.round(160 + t * 85);
-    const g = Math.round(65 + t * 115);
-    const b = Math.round(10 + t * 100);
-    return `rgb(${r},${g},${b})`;
+  // Read accent ramp endpoints from CSS variables so it follows the active theme.
+  // Falls back to amber if variables are unavailable.
+  function buildMeterColors(): string[] {
+    const style = typeof document !== 'undefined' ? getComputedStyle(document.body) : null;
+    const lo = style?.getPropertyValue('--accent-600').trim() || '#d97706';
+    const hi = style?.getPropertyValue('--accent-400').trim() || '#fdba74';
+    const parse = (hex: string) => {
+      const h = hex.replace('#', '');
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    };
+    const [r0, g0, b0] = parse(lo);
+    const [r1, g1, b1] = parse(hi);
+    return Array.from({ length: BLOCK_COUNT }, (_, i) => {
+      const t = i / (BLOCK_COUNT - 1);
+      return `rgb(${Math.round(r0 + t * (r1 - r0))},${Math.round(g0 + t * (g1 - g0))},${Math.round(b0 + t * (b1 - b0))})`;
+    });
+  }
+
+  let meterColors = $state(buildMeterColors());
+
+  // Rebuild palette when theme changes
+  $effect(() => {
+    // Subscribe to theme store to trigger rebuild
+    void $theme;
+    // Tick delay so CSS variables are applied before we read them
+    requestAnimationFrame(() => {
+      meterColors = buildMeterColors();
+    });
   });
 
   function blockColor(i: number): string {
-    return METER_COLORS[i];
+    return meterColors[i];
   }
 
   // File name for file-viewer chrome
@@ -494,14 +514,12 @@
   }
 
   .status-dot.thinking {
-    background: var(--purple-500);
-    box-shadow: 0 0 4px var(--purple-glow);
+    background: var(--thinking-500);
   }
 
   .status-dot.responding,
   .status-dot.tool {
-    background: var(--amber-500);
-    box-shadow: 0 0 4px var(--amber-glow);
+    background: var(--accent-500);
   }
 
   @keyframes dot-pulse {
@@ -563,13 +581,13 @@
   }
 
   .command-input:focus {
-    border-bottom-color: var(--amber-600);
+    border-bottom-color: var(--accent-600);
     color: var(--text-primary);
   }
 
   .chrome-btn.restart:hover {
     background: var(--tint-hover);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .chrome-sep {
@@ -599,7 +617,7 @@
   }
 
   .instance-select:hover {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .instance-select option {
@@ -633,7 +651,7 @@
 
   .chrome-label-btn:hover {
     background: var(--tint-hover);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .pane-spacer {
@@ -692,7 +710,7 @@
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-dropdown);
     pointer-events: none;
   }
 
@@ -710,11 +728,11 @@
   }
 
   .split-popover-item.hovered .split-popover-icon {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .split-popover-item.hovered .split-popover-label {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .split-popover-icon {

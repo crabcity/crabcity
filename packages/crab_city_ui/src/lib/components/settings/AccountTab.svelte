@@ -136,7 +136,7 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--amber-500);
+    color: var(--accent-500);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -163,7 +163,7 @@
   }
 
   .about-value.admin-badge {
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-size: 10px;
     letter-spacing: 0.08em;
   }
@@ -194,11 +194,11 @@
   }
 
   .setting-input:hover {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .setting-input:focus {
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
     color: var(--text-primary);
   }
 
@@ -222,20 +222,20 @@
   }
 
   .error-msg {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    color: #ef4444;
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-tint);
+    color: var(--status-red);
   }
 
   .success-msg {
-    background: rgba(16, 185, 129, 0.1);
-    border: 1px solid rgba(16, 185, 129, 0.25);
-    color: #10b981;
+    background: var(--status-green-tint);
+    border: 1px solid var(--status-green-tint);
+    color: var(--status-green-text);
   }
 
   .action-btn {
     padding: 6px 12px;
-    background: var(--amber-600);
+    background: var(--accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -250,7 +250,7 @@
   }
 
   .action-btn:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--accent-500);
   }
 
   .action-btn:disabled {
@@ -274,7 +274,7 @@
   }
 
   .signout-btn:hover {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 </style>

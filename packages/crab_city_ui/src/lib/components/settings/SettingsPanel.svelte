@@ -167,6 +167,6 @@
     color: var(--text-primary);
     margin: 0 0 16px 0;
     padding-bottom: 8px;
-    border-bottom: 2px solid var(--amber-500);
+    border-bottom: 2px solid var(--accent-500);
   }
 </style>

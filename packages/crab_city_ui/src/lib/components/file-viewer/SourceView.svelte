@@ -165,7 +165,7 @@
 
   :global(.code-line.highlight-line) {
     background: var(--tint-active-strong);
-    border-left-color: var(--amber-500);
+    border-left-color: var(--accent-500);
     animation: pulse 0.5s ease-out;
   }
 
@@ -235,7 +235,7 @@
   .markdown-preview :global(h2),
   .markdown-preview :global(h3),
   .markdown-preview :global(h4) {
-    color: var(--amber-400);
+    color: var(--accent-400);
     margin: 1.5em 0 0.5em 0;
     font-weight: 700;
     text-shadow: var(--emphasis);
@@ -262,13 +262,13 @@
   }
 
   .markdown-preview :global(a) {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-decoration: none;
     border-bottom: 1px solid transparent;
   }
 
   .markdown-preview :global(a:hover) {
-    border-bottom-color: var(--amber-400);
+    border-bottom-color: var(--accent-400);
   }
 
   .markdown-preview :global(code) {
@@ -276,7 +276,7 @@
     padding: 2px 6px;
     border-radius: 3px;
     font-size: 0.9em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .markdown-preview :global(pre) {
@@ -304,7 +304,7 @@
   }
 
   .markdown-preview :global(blockquote) {
-    border-left: 3px solid var(--amber-500);
+    border-left: 3px solid var(--accent-500);
     margin: 1em 0;
     padding: 0.5em 1em;
     background: var(--tint-hover);
@@ -333,7 +333,7 @@
   .markdown-preview :global(th) {
     background: var(--surface-700);
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .markdown-preview :global(img) {

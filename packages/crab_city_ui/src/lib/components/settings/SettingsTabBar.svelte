@@ -78,7 +78,7 @@
   }
 
   .tab-pill.active {
-    color: var(--amber-400);
-    border-bottom-color: var(--amber-500);
+    color: var(--accent-400);
+    border-bottom-color: var(--accent-500);
   }
 </style>

@@ -384,7 +384,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -457,8 +457,8 @@
   }
 
   .explorer-tab.active {
-    color: var(--amber-400);
-    border-bottom-color: var(--amber-500);
+    color: var(--accent-400);
+    border-bottom-color: var(--accent-500);
     text-shadow: var(--emphasis);
   }
 
@@ -473,7 +473,7 @@
     font-weight: 700;
     line-height: 1;
     border-radius: 8px;
-    background: var(--amber-500);
+    background: var(--accent-500);
     color: var(--btn-primary-text);
   }
 
@@ -511,13 +511,13 @@
 
   .git-subtab.active {
     background: var(--surface-600);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .subtab-count {
     font-size: 9px;
     font-weight: 700;
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   /* Git content area */
@@ -542,7 +542,7 @@
   }
 
   .git-content::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 
   /* Git error state */

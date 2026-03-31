@@ -58,9 +58,9 @@
   .error-boundary-fallback {
     padding: 1rem;
     background: var(--surface-800);
-    border: 1px solid var(--red-500, #ef4444);
+    border: 1px solid var(--status-red);
     border-radius: 4px;
-    color: var(--red-400, #f87171);
+    color: var(--status-red-text);
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -70,8 +70,8 @@
   .error-icon {
     width: 20px;
     height: 20px;
-    background: var(--red-500, #ef4444);
-    color: white;
+    background: var(--status-red);
+    color: var(--on-status);
     border-radius: 50%;
     display: flex;
     align-items: center;

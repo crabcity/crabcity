@@ -120,7 +120,7 @@
     right: 0;
     height: 2px;
     z-index: 2;
-    background: linear-gradient(90deg, transparent 0%, var(--amber-400) 40%, var(--amber-400) 60%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, var(--accent-400) 40%, var(--accent-400) 60%, transparent 100%);
     background-size: 200% 100%;
     animation: shimmer 1.2s ease-in-out infinite;
   }
@@ -146,7 +146,7 @@
   }
 
   .diff-stat.additions {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -159,7 +159,7 @@
     background: var(--tint-hover);
     border-top: 1px solid var(--surface-border);
     border-bottom: 1px solid var(--surface-border);
-    color: var(--amber-600);
+    color: var(--accent-600);
     font-style: italic;
     font-size: 11px;
     user-select: none;
@@ -174,11 +174,11 @@
 
   .diff-line.add {
     background: var(--tint-active);
-    border-left-color: var(--amber-500);
+    border-left-color: var(--accent-500);
   }
 
   .diff-line.add .line-content {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .diff-line.del {
@@ -219,7 +219,7 @@
   }
 
   .diff-line.add .line-marker {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .diff-line.del .line-marker {
@@ -247,7 +247,7 @@
 
   .diff-line.add .line-content :global(.inline-hl) {
     background: var(--tint-selection);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .diff-line.del .line-content :global(.inline-hl) {
@@ -277,17 +277,17 @@
   .engine-toggle:hover {
     background: var(--surface-500);
     color: var(--text-secondary);
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .engine-toggle.active {
-    color: var(--amber-400);
+    color: var(--accent-400);
     border-color: var(--tint-selection);
   }
 
   .engine-fallback {
     font-size: 9px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     opacity: 0.7;
     letter-spacing: 0.03em;
   }
@@ -308,7 +308,7 @@
   .refresh-indicator.loading {
     opacity: 1;
     transform: scale(1);
-    background: var(--amber-400);
+    background: var(--accent-400);
     animation: indicator-pulse 0.6s ease-in-out infinite alternate;
   }
 

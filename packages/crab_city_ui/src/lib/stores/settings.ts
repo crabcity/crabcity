@@ -6,8 +6,19 @@ import { api, apiGet } from '$lib/utils/api';
 // Types
 // =============================================================================
 
+export type ThemeId = 'phosphor' | 'analog' | 'solarized-dark' | 'solarized-light' | 'darcula' | 'intellij-light';
+
+export const THEME_OPTIONS: readonly { id: ThemeId; label: string; family: 'dark' | 'light' }[] = [
+  { id: 'phosphor', label: 'Phosphor', family: 'dark' },
+  { id: 'analog', label: 'Analog', family: 'light' },
+  { id: 'solarized-dark', label: 'Solarized Dark', family: 'dark' },
+  { id: 'solarized-light', label: 'Solarized Light', family: 'light' },
+  { id: 'darcula', label: 'Darcula', family: 'dark' },
+  { id: 'intellij-light', label: 'IntelliJ Light', family: 'light' }
+] as const;
+
 export interface UserSettings {
-  theme: 'phosphor' | 'analog';
+  theme: ThemeId;
   defaultCommand: string;
   shellCommand: string;
   diffEngine: 'standard' | 'patience' | 'structural';
@@ -43,7 +54,7 @@ function migrateOldKeys(): Partial<UserSettings> {
 
   const oldTheme = localStorage.getItem('crab_city_theme');
   if (oldTheme) {
-    migrated.theme = JSON.parse(oldTheme) as 'phosphor' | 'analog';
+    migrated.theme = JSON.parse(oldTheme) as ThemeId;
     localStorage.removeItem('crab_city_theme');
   }
 
@@ -170,9 +181,16 @@ export function updateSettings(partial: Partial<UserSettings>): void {
   }
 }
 
+export function setTheme(id: ThemeId): void {
+  updateSetting('theme', id);
+}
+
 export function toggleTheme(): void {
   const current = get(userSettings).theme;
-  updateSetting('theme', current === 'phosphor' ? 'analog' : 'phosphor');
+  const ids = THEME_OPTIONS.map((t) => t.id);
+  const idx = ids.indexOf(current);
+  const next = ids[(idx + 1) % ids.length];
+  updateSetting('theme', next);
 }
 
 export function toggleDrawer(): void {

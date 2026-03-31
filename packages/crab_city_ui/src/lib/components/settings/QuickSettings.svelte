@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { userSettings, toggleTheme } from '$lib/stores/settings';
+  import { userSettings, setTheme, THEME_OPTIONS, type ThemeId } from '$lib/stores/settings';
   import { openFullscreen } from '$lib/stores/fullscreen';
 
   interface Props {
@@ -49,11 +49,15 @@
 
   <div class="qs-row">
     <span class="qs-label">Theme</span>
-    <button class="qs-toggle" class:active={$userSettings.theme === 'analog'} onclick={() => toggleTheme()}>
-      <span class="qs-opt" class:selected={$userSettings.theme === 'phosphor'}>Phosphor</span>
-      <span class="qs-div">/</span>
-      <span class="qs-opt" class:selected={$userSettings.theme === 'analog'}>Analog</span>
-    </button>
+    <select
+      class="qs-select"
+      value={$userSettings.theme}
+      onchange={(e) => setTheme((e.target as HTMLSelectElement).value as ThemeId)}
+    >
+      {#each THEME_OPTIONS as opt (opt.id)}
+        <option value={opt.id}>{opt.label}</option>
+      {/each}
+    </select>
   </div>
 
   <div class="qs-separator"></div>
@@ -72,7 +76,7 @@
     border-radius: 6px;
     padding: 8px;
     z-index: 1000;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-dropdown);
   }
 
   .qs-header {
@@ -97,38 +101,32 @@
     letter-spacing: 0.03em;
   }
 
-  .qs-toggle {
-    display: flex;
-    align-items: center;
-    gap: 3px;
+  .qs-select {
+    font-size: 10px;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--text-secondary);
     background: var(--surface-600);
     border: 1px solid var(--surface-border);
     border-radius: 3px;
     padding: 3px 6px;
     cursor: pointer;
-    font-family: inherit;
-    font-size: 10px;
+    outline: none;
     letter-spacing: 0.05em;
     transition: border-color 0.15s ease;
   }
 
-  .qs-toggle:hover {
-    border-color: var(--amber-600);
+  .qs-select:hover {
+    border-color: var(--accent-600);
   }
 
-  .qs-opt {
-    color: var(--text-muted);
-    transition: color 0.15s ease;
+  .qs-select:focus {
+    border-color: var(--accent-500);
   }
 
-  .qs-opt.selected {
-    color: var(--amber-400);
-    font-weight: 700;
-  }
-
-  .qs-div {
-    color: var(--text-muted);
-    opacity: 0.3;
+  .qs-select option {
+    background: var(--surface-600);
+    color: var(--text-primary);
   }
 
   .qs-separator {
@@ -156,7 +154,7 @@
 
   .qs-open-btn:hover {
     background: var(--tint-hover);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 </style>

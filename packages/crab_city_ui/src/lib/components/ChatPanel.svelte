@@ -426,15 +426,14 @@
   .header-icon {
     width: 16px;
     height: 16px;
-    color: var(--amber-400);
-    filter: drop-shadow(0 0 4px var(--amber-glow));
+    color: var(--accent-400);
   }
 
   .header-title {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.12em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -454,7 +453,7 @@
 
   .header-btn:hover {
     border-color: var(--surface-border);
-    color: var(--amber-400);
+    color: var(--accent-400);
     background: var(--tint-active);
   }
 
@@ -522,8 +521,8 @@
   }
 
   .scope-tab.active {
-    color: var(--amber-400);
-    border-bottom-color: var(--amber-500);
+    color: var(--accent-400);
+    border-bottom-color: var(--accent-500);
     text-shadow: var(--emphasis);
   }
 
@@ -544,7 +543,7 @@
     font-size: 9px;
     font-weight: 700;
     border-radius: 8px;
-    background: var(--amber-500);
+    background: var(--accent-500);
     color: var(--btn-primary-text);
     line-height: 1;
   }
@@ -575,7 +574,7 @@
   .selection-count {
     font-size: 10px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--accent-400);
     letter-spacing: 0.04em;
   }
 
@@ -591,7 +590,7 @@
     gap: 5px;
     padding: 5px 10px;
     background: var(--btn-primary-bg);
-    border: 1px solid var(--amber-500);
+    border: 1px solid var(--accent-500);
     border-radius: 3px;
     color: var(--btn-primary-text);
     font-size: 10px;
@@ -604,8 +603,7 @@
   }
 
   .compose-btn:hover {
-    background: linear-gradient(180deg, var(--amber-500) 0%, var(--amber-600) 100%);
-    box-shadow: 0 0 12px var(--amber-glow);
+    background: linear-gradient(180deg, var(--accent-500) 0%, var(--accent-600) 100%);
   }
 
   .cancel-selection-btn {
@@ -638,7 +636,7 @@
 
   .input-topic-badge {
     font-size: 9px;
-    color: var(--amber-600);
+    color: var(--accent-600);
     letter-spacing: 0.04em;
     padding: 0 2px;
   }
@@ -673,7 +671,7 @@
   }
 
   .chat-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     box-shadow: var(--elevation-low);
   }
 
@@ -694,8 +692,8 @@
 
   .send-btn:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-active-strong) 100%);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .send-btn:disabled {
@@ -749,7 +747,7 @@
 
   .context-item:hover {
     background: var(--tint-active-strong);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* Responsive */

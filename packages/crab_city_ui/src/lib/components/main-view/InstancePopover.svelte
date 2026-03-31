@@ -211,7 +211,7 @@
   }
 
   .popover-name:hover {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .edit-icon {
@@ -234,7 +234,7 @@
   .rename-input {
     flex: 1;
     background: var(--surface-700);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 2px;
     color: var(--text-primary);
     font-size: 11px;
@@ -278,15 +278,15 @@
 
   .popover-item:hover {
     background: var(--tint-active-strong);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .popover-item.danger {
-    color: var(--status-red, #ef4444);
+    color: var(--status-red);
   }
 
   .popover-item.danger:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: var(--status-red, #ef4444);
+    background: var(--status-red-tint);
+    color: var(--status-red);
   }
 </style>

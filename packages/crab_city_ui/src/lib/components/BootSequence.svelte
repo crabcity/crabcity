@@ -150,7 +150,7 @@
 
   .boot-cursor {
     opacity: 0;
-    color: var(--amber-500);
+    color: var(--accent-500);
     font-size: 13px;
   }
 
@@ -163,6 +163,6 @@
     font-family: 'Source Serif 4', Georgia, serif;
     font-size: 14px;
     letter-spacing: 0.02em;
-    text-shadow: 0 0 1px rgba(42, 31, 24, 0.15);
+    text-shadow: var(--emphasis);
   }
 </style>

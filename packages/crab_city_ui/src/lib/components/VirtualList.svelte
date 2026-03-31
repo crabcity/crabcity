@@ -215,6 +215,6 @@
   }
 
   .virtual-container::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 </style>

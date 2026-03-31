@@ -515,7 +515,7 @@
     padding: 2px 6px;
     border-radius: 3px;
     font-weight: 700;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
     transition: text-shadow 0.8s ease;
   }
@@ -559,7 +559,7 @@
     height: 80px;
     margin-bottom: 20px;
     opacity: 0.3;
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   .empty-icon svg {
@@ -629,13 +629,13 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
     /* Typewriter reveal + blinking block cursor */
     display: inline-block;
     overflow: hidden;
     white-space: nowrap;
-    border-right: 2px solid var(--amber-400);
+    border-right: 2px solid var(--accent-400);
     animation:
       activity-typewriter 0.5s steps(20) forwards,
       activity-cursor-blink 0.8s step-end infinite 0.5s;
@@ -661,7 +661,7 @@
   }
 
   .activity-indicator.thinking .activity-text {
-    color: var(--purple-400);
+    color: var(--thinking-400);
     text-shadow: var(--emphasis);
   }
 
@@ -707,7 +707,7 @@
     background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-active-strong) 100%);
     border: 1px solid var(--tint-selection);
     border-radius: 20px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
@@ -755,7 +755,7 @@
   }
 
   .messages::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 
   /* Boot panel — CRT-style startup sequence */
@@ -775,7 +775,7 @@
     font-weight: 700;
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
     margin-bottom: 8px;
   }
@@ -799,12 +799,12 @@
   }
 
   .boot-line.done {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
   .boot-line.active {
-    color: var(--amber-500);
+    color: var(--accent-500);
     animation: boot-pulse 1.5s ease-in-out infinite;
   }
 
@@ -836,11 +836,11 @@
   }
 
   .boot-completing .boot-header {
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .boot-completing .boot-message {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -931,17 +931,17 @@
     background-color: var(--tint-active);
     background-image: var(--grain-fine), var(--ink-wash);
     background-blend-mode: multiply, normal;
-    border-left: 3px solid var(--amber-600);
-    box-shadow: inset 2px 0 4px rgba(42, 31, 24, 0.08);
+    border-left: 3px solid var(--accent-600);
+    box-shadow: var(--recess);
     animation: ink-bleed-in 0.5s cubic-bezier(0.1, 0.9, 0.2, 1);
   }
 
   :global([data-theme='analog']) .activity-indicator.thinking {
-    border-left-color: var(--purple-500);
+    border-left-color: var(--thinking-500);
     background-color: var(--tint-thinking);
     background-image: var(--grain-fine);
     background-blend-mode: multiply;
-    box-shadow: inset 2px 0 4px rgba(26, 74, 122, 0.08);
+    box-shadow: var(--recess);
   }
 
   /* Activity text: marginal annotation, as if penned in by hand */
@@ -951,7 +951,7 @@
     font-weight: 600;
     text-transform: none;
     letter-spacing: 0;
-    text-shadow: 0 0 2px rgba(42, 31, 24, 0.1);
+    text-shadow: var(--emphasis);
   }
 
   /* Empty state inside conversation: paper grain */

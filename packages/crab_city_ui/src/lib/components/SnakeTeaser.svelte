@@ -6,10 +6,31 @@
   const GW = 30;
   const GH = 20;
   const AI_TICK = 140;
-  const FOOD_COLOR = '#ef4444';
   const STALE_MS = 3000;
 
-  const PLAYER_COLORS = ['#fb923c', '#8b5cf6', '#22c55e', '#3b82f6', '#3b82f6', '#f59e0b', '#ec4899', '#14b8a6'];
+  // Read theme colors from CSS variables at runtime
+  function cssVar(name: string, fallback: string): string {
+    if (typeof document === 'undefined') return fallback;
+    return getComputedStyle(document.body).getPropertyValue(name).trim() || fallback;
+  }
+  function getFoodColor(): string {
+    return cssVar('--status-red', '#ef4444');
+  }
+  function getPlayerColors(): string[] {
+    return [
+      cssVar('--accent-500', '#fb923c'),
+      cssVar('--thinking-500', '#8b5cf6'),
+      cssVar('--status-green', '#22c55e'),
+      cssVar('--status-blue', '#60a5fa'),
+      cssVar('--status-blue', '#60a5fa'),
+      cssVar('--status-yellow', '#fbbf24'),
+      cssVar('--thinking-400', '#a78bfa'),
+      cssVar('--accent-400', '#fdba74')
+    ];
+  }
+
+  let FOOD_COLOR = getFoodColor();
+  let PLAYER_COLORS = getPlayerColors();
 
   type Pt = [number, number];
   type Dir = 'up' | 'down' | 'left' | 'right';
@@ -241,7 +262,7 @@
     const ch = sh / GH;
 
     // Background
-    ctx.fillStyle = '#0a0806';
+    ctx.fillStyle = cssVar('--surface-900', '#0a0806');
     ctx.fillRect(0, 0, w, h);
 
     if (hasRemotes) {
@@ -257,14 +278,14 @@
       }
     } else {
       // AI snake
-      drawBody(ctx, aiBody, '#fb923c', sx, sy, cw, ch);
+      drawBody(ctx, aiBody, cssVar('--accent-500', '#fb923c'), sx, sy, cw, ch);
       // Food
       ctx.fillStyle = FOOD_COLOR;
       ctx.fillRect(sx + aiFood[0] * cw, sy + aiFood[1] * ch, Math.max(cw, 1.5), Math.max(ch, 1.5));
     }
 
     // Scanline overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+    ctx.fillStyle = cssVar('--ambient-tint', 'rgba(0, 0, 0, 0.06)');
     for (let y = 0; y < h; y += 3) {
       ctx.fillRect(0, y, w, 1);
     }

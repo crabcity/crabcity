@@ -146,7 +146,7 @@
 
   .progress-container.expanded .progress-count {
     background: var(--surface-500);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* Progress explorer - expanded view */

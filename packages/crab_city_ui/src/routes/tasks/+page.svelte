@@ -178,8 +178,8 @@
   }
 
   .back-link:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     background: var(--tint-hover);
   }
 
@@ -195,7 +195,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis-strong);
     font-family: var(--font-display);
   }
@@ -221,8 +221,8 @@
   }
 
   .refresh-btn:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .refresh-btn svg {
@@ -236,9 +236,9 @@
     gap: 6px;
     padding: 8px 14px;
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 4px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-size: 12px;
     font-weight: 600;
     font-family: inherit;
@@ -251,14 +251,14 @@
 
   .create-btn:hover {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--amber-500);
-    color: var(--amber-300);
+    border-color: var(--accent-500);
+    color: var(--accent-300);
     box-shadow: var(--elevation-high);
   }
 
   .create-btn.active {
     background: var(--tint-active-strong);
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
   }
 
   .create-icon {
@@ -308,7 +308,7 @@
   }
 
   .status-tab.active {
-    color: var(--amber-400);
+    color: var(--accent-400);
     background: var(--tint-active);
     border-color: var(--surface-border);
   }
@@ -321,7 +321,7 @@
   }
 
   .status-tab.active .tab-count {
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   .filter-controls {
@@ -343,7 +343,7 @@
   }
 
   .filter-select:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .search-wrap {
@@ -379,7 +379,7 @@
   }
 
   .search-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     width: 200px;
   }
 
@@ -404,7 +404,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-bottom: 16px;
@@ -421,7 +421,7 @@
     height: 64px;
     margin-bottom: 16px;
     opacity: 0.3;
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   .empty-icon svg {
@@ -463,7 +463,7 @@
   }
 
   .tasks-content::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 
   @media (max-width: 639px) {

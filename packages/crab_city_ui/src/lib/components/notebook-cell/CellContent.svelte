@@ -147,7 +147,7 @@
     border-radius: 3px;
     font-family: inherit;
     font-size: 12px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     border: 1px solid var(--surface-border);
   }
 
@@ -174,8 +174,8 @@
       0deg,
       transparent,
       transparent 1px,
-      rgba(0, 0, 0, 0.04) 1px,
-      rgba(0, 0, 0, 0.04) 2px
+      var(--scanline-color) 1px,
+      var(--scanline-color) 2px
     );
     pointer-events: none;
     border-radius: 3px;
@@ -228,8 +228,8 @@
 
   .cell-content.markdown :global(.copy-btn:hover) {
     background: var(--surface-500);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .cell-content.markdown :global(.copy-btn.copied) {
@@ -250,14 +250,14 @@
 
   .cell-content.markdown :global(strong) {
     font-weight: 700;
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .cell-content.markdown :global(h1),
   .cell-content.markdown :global(h2),
   .cell-content.markdown :global(h3),
   .cell-content.markdown :global(h4) {
-    color: var(--amber-400);
+    color: var(--accent-400);
     margin: 1.5em 0 0.5em 0;
     font-weight: 700;
     letter-spacing: 0.02em;
@@ -293,7 +293,7 @@
   }
 
   .cell-content.markdown :global(li::marker) {
-    color: var(--amber-500);
+    color: var(--accent-500);
   }
 
   .cell-content.markdown :global(table) {
@@ -313,7 +313,7 @@
   .cell-content.markdown :global(th) {
     background: var(--surface-600);
     font-weight: 700;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.1em;
@@ -324,7 +324,7 @@
   }
 
   .cell-content.markdown :global(blockquote) {
-    border-left: 2px solid var(--amber-500);
+    border-left: 2px solid var(--accent-500);
     margin: 1em 0;
     padding: 0.5em 1em;
     color: var(--text-secondary);
@@ -333,14 +333,14 @@
   }
 
   .cell-content.markdown :global(a) {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-decoration: none;
     border-bottom: 1px solid transparent;
     transition: all 0.15s ease;
   }
 
   .cell-content.markdown :global(a:hover) {
-    border-bottom-color: var(--amber-400);
+    border-bottom-color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -423,7 +423,7 @@
     background: linear-gradient(180deg, var(--tint-thinking) 0%, var(--tint-subtle) 100%);
     padding: 10px 12px;
     border-radius: 4px;
-    border-left: 2px solid var(--purple-500);
+    border-left: 2px solid var(--thinking-500);
     font-size: 12px;
   }
 
@@ -440,7 +440,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--purple-400);
+    color: var(--thinking-400);
     flex-shrink: 0;
   }
 
@@ -459,7 +459,7 @@
   .agent-msg-role {
     font-size: 11px;
     font-weight: 700;
-    color: var(--purple-500);
+    color: var(--thinking-500);
     flex-shrink: 0;
     width: 12px;
   }
@@ -469,7 +469,7 @@
   }
 
   .agent-message.agent-assistant .agent-msg-role {
-    color: var(--purple-400);
+    color: var(--thinking-400);
   }
 
   .agent-msg-content {
@@ -481,14 +481,14 @@
   }
 
   .agent-message.agent-assistant .agent-msg-content {
-    color: var(--purple-300);
+    color: var(--thinking-300);
   }
 
   .thinking-section {
     margin-bottom: 12px;
-    border: 1px solid var(--purple-900, #581c87);
+    border: 1px solid var(--tint-thinking-strong);
     border-radius: 3px;
-    background: rgba(88, 28, 135, 0.08);
+    background: var(--tint-thinking);
     overflow: hidden;
   }
 
@@ -503,13 +503,13 @@
     cursor: pointer;
     font-family: inherit;
     font-size: 11px;
-    color: var(--purple-400, #c084fc);
+    color: var(--thinking-400);
     text-align: left;
     transition: background 0.15s ease;
   }
 
   .thinking-toggle:hover {
-    background: rgba(88, 28, 135, 0.15);
+    background: var(--tint-thinking-strong);
   }
 
   .thinking-icon {
@@ -563,14 +563,14 @@
     font-family: inherit;
     font-size: 10px;
     line-height: 1.5;
-    color: var(--purple-300, #d8b4fe);
+    color: var(--thinking-400);
     opacity: 0.9;
     position: relative;
     z-index: 1;
   }
 
   .thinking-section.expanded {
-    border-color: var(--purple-700, #7e22ce);
+    border-color: var(--thinking-500);
     box-shadow: var(--elevation-low);
   }
 
@@ -710,7 +710,7 @@
     background-color: var(--surface-700);
     background-image: var(--grain-fine), var(--grain-coarse), var(--ink-wash);
     background-blend-mode: multiply, multiply, normal;
-    border-left: 2px solid var(--amber-600);
+    border-left: 2px solid var(--accent-600);
     box-shadow: var(--recess);
   }
 
@@ -719,20 +719,20 @@
     content: '¶';
     font-size: 11px;
     opacity: 0.25;
-    color: var(--amber-600);
+    color: var(--accent-600);
   }
 
   /* Code blocks: inset plate, heavy left-margin rule */
   :global([data-theme='analog']) .cell-content.markdown :global(pre) {
     border: none;
-    border-left: 3px solid var(--amber-600);
+    border-left: 3px solid var(--accent-600);
     border-radius: 0;
     background-color: var(--surface-700);
     background-image: var(--grain-fine), var(--grain-coarse);
     background-blend-mode: multiply, multiply;
     box-shadow:
       var(--recess),
-      inset 2px 0 4px rgba(42, 31, 24, 0.06);
+      var(--recess);
   }
 
   :global([data-theme='analog']) .cell-content.markdown :global(pre::after) {
@@ -743,7 +743,7 @@
   :global([data-theme='analog']) .cell-content.markdown :global(pre:hover) {
     box-shadow:
       var(--recess),
-      inset 3px 0 8px rgba(42, 31, 24, 0.1);
+      var(--recess);
   }
 
   /* Inline code: stamp impression with fine grain */
@@ -753,9 +753,7 @@
     background-blend-mode: multiply;
     border-color: var(--surface-border);
     color: var(--text-primary);
-    box-shadow:
-      0 0 1px rgba(42, 31, 24, 0.15),
-      inset 0 0 2px rgba(42, 31, 24, 0.04);
+    box-shadow: var(--elevation-low);
   }
 
   /* Agent content: manuscript passage with paper grain */
@@ -763,12 +761,12 @@
     background-color: var(--surface-800);
     background-image: var(--grain-fine), var(--ink-wash);
     background-blend-mode: multiply, normal;
-    border-left: 3px solid var(--amber-500);
-    box-shadow: inset 2px 0 6px rgba(42, 31, 24, 0.04);
+    border-left: 3px solid var(--accent-500);
+    box-shadow: var(--recess);
   }
 
   :global([data-theme='analog']) .agent-prompt {
-    border-bottom: 1.5px solid var(--amber-600);
+    border-bottom: 1.5px solid var(--accent-600);
   }
 
   /* Thinking section: vellum overlay with fine grain */
@@ -776,10 +774,10 @@
     background-color: var(--surface-800);
     background-image: var(--grain-fine);
     background-blend-mode: multiply;
-    border-top: 1.5px solid var(--purple-500);
+    border-top: 1.5px solid var(--thinking-500);
     box-shadow:
       var(--recess),
-      inset 0 2px 4px rgba(26, 74, 122, 0.04);
+      var(--recess);
   }
 
   :global([data-theme='analog']) .thinking-content::after {
@@ -798,7 +796,7 @@
     background-color: var(--surface-800);
     background-image: var(--grain-fine), var(--ink-wash);
     background-blend-mode: multiply, normal;
-    border-left: 3px solid var(--amber-600);
+    border-left: 3px solid var(--accent-600);
   }
 
   /* Ink settling into paper — capillary action */
@@ -819,14 +817,14 @@
       opacity: 0.85;
       box-shadow:
         var(--recess),
-        inset 0 2px 6px rgba(26, 74, 122, 0.06);
+        var(--recess);
     }
     100% {
       opacity: 1;
       transform: translateY(0);
       box-shadow:
         var(--recess),
-        inset 0 2px 4px rgba(26, 74, 122, 0.04);
+        var(--recess);
     }
   }
 </style>

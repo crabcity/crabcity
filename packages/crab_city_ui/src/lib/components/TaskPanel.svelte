@@ -361,7 +361,7 @@
     background: linear-gradient(180deg, var(--surface-700) 0%, var(--surface-800) 100%);
     border-right: 1px solid var(--surface-border);
     box-shadow:
-      4px 0 20px rgba(0, 0, 0, 0.4),
+      var(--shadow-panel),
       1px 0 0 var(--tint-active);
     animation: task-slide-in 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
@@ -405,7 +405,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
     font-family: var(--font-display);
   }
@@ -442,7 +442,7 @@
   }
 
   .view-tab.active {
-    color: var(--amber-400);
+    color: var(--accent-400);
     background: var(--tint-active);
     border-color: var(--surface-border);
   }
@@ -462,8 +462,8 @@
   }
 
   .close-btn:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .close-btn svg {
@@ -502,7 +502,7 @@
   }
 
   .add-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .expand-body-btn {
@@ -522,8 +522,8 @@
 
   .expand-body-btn:hover,
   .expand-body-btn.active {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .add-btn {
@@ -573,7 +573,7 @@
   }
 
   .add-body:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   /* === Task list === */
@@ -631,7 +631,7 @@
   }
 
   .task-list::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 
   /* === Responsive === */
