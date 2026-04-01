@@ -48,6 +48,13 @@ export interface FileExplorerState {
 // Viewer Types
 // =============================================================================
 
+export interface DiffContext {
+  commit?: string;
+  base?: string;
+  head?: string;
+  diffMode?: 'twodot' | 'threedot';
+}
+
 export interface FileViewerState {
   isOpen: boolean;
   filePath: string | null;
@@ -64,6 +71,12 @@ export interface FileViewerState {
   diffLoading: boolean;
   /** Error message if diff fetch failed */
   diffError: string | null;
+  /** Context for multi-file diff navigation */
+  diffContext: DiffContext | null;
+  /** All files in the current diff (for multi-file navigation) */
+  allDiffFiles: GitDiffFile[];
+  /** Index of the currently displayed file within allDiffFiles */
+  currentFileIndex: number;
 }
 
 // =============================================================================
@@ -400,7 +413,10 @@ const viewerInitialState: FileViewerState = {
   diffData: null,
   viewMode: 'content',
   diffLoading: false,
-  diffError: null
+  diffError: null,
+  diffContext: null,
+  allDiffFiles: [],
+  currentFileIndex: 0
 };
 
 export const fileViewerState = writable<FileViewerState>(viewerInitialState);
@@ -418,6 +434,9 @@ export const currentDiffData = derived(fileViewerState, ($state) => $state.diffD
 export const currentViewMode = derived(fileViewerState, ($state) => $state.viewMode);
 export const isDiffLoading = derived(fileViewerState, ($state) => $state.diffLoading);
 export const diffError = derived(fileViewerState, ($state) => $state.diffError);
+export const currentDiffContext = derived(fileViewerState, ($state) => $state.diffContext);
+export const allDiffFiles = derived(fileViewerState, ($state) => $state.allDiffFiles);
+export const currentFileIndex = derived(fileViewerState, ($state) => $state.currentFileIndex);
 
 // =============================================================================
 // Language Detection
@@ -567,7 +586,10 @@ export function openFileFromTool(filePath: string, content: string, lineNumber?:
     diffData: null,
     viewMode: 'content',
     diffLoading: false,
-    diffError: null
+    diffError: null,
+    diffContext: null,
+    allDiffFiles: [],
+    currentFileIndex: 0
   });
   updateUrl({ file: filePath, line: lineNumber ? String(lineNumber) : null, view: null, commit: null });
 }
@@ -589,7 +611,10 @@ export function openFilePath(filePath: string, lineNumber?: number): void {
     diffData: null,
     viewMode: 'content',
     diffLoading: false,
-    diffError: null
+    diffError: null,
+    diffContext: null,
+    allDiffFiles: [],
+    currentFileIndex: 0
   });
   updateUrl({ file: filePath, line: lineNumber ? String(lineNumber) : null, view: null, commit: null });
 
@@ -646,7 +671,10 @@ export function openFileDiff(filePath: string, diffFile: GitDiffFile, commit?: s
     diffData: diffFile,
     viewMode: 'diff',
     diffLoading: false,
-    diffError: null
+    diffError: null,
+    diffContext: null,
+    allDiffFiles: [],
+    currentFileIndex: 0
   });
   updateUrl({ file: filePath, line: null, view: 'diff', commit: commit ?? null });
 }
@@ -663,9 +691,66 @@ export function openFileDiffLoading(filePath: string, commit?: string): void {
     diffData: null,
     viewMode: 'diff',
     diffLoading: true,
-    diffError: null
+    diffError: null,
+    diffContext: null,
+    allDiffFiles: [],
+    currentFileIndex: 0
   });
   updateUrl({ file: filePath, line: null, view: 'diff', commit: commit ?? null });
+}
+
+/**
+ * Open the file viewer in diff mode with full multi-file diff context.
+ * The viewer will fetch the full diff and enable file navigation.
+ */
+export function openFileDiffWithContext(filePath: string, context: DiffContext): void {
+  fileViewerState.set({
+    isOpen: true,
+    filePath,
+    content: null,
+    language: detectLanguage(filePath),
+    lineNumber: null,
+    source: null,
+    diffData: null,
+    viewMode: 'diff',
+    diffLoading: true,
+    diffError: null,
+    diffContext: context,
+    allDiffFiles: [],
+    currentFileIndex: 0
+  });
+  updateUrl({ file: filePath, line: null, view: 'diff', commit: context.commit ?? null });
+}
+
+/**
+ * Navigate to a different file within a multi-file diff.
+ * Does NOT re-trigger drawer animation or URL updates.
+ */
+export function navigateDiffFile(index: number): void {
+  fileViewerState.update((state) => {
+    if (index < 0 || index >= state.allDiffFiles.length) return state;
+    const file = state.allDiffFiles[index];
+    return {
+      ...state,
+      filePath: file.path,
+      language: detectLanguage(file.path),
+      diffData: file,
+      currentFileIndex: index,
+      diffError: null
+    };
+  });
+}
+
+/** Set all diff files for multi-file navigation. */
+export function setAllDiffFiles(files: GitDiffFile[], initialIndex: number): void {
+  fileViewerState.update((state) => ({
+    ...state,
+    allDiffFiles: files,
+    currentFileIndex: initialIndex,
+    diffData: files[initialIndex] ?? state.diffData,
+    diffLoading: false,
+    diffError: null
+  }));
 }
 
 /** Resolve a pending diff load with data. */

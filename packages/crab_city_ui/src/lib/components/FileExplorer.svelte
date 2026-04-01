@@ -2,22 +2,16 @@
   import {
     isExplorerOpen,
     closeExplorer,
-    fileViewerState,
     filePickerRequest,
-    openFileDiffLoading,
-    openFileDiff,
-    setDiffData,
-    setDiffError
+    openFileDiffWithContext
   } from '$lib/stores/files';
   import { currentInstance } from '$lib/stores/instances';
   import { isDesktop } from '$lib/stores/ui';
-  import { diffEngine } from '$lib/stores/settings';
   import {
     isGitOpen,
     openGitTab,
     closeGitTab,
     gitTab,
-    gitDiff,
     gitError,
     statusCounts,
     selectedCommitHash,
@@ -30,7 +24,6 @@
     fetchGitLog,
     fetchGitBranches,
     fetchGitStatus,
-    fetchGitDiff,
     startGitRefresh,
     stopGitRefresh,
     type GitFileStatus,
@@ -123,64 +116,23 @@
     }
   }
 
-  // Handle clicking a file in the git status view — open its diff
+  // Handle clicking a file in the git status view — open its diff with full context
   function handleStatusFileClick(file: GitFileStatus) {
-    const instance = $currentInstance;
-    if (!instance) return;
-    const targetPath = file.path;
-    openFileDiffLoading(targetPath);
-    fetchGitDiff(instance.id, undefined, targetPath, $diffEngine)
-      .then(() => {
-        const currentState = $fileViewerState;
-        if (currentState.filePath !== targetPath) return;
-        const diff = $gitDiff;
-        if (diff && diff.files.length > 0) {
-          setDiffData(diff.files[0]);
-        } else {
-          setDiffError('No changes found');
-        }
-      })
-      .catch(() => {
-        const currentState = $fileViewerState;
-        if (currentState.filePath !== targetPath) return;
-        setDiffError();
-      });
+    openFileDiffWithContext(file.path, {});
   }
 
   // Handle clicking a file in an expanded commit diff
   function handleCommitFileClick(diffFile: GitDiffFile) {
-    openFileDiff(diffFile.path, diffFile, $selectedCommitHash ?? undefined);
+    openFileDiffWithContext(diffFile.path, { commit: $selectedCommitHash ?? undefined });
   }
 
   // Handle clicking a file in the branch diff expansion
   function handleBranchDiffFileClick(diffFile: GitDiffFile) {
-    const instance = $currentInstance;
     const branchName = $selectedBranchName;
     const base = $branchDiffBase;
-    if (!instance || !branchName || !base) return;
-    const targetPath = diffFile.path;
+    if (!branchName || !base) return;
     const mode = $branchDiffMode;
-    openFileDiffLoading(targetPath);
-    fetchGitDiff(instance.id, undefined, targetPath, $diffEngine, {
-      base,
-      head: branchName,
-      diffMode: mode
-    })
-      .then(() => {
-        const currentState = $fileViewerState;
-        if (currentState.filePath !== targetPath) return;
-        const diff = $gitDiff;
-        if (diff && diff.files.length > 0) {
-          setDiffData(diff.files[0]);
-        } else {
-          setDiffError('No changes found');
-        }
-      })
-      .catch(() => {
-        const currentState = $fileViewerState;
-        if (currentState.filePath !== targetPath) return;
-        setDiffError();
-      });
+    openFileDiffWithContext(diffFile.path, { base, head: branchName, diffMode: mode });
   }
 
   // Load more commits

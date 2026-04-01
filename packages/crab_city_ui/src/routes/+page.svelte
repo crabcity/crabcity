@@ -28,6 +28,7 @@
     closeFileViewer,
     currentFilePath,
     currentLineNumber,
+    currentDiffContext,
     rootDirectory
   } from '$lib/stores/files';
   import { claudeState } from '$lib/stores/claude';
@@ -216,11 +217,13 @@
       oninset={() => {
         const filePath = $currentFilePath;
         const lineNumber = $currentLineNumber ?? undefined;
+        const diffContext = $currentDiffContext ?? undefined;
         splitPane($layoutState.focusedPaneId, 'vertical', {
           kind: 'file-viewer',
           filePath,
           lineNumber,
-          workingDir: $rootDirectory
+          workingDir: $rootDirectory,
+          diffContext
         });
         closeFileViewer();
       }}
