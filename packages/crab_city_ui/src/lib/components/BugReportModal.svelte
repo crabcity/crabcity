@@ -1,9 +1,6 @@
 <script lang="ts">
-  import hotln from 'hotln';
+  import { apiPost } from '$lib/utils/api';
   import { addToast } from '$lib/stores/toasts';
-
-  const PROXY_URL = 'https://workshop.hotline.empathic.dev';
-  const PROXY_TOKEN = 'nkCk16ewj5YDPqhZ7FSBHM44+3y5F5HpH0FdvVrIO8A=';
 
   interface Props {
     onclose: () => void;
@@ -37,15 +34,10 @@
     error = '';
 
     try {
-      const t = title.trim();
-      const d = description.trim();
-      const linearIssue = hotln.linear(PROXY_URL).withToken(PROXY_TOKEN).title(t);
-      const githubIssue = hotln.github(PROXY_URL).withToken(PROXY_TOKEN).title(t);
-      if (d) {
-        linearIssue.text(d);
-        githubIssue.text(d);
-      }
-      await Promise.all([linearIssue.create(), githubIssue.create()]);
+      await apiPost('/api/bug-report', {
+        title: title.trim(),
+        description: description.trim() || undefined
+      });
       addToast('Bug report submitted', 'info');
       onclose();
     } catch (err) {

@@ -419,6 +419,8 @@ pub fn build_router(
         .route("/api/browse/worktree", post(handlers::create_worktree))
         .route("/api/browse/mkdir", post(handlers::create_directory))
         .route("/api/browse/git-info", get(handlers::git_detailed_info))
+        // Bug report endpoint
+        .route("/api/bug-report", post(handlers::create_bug_report))
         // Inbox endpoints
         .route("/api/inbox", get(handlers::list_inbox_handler))
         .route(

@@ -31,6 +31,9 @@ tokio-util = "0.7"
 # HTTP client for optional API calls
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
+# Bug reporting via hotline proxy
+hotln = "0.2.1"
+
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
 dirs = "5.0"

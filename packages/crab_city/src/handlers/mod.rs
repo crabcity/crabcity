@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod browse;
+pub mod bug_report;
 pub mod conversations;
 pub mod health;
 pub mod inbox;
@@ -16,6 +17,7 @@ pub use admin::{
     restart_handler, revoke_server_invite_handler, trigger_import, update_user_handler,
 };
 pub use browse::{browse_directory, create_directory, create_worktree, git_detailed_info};
+pub use bug_report::create_bug_report;
 pub use conversations::{
     add_comment, create_share, extract_title_from_turn, format_progress_event,
     format_turn_with_attribution, get_comments, get_conversation, get_conversation_by_id,
