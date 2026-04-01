@@ -2,7 +2,7 @@
   import hotln from 'hotln';
   import { addToast } from '$lib/stores/toasts';
 
-  const PROXY_URL = 'https://workshop-hotline.emv.workers.dev';
+  const PROXY_URL = 'https://workshop.hotline.empathic.dev';
   const PROXY_TOKEN = 'nkCk16ewj5YDPqhZ7FSBHM44+3y5F5HpH0FdvVrIO8A=';
 
   interface Props {
