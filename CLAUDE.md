@@ -41,7 +41,8 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 - `cargo check -p crab_city_desktop` — quick compile check
 - `cargo test -p crab_city_desktop` — run unit tests
 - `cd packages/crab_city_desktop && cargo tauri dev --config tauri.dev.conf.json` — launch desktop app with embedded server (auto-starts Vite dev server)
-- `bazel build //packages/crab_city_desktop:macos_app` — build macOS `.app` bundle with embedded server
+- `bazel build //packages/crab_city_desktop:macos_app` — build macOS `.app` bundle (debug)
+- `bazel build --config=opt //packages/crab_city_desktop:macos_app` — build optimized `.app` bundle (must use `--config=opt`, not bare `-c opt`, due to Tauri proc-macro cfg requirements)
 
 **Dev workflow** (single terminal): `cd packages/crab_city_desktop && cargo tauri dev --config tauri.dev.conf.json` — the Tauri app starts an embedded server in-process, and Vite's dev proxy discovers it automatically via the `daemon.port` file. The `--config` flag merges `tauri.dev.conf.json` (devUrl + beforeDevCommand) into the base config. The base `tauri.conf.json` has no dev URL — production builds never reference external dev servers.
 

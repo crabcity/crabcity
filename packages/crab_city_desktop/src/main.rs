@@ -286,6 +286,7 @@ fn setup_menu(app: &tauri::App) -> tauri::Result<()> {
         .accelerator("CmdOrCtrl+R")
         .build(app)?;
 
+    #[cfg(debug_assertions)]
     let devtools_item = MenuItemBuilder::new("Toggle Developer Tools")
         .id("devtools")
         .accelerator("CmdOrCtrl+Alt+I")
@@ -320,12 +321,10 @@ fn setup_menu(app: &tauri::App) -> tauri::Result<()> {
         .select_all()
         .build()?;
 
-    let view_submenu = SubmenuBuilder::new(app, "View")
-        .item(&reload_item)
-        .item(&devtools_item)
-        .separator()
-        .fullscreen()
-        .build()?;
+    let view_submenu_builder = SubmenuBuilder::new(app, "View").item(&reload_item);
+    #[cfg(debug_assertions)]
+    let view_submenu_builder = view_submenu_builder.item(&devtools_item);
+    let view_submenu = view_submenu_builder.separator().fullscreen().build()?;
 
     let window_submenu = SubmenuBuilder::new(app, "Window")
         .minimize()
@@ -356,7 +355,9 @@ fn setup_menu(app: &tauri::App) -> tauri::Result<()> {
                 }
             }
         }
-        "devtools" => {
+        "devtools" =>
+        {
+            #[cfg(debug_assertions)]
             if let Some(window) = app_handle.get_webview_window("main") {
                 if window.is_devtools_open() {
                     window.close_devtools();
