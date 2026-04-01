@@ -436,6 +436,10 @@ crate_index.spec(
     package = "which",
     version = "7",
 )
+crate_index.spec(
+    package = "hotln",
+    version = "0.2.1",
+)
 crate_index.from_specs(name = "crate_index")
 use_repo(crate_index, "crate_index")
 
