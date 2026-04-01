@@ -2,9 +2,11 @@
   import {
     userSettings,
     updateSetting,
-    toggleTheme,
+    setTheme,
+    THEME_OPTIONS,
     DEFAULT_SETTINGS,
     type UserSettings,
+    type ThemeId,
   } from '$lib/stores/settings';
   import { requestNotificationPermission } from '$lib/stores/inbox';
 
@@ -12,8 +14,9 @@
     typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'denied'
   );
 
-  function handleThemeToggle() {
-    toggleTheme();
+  function handleThemeChange(e: Event) {
+    const value = (e.target as HTMLSelectElement).value as ThemeId;
+    setTheme(value);
   }
 
   function handleDiffEngineChange(e: Event) {
@@ -60,19 +63,19 @@
 
   <div class="setting-row">
     <div class="setting-info">
-      <span class="setting-label">Theme</span>
+      <label class="setting-label" for="theme-select">Theme</label>
       <span class="setting-desc">Visual style for the interface</span>
     </div>
-    <button
-      class="toggle-btn"
-      class:active={$userSettings.theme === 'analog'}
-      onclick={handleThemeToggle}
-      aria-label="Toggle theme"
+    <select
+      id="theme-select"
+      class="setting-select"
+      value={$userSettings.theme}
+      onchange={handleThemeChange}
     >
-      <span class="toggle-option" class:selected={$userSettings.theme === 'phosphor'}>Phosphor</span>
-      <span class="toggle-divider">/</span>
-      <span class="toggle-option" class:selected={$userSettings.theme === 'analog'}>Analog</span>
-    </button>
+      {#each THEME_OPTIONS as opt (opt.id)}
+        <option value={opt.id}>{opt.label}</option>
+      {/each}
+    </select>
   </div>
 
   <div class="setting-row">
@@ -197,7 +200,8 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--amber-500);
+    color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -231,40 +235,6 @@
     letter-spacing: 0.02em;
   }
 
-  .toggle-btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--surface-700);
-    border: 1px solid var(--surface-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    transition: border-color 0.15s ease;
-  }
-
-  .toggle-btn:hover {
-    border-color: var(--amber-600);
-  }
-
-  .toggle-option {
-    color: var(--text-muted);
-    transition: color 0.15s ease;
-  }
-
-  .toggle-option.selected {
-    color: var(--amber-400);
-    font-weight: 700;
-  }
-
-  .toggle-divider {
-    color: var(--text-muted);
-    opacity: 0.3;
-  }
-
   .range-input {
     width: 100px;
     height: 4px;
@@ -281,7 +251,8 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     border: none;
     cursor: pointer;
   }
@@ -290,7 +261,8 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     border: none;
     cursor: pointer;
   }
@@ -309,11 +281,12 @@
   }
 
   .setting-select:hover {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-select:focus {
-    border-color: var(--amber-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
   }
 
   .setting-select option {
@@ -334,11 +307,12 @@
   }
 
   .setting-input:hover {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-input:focus {
-    border-color: var(--amber-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
@@ -366,7 +340,7 @@
   }
 
   .indicator-btn:hover {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .indicator-dot {
@@ -379,9 +353,9 @@
   }
 
   .indicator-btn.on .indicator-dot {
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
     opacity: 1;
-    box-shadow: 0 0 4px var(--amber-glow);
   }
 
   .indicator-label {
@@ -392,6 +366,6 @@
   }
 
   .indicator-btn.on .indicator-label {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 </style>

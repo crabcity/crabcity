@@ -197,7 +197,7 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: var(--amber-500);
+    background: var(--accent-500);
     flex-shrink: 0;
     opacity: 0.5;
   }
@@ -214,7 +214,7 @@
     width: 100%;
     padding: 2px 6px;
     background: var(--surface-800);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     color: var(--text-primary);
     font-size: 12px;
@@ -259,7 +259,7 @@
     margin-bottom: 6px;
     padding: 6px 8px;
     background: var(--surface-800);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     color: var(--text-primary);
     font-size: 11px;
@@ -295,7 +295,7 @@
   }
 
   .assign-select:focus {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
   }
 
   .detail-btn {
@@ -319,18 +319,18 @@
   }
 
   .detail-btn.send-btn {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .detail-btn.send-btn:hover {
     background: var(--tint-active);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .detail-btn.save-btn {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .detail-btn.delete-btn:hover {

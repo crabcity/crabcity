@@ -32,7 +32,7 @@
     padding: 10px 14px;
     background: var(--surface-600);
     border: 1px solid var(--surface-border);
-    border-left: 3px solid var(--amber-500);
+    border-left: 3px solid var(--chrome-accent-500);
     border-radius: 4px;
     box-shadow: var(--shadow-dropdown);
     pointer-events: auto;

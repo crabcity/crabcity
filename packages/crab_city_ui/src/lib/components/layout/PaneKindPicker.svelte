@@ -239,20 +239,19 @@
 
   .kind-card:hover,
   .kind-card.focused {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-hover);
-    box-shadow: 0 0 8px rgba(251, 146, 60, 0.08);
+    box-shadow: var(--elevation-low);
   }
 
   .kind-card:hover .kind-icon,
   .kind-card.focused .kind-icon {
-    color: var(--amber-400);
-    filter: drop-shadow(0 0 3px var(--amber-glow));
+    color: var(--chrome-accent-400);
   }
 
   .kind-card:hover .kind-label,
   .kind-card.focused .kind-label {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-shadow: var(--emphasis);
   }
 

@@ -897,7 +897,7 @@
   }
   .copy-path-btn.copied {
     opacity: 1;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .path-input {
@@ -906,7 +906,7 @@
     font-size: 0.68rem;
     padding: 2px 4px;
     background: var(--surface-800);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--chrome-accent-600);
     color: var(--text-primary);
     outline: none;
   }
@@ -951,8 +951,8 @@
   }
 
   .project-chip.active {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .project-chip.chip-hover {
@@ -988,7 +988,7 @@
 
   .col-handle:hover,
   .col-handle.dragging {
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
   }
 
   .miller-column {
@@ -1030,7 +1030,7 @@
   }
 
   .col-error {
-    color: var(--status-red, #ef4444);
+    color: var(--status-red);
   }
 
   .col-empty {
@@ -1124,7 +1124,7 @@
     font-size: 0.65rem;
     padding: 2px 4px;
     background: var(--surface-800);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--chrome-accent-600);
     color: var(--text-primary);
     outline: none;
     width: 100%;
@@ -1133,7 +1133,7 @@
   /* Git panel */
   .git-panel {
     border-top: 1px solid var(--surface-border);
-    border-left: 2px solid var(--amber-600);
+    border-left: 2px solid var(--chrome-accent-600);
     background: var(--surface-800);
     flex-shrink: 0;
   }
@@ -1148,7 +1148,7 @@
 
   .git-branch {
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-size: 0.68rem;
   }
 
@@ -1203,7 +1203,7 @@
   }
 
   .git-detail-sha {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     margin-right: 4px;
   }
 
@@ -1243,7 +1243,7 @@
   }
 
   .worktree-entry.active {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .worktree-entry.wt-hover {
@@ -1324,7 +1324,7 @@
   }
 
   .wt-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .wt-actions {
@@ -1355,8 +1355,8 @@
   }
 
   .wt-create {
-    background: var(--amber-600);
-    border-color: var(--amber-600);
+    background: var(--chrome-accent-600);
+    border-color: var(--chrome-accent-600);
     color: var(--surface-900);
   }
 

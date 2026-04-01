@@ -317,8 +317,8 @@
   }
 
   .refresh-btn:hover:not(:disabled) {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .refresh-btn:disabled {
@@ -380,7 +380,7 @@
   }
 
   .search-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .pill-row {
@@ -395,12 +395,12 @@
     align-items: center;
     gap: 4px;
     padding: 3px 8px 3px 10px;
-    background: rgba(251, 146, 60, 0.15);
-    border: 1px solid rgba(251, 146, 60, 0.3);
+    background: var(--tint-active-strong);
+    border: 1px solid var(--tint-selection);
     border-radius: 12px;
     font-size: 11px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
   }
 
@@ -414,7 +414,7 @@
     background: transparent;
     border: none;
     border-radius: 50%;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     opacity: 0.6;
     transition: opacity 0.15s ease;
@@ -435,7 +435,7 @@
     width: 14px;
     height: 14px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -467,9 +467,9 @@
 
   .error-banner {
     padding: 12px 20px;
-    background: rgba(239, 68, 68, 0.1);
-    border-bottom: 1px solid rgba(239, 68, 68, 0.2);
-    color: #f87171;
+    background: var(--status-red-tint);
+    border-bottom: 1px solid var(--status-red-border);
+    color: var(--status-red-text);
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -505,7 +505,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-bottom: 16px;
@@ -516,7 +516,7 @@
     height: 64px;
     margin-bottom: 16px;
     opacity: 0.3;
-    color: var(--amber-500);
+    color: var(--chrome-accent-500);
   }
 
   .empty-icon svg {
@@ -545,9 +545,9 @@
     gap: 8px;
     padding: 12px 20px;
     background: linear-gradient(180deg, var(--surface-500) 0%, var(--surface-600) 100%);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-size: 12px;
     font-weight: 600;
     font-family: inherit;
@@ -556,18 +556,17 @@
     cursor: pointer;
     transition: all 0.15s ease;
     box-shadow:
-      0 0 10px rgba(251, 146, 60, 0.1),
-      inset 0 1px 0 rgba(251, 146, 60, 0.1);
+      0 0 10px var(--tint-active),
+      inset 0 1px 0 var(--tint-active);
   }
 
   .sync-btn:hover:not(:disabled) {
     background: linear-gradient(180deg, var(--surface-400) 0%, var(--surface-500) 100%);
-    border-color: var(--amber-500);
-    color: var(--amber-300);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-300);
     box-shadow:
-      0 0 20px rgba(251, 146, 60, 0.2),
-      inset 0 1px 0 rgba(251, 146, 60, 0.2);
-    text-shadow: 0 0 10px var(--amber-glow);
+      0 0 20px var(--tint-focus),
+      inset 0 1px 0 var(--tint-focus);
   }
 
   .sync-btn:disabled {
@@ -583,8 +582,8 @@
   .spinner-small {
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(251, 146, 60, 0.3);
-    border-top-color: var(--amber-500);
+    border: 2px solid var(--tint-selection);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -624,15 +623,15 @@
   }
 
   .page-btn:hover:not(:disabled):not(.active) {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .page-btn.active {
-    background: rgba(251, 146, 60, 0.15);
-    border-color: var(--amber-500);
-    color: var(--amber-400);
-    box-shadow: 0 0 10px rgba(251, 146, 60, 0.2);
+    background: var(--tint-active-strong);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-400);
+    box-shadow: 0 0 10px var(--tint-focus);
   }
 
   .page-btn:disabled {

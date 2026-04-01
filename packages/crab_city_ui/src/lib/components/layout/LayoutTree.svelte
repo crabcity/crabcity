@@ -229,8 +229,8 @@
 
   .mobile-tab.active {
     background: var(--surface-600);
-    color: var(--amber-400);
-    border-top: 2px solid var(--amber-500);
+    color: var(--chrome-accent-400);
+    border-top: 2px solid var(--chrome-accent-500);
     text-shadow: var(--emphasis);
   }
 
@@ -241,7 +241,7 @@
   }
 
   .mobile-tab.add-tab:hover {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .tab-label {
@@ -276,14 +276,12 @@
   }
 
   .tab-status-dot.thinking {
-    background: var(--purple-500);
-    box-shadow: 0 0 3px var(--purple-glow);
+    background: var(--thinking-500);
   }
 
   .tab-status-dot.responding,
   .tab-status-dot.tool {
-    background: var(--amber-500);
-    box-shadow: 0 0 3px var(--amber-glow);
+    background: var(--chrome-accent-500);
   }
 
   @keyframes tab-dot-pulse {

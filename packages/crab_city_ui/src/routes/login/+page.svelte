@@ -85,7 +85,7 @@
   h1 {
     margin: 0 0 4px;
     font-size: 1.4em;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-align: center;
   }
 
@@ -99,10 +99,10 @@
   .error {
     padding: 8px 12px;
     margin-bottom: 16px;
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-border);
     border-radius: 4px;
-    color: #ef4444;
+    color: var(--status-red);
     font-size: 0.85em;
   }
 
@@ -135,12 +135,12 @@
 
   input:focus {
     outline: none;
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   button {
     padding: 10px;
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -152,7 +152,7 @@
   }
 
   button:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
   }
 
   button:disabled {
@@ -168,7 +168,7 @@
   }
 
   .footer-link a {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 

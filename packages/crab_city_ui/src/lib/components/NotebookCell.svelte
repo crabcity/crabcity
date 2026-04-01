@@ -176,7 +176,7 @@
 
   /* Keyboard focus ring */
   .cell.focused {
-    outline: 1px solid var(--amber-500);
+    outline: 1px solid var(--accent-500);
     outline-offset: -1px;
     box-shadow: var(--elevation-low);
     background: var(--tint-subtle);
@@ -207,7 +207,7 @@
   }
 
   .assistant-cell .cell-role {
-    color: var(--amber-400);
+    color: var(--accent-400);
     text-shadow: var(--emphasis);
     transition: text-shadow 0.8s ease;
   }
@@ -240,7 +240,7 @@
 
   .toggle-raw:hover {
     background: var(--surface-500);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* Task link badge in cell header */
@@ -264,8 +264,8 @@
   }
 
   .task-link:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     background: var(--tint-active-strong);
   }
 
@@ -305,7 +305,7 @@
   }
 
   .agent-cell .cell-role {
-    color: var(--purple-400);
+    color: var(--thinking-400);
     font-size: 10px;
   }
 

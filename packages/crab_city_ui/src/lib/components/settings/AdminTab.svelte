@@ -661,7 +661,8 @@
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    color: var(--amber-500);
+    color: var(--chrome-accent-500);
+    text-shadow: var(--emphasis);
     margin: 0 0 12px 0;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--surface-border);
@@ -687,9 +688,9 @@
     border-radius: 4px;
     font-size: 10px;
     letter-spacing: 0.02em;
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.2);
-    color: var(--amber-400);
+    background: var(--tint-active);
+    border: 1px solid var(--tint-active);
+    color: var(--chrome-accent-400);
     line-height: 1.4;
   }
 
@@ -719,11 +720,12 @@
   }
 
   .setting-input:hover {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .setting-input:focus {
-    border-color: var(--amber-500);
+    border-color: var(--chrome-accent-500);
+    box-shadow: var(--recess-border);
     color: var(--text-primary);
   }
 
@@ -746,9 +748,9 @@
   }
 
   .error-msg {
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.25);
-    color: #ef4444;
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-tint);
+    color: var(--status-red);
   }
 
   .dismiss-btn {
@@ -770,7 +772,7 @@
 
   .action-btn {
     padding: 6px 12px;
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -780,11 +782,15 @@
     letter-spacing: 0.03em;
     cursor: pointer;
     align-self: flex-start;
-    transition: background 0.15s ease;
+    box-shadow: var(--depth-up);
+    transition:
+      background 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .action-btn:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
+    box-shadow: var(--elevation-high);
   }
 
   .action-btn:disabled {
@@ -824,6 +830,7 @@
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
+    box-shadow: var(--elevation-low);
   }
 
   .user-item.disabled {
@@ -877,6 +884,7 @@
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
+    box-shadow: var(--elevation-low);
   }
 
   .checkbox-row {
@@ -888,7 +896,7 @@
   }
 
   .checkbox-row input[type='checkbox'] {
-    accent-color: var(--amber-500);
+    accent-color: var(--chrome-accent-500);
   }
 
   .form-actions {
@@ -925,6 +933,7 @@
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
+    box-shadow: var(--elevation-low);
   }
 
   .invite-item.dead {
@@ -975,38 +984,38 @@
   }
 
   .badge.admin {
-    background: rgba(251, 191, 36, 0.15);
-    color: var(--amber-400);
+    background: var(--tint-active);
+    color: var(--chrome-accent-400);
   }
 
   .badge.disabled-badge {
-    background: rgba(148, 163, 184, 0.15);
-    color: #94a3b8;
+    background: var(--tint-subtle);
+    color: var(--text-muted);
   }
 
   .badge.you-badge {
-    background: rgba(96, 165, 250, 0.15);
-    color: #60a5fa;
+    background: var(--tint-subtle);
+    color: var(--status-blue);
   }
 
   .badge.active {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+    background: var(--status-green-tint);
+    color: var(--status-green-text);
   }
 
   .badge.revoked {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: var(--status-red-tint);
+    color: var(--status-red);
   }
 
   .badge.expired {
-    background: rgba(251, 146, 60, 0.15);
-    color: #fb923c;
+    background: var(--tint-active);
+    color: var(--chrome-accent-500);
   }
 
   .badge.used-up {
-    background: rgba(148, 163, 184, 0.15);
-    color: #94a3b8;
+    background: var(--tint-subtle);
+    color: var(--text-muted);
   }
 
   .small-btn {
@@ -1024,7 +1033,7 @@
   }
 
   .small-btn:hover:not(:disabled) {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
     color: var(--text-primary);
   }
 
@@ -1034,20 +1043,20 @@
   }
 
   .small-btn.danger:hover:not(:disabled) {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 
   .small-btn.confirm-btn {
-    background: rgba(251, 191, 36, 0.15);
-    border-color: var(--amber-500);
-    color: var(--amber-400);
+    background: var(--tint-active);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-400);
   }
 
   .small-btn.confirm-btn.danger {
-    background: rgba(239, 68, 68, 0.1);
-    border-color: #ef4444;
-    color: #ef4444;
+    background: var(--status-red-tint);
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 
   .acceptors {
@@ -1059,9 +1068,9 @@
 
   .acceptor {
     padding: 1px 6px;
-    background: rgba(59, 130, 246, 0.1);
+    background: var(--tint-subtle);
     border-radius: 3px;
     font-size: 10px;
-    color: #60a5fa;
+    color: var(--status-blue);
   }
 </style>

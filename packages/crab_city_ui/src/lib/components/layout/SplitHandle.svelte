@@ -136,12 +136,11 @@
 
   .split-handle:hover .handle-bar,
   .split-handle.dragging .handle-bar {
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
   }
 
   .split-handle:focus-visible .handle-bar {
-    background: var(--amber-500);
-    box-shadow: 0 0 4px var(--amber-glow);
+    background: var(--chrome-accent-500);
   }
 
   /* Wider hover target — always ±4px, ±8px during drag */

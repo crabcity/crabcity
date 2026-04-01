@@ -118,7 +118,7 @@
 
   .commit-entry.expanded {
     background: var(--tint-active);
-    border-left-color: var(--amber-500);
+    border-left-color: var(--accent-500);
   }
 
   .commit-row {
@@ -131,7 +131,7 @@
     font-family: inherit;
     font-size: 11px;
     font-weight: 700;
-    color: var(--amber-400);
+    color: var(--accent-400);
     flex-shrink: 0;
   }
 
@@ -169,7 +169,7 @@
 
   .ref-pill.branch {
     background: var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--accent-400);
     border: 1px solid var(--tint-selection);
   }
 
@@ -182,7 +182,7 @@
   .commit-diff-summary {
     padding: 4px 0;
     background: var(--surface-800);
-    border-left: 2px solid var(--amber-600);
+    border-left: 2px solid var(--accent-600);
     margin-bottom: 2px;
   }
 
@@ -195,7 +195,7 @@
   }
 
   .stat-add {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
   .stat-del {
     color: var(--text-muted);
@@ -239,7 +239,7 @@
 
   .diff-file-status[data-status='modified'] {
     background: var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
   .diff-file-status[data-status='added'] {
     background: var(--status-green-border);
@@ -269,7 +269,7 @@
   }
 
   .num-add {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
   .num-del {
     color: var(--text-muted);
@@ -285,7 +285,7 @@
     font-family: inherit;
     font-size: 11px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
     text-align: center;
@@ -320,7 +320,7 @@
   .filter-value {
     font-size: 11px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--accent-400);
     padding: 1px 8px;
     background: var(--tint-active-strong);
     border-radius: 3px;
@@ -361,7 +361,7 @@
     width: 20px;
     height: 20px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }

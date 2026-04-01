@@ -33,6 +33,36 @@ else
 fi
 
 echo ""
+echo "=== Chrome accent lint (var(--accent-*) in chrome files) ==="
+# Chrome components must use --chrome-accent-*, not bare --accent-*.
+# Content files (conversations, notebooks, diffs, code views, games) are exempt.
+UI_DIR="packages/crab_city_ui/src"
+ACCENT_HITS=$(grep -rn 'var(--accent-' "$UI_DIR/lib/components/" "$UI_DIR/routes/" \
+    --include='*.svelte' \
+    --exclude-dir='notebook-cell' \
+    --exclude-dir='file-viewer' \
+    --exclude='ConversationView.svelte' \
+    --exclude='ConversationMinimap.svelte' \
+    --exclude='NotebookCell.svelte' \
+    --exclude='SnakeGame.svelte' \
+    --exclude='PaneLanding.svelte' \
+    --exclude='ChatMessageList.svelte' \
+    --exclude='GitLog.svelte' \
+    --exclude='GitStatus.svelte' \
+    --exclude='TaskCard.svelte' \
+    --exclude='InProgressCard.svelte' \
+    --exclude='+layout.svelte' \
+    | grep -v 'chrome-accent' || true)
+if [ -n "$ACCENT_HITS" ]; then
+    echo "ERROR: Found bare var(--accent-*) in chrome component files."
+    echo "Use var(--chrome-accent-*) for UI chrome. Content files are exempt."
+    echo "$ACCENT_HITS"
+    EXIT_CODE=1
+else
+    echo "No issues found."
+fi
+
+echo ""
 echo "=== Summary ==="
 if [ $EXIT_CODE -eq 0 ]; then
     echo "All linters passed."

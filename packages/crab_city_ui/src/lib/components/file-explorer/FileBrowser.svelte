@@ -533,11 +533,11 @@ This may be due to file permissions or security restrictions.`;
 
   .breadcrumb:hover:not(:disabled) {
     background: var(--surface-600);
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .breadcrumb.current {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-weight: 600;
     cursor: default;
   }
@@ -574,8 +574,8 @@ This may be due to file permissions or security restrictions.`;
 
   .toolbar-btn:hover:not(:disabled) {
     background: var(--surface-600);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .toolbar-btn:disabled {
@@ -624,12 +624,12 @@ This may be due to file permissions or security restrictions.`;
   }
 
   .search-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
     box-shadow: 0 0 0 2px var(--tint-focus);
   }
 
   .search-input.recursive {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
     background: var(--tint-hover);
   }
 
@@ -690,7 +690,7 @@ This may be due to file permissions or security restrictions.`;
 
   .file-entry.selected {
     background: var(--tint-active-strong);
-    border-left-color: var(--amber-500);
+    border-left-color: var(--chrome-accent-500);
   }
 
   .file-entry.directory {
@@ -727,7 +727,7 @@ This may be due to file permissions or security restrictions.`;
 
   .entry-name :global(mark.match) {
     background: var(--tint-selection);
-    color: var(--amber-300);
+    color: var(--chrome-accent-300);
     border-radius: 2px;
     padding: 0 1px;
     font-weight: 600;
@@ -773,7 +773,7 @@ This may be due to file permissions or security restrictions.`;
 
   .git-badge[data-status='M'] {
     background: var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
   .git-badge[data-status='A'] {
     background: var(--status-green-border);
@@ -804,7 +804,7 @@ This may be due to file permissions or security restrictions.`;
     line-height: 1;
     border-radius: 8px;
     background: var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     flex-shrink: 0;
   }
 
@@ -825,7 +825,7 @@ This may be due to file permissions or security restrictions.`;
     width: 20px;
     height: 20px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -852,7 +852,7 @@ This may be due to file permissions or security restrictions.`;
     background: var(--surface-700);
     border: 1px solid var(--surface-border);
     border-radius: 4px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
@@ -862,7 +862,7 @@ This may be due to file permissions or security restrictions.`;
 
   .retry-btn:hover {
     background: var(--surface-600);
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   /* Match count indicator */
@@ -878,7 +878,7 @@ This may be due to file permissions or security restrictions.`;
   }
 
   .match-count.truncated {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   /* Scrollbar */
@@ -896,7 +896,7 @@ This may be due to file permissions or security restrictions.`;
   }
 
   .file-list::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
   }
 
   /* Mobile */

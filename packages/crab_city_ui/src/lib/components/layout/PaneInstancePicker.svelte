@@ -139,8 +139,8 @@
 
   .instance-btn:hover {
     background: var(--surface-600);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
   }
 
   .instance-name {
@@ -165,9 +165,9 @@
     width: 100%;
     padding: 8px 12px;
     background: transparent;
-    border: 1px dashed var(--amber-600);
+    border: 1px dashed var(--chrome-accent-600);
     border-radius: 3px;
-    color: var(--amber-500);
+    color: var(--chrome-accent-500);
     font-family: inherit;
     font-size: 11px;
     font-weight: 600;
@@ -179,7 +179,7 @@
 
   .new-btn:hover {
     background: var(--surface-700);
-    border-color: var(--amber-400);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-400);
+    color: var(--chrome-accent-400);
   }
 </style>

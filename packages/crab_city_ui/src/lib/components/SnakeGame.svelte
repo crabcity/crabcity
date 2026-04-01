@@ -20,19 +20,31 @@
   const TICK_MS = 120;
   const FOOD_COUNT = 3;
 
-  // Player colors — amber phosphor palette
-  // No red — that's the food color
-  const PLAYER_COLORS = [
-    '#fb923c', // amber
-    '#8b5cf6', // purple
-    '#22c55e', // green
-    '#3b82f6', // blue
-    '#f59e0b', // yellow
-    '#ec4899', // pink
-    '#14b8a6', // teal
-    '#f97316' // orange
-  ];
-  const FOOD_COLOR = '#ef4444';
+  // Read a CSS variable from the active theme, with fallback
+  function cssVar(name: string, fallback: string): string {
+    if (typeof document === 'undefined') return fallback;
+    return getComputedStyle(document.body).getPropertyValue(name).trim() || fallback;
+  }
+
+  // Player colors — read from theme accent/status palette
+  function getPlayerColors(): string[] {
+    return [
+      cssVar('--accent-500', '#fb923c'),
+      cssVar('--thinking-500', '#8b5cf6'),
+      cssVar('--status-green', '#22c55e'),
+      cssVar('--status-blue', '#60a5fa'),
+      cssVar('--status-yellow', '#fbbf24'),
+      cssVar('--thinking-400', '#a78bfa'),
+      cssVar('--accent-400', '#fdba74'),
+      cssVar('--accent-600', '#d97706')
+    ];
+  }
+  function getFoodColor(): string {
+    return cssVar('--status-red', '#ef4444');
+  }
+
+  let PLAYER_COLORS = getPlayerColors();
+  let FOOD_COLOR = getFoodColor();
 
   type Dir = 'up' | 'down' | 'left' | 'right';
   type Pt = [number, number];
@@ -537,11 +549,11 @@
     const h = GRID_H * cs;
 
     // Background
-    ctx.fillStyle = '#0a0806';
+    ctx.fillStyle = cssVar('--surface-900', '#0a0806');
     ctx.fillRect(0, 0, w, h);
 
     // Grid lines (very subtle)
-    ctx.strokeStyle = 'rgba(160, 128, 96, 0.06)';
+    ctx.strokeStyle = cssVar('--tint-subtle', 'rgba(160, 128, 96, 0.06)');
     ctx.lineWidth = 1;
     for (let x = 0; x <= GRID_W; x++) {
       ctx.beginPath();
@@ -578,25 +590,26 @@
 
     // Death overlay
     if (mySnake && !mySnake.alive) {
-      ctx.fillStyle = 'rgba(10, 8, 6, 0.65)';
+      ctx.fillStyle = cssVar('--backdrop', 'rgba(10, 8, 6, 0.65)');
       ctx.fillRect(0, 0, w, h);
 
-      ctx.fillStyle = '#ef4444';
-      ctx.shadowColor = '#ef4444';
+      const redColor = getFoodColor();
+      ctx.fillStyle = redColor;
+      ctx.shadowColor = redColor;
       ctx.shadowBlur = 20;
       ctx.font = `bold ${Math.max(14, cs)}px "SF Mono", Consolas, monospace`;
       ctx.textAlign = 'center';
       ctx.fillText('GAME OVER', w / 2, h / 2 - cs);
       ctx.shadowBlur = 0;
 
-      ctx.fillStyle = '#a08060';
+      ctx.fillStyle = cssVar('--text-secondary', '#a08060');
       ctx.font = `${Math.max(10, cs * 0.7)}px "SF Mono", Consolas, monospace`;
       ctx.fillText(`Score: ${mySnake.score}`, w / 2, h / 2 + 4);
       ctx.fillText('Press SPACE to respawn', w / 2, h / 2 + cs + 8);
     }
 
     // Scanline overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.03)';
+    ctx.fillStyle = cssVar('--ambient-tint', 'rgba(0, 0, 0, 0.03)');
     for (let y = 0; y < h; y += 4) {
       ctx.fillRect(0, y, w, 2);
     }
@@ -701,10 +714,7 @@
     font-size: 32px;
     font-weight: 800;
     letter-spacing: 0.3em;
-    color: var(--amber-400);
-    text-shadow:
-      0 0 30px var(--amber-glow),
-      0 0 60px rgba(251, 146, 60, 0.2);
+    color: var(--chrome-accent-400);
   }
 
   .lobby-sub {
@@ -716,22 +726,20 @@
   .play-btn {
     margin-top: 8px;
     padding: 12px 48px;
-    background: linear-gradient(180deg, rgba(251, 146, 60, 0.2) 0%, rgba(251, 146, 60, 0.08) 100%);
-    border: 1px solid var(--amber-600);
+    background: linear-gradient(180deg, var(--tint-focus) 0%, var(--tint-hover) 100%);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-family: inherit;
     font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.15em;
     cursor: pointer;
     transition: all 0.15s ease;
-    text-shadow: 0 0 10px var(--amber-glow);
   }
 
   .play-btn:hover:not(:disabled) {
-    background: linear-gradient(180deg, rgba(251, 146, 60, 0.35) 0%, rgba(251, 146, 60, 0.15) 100%);
-    box-shadow: 0 0 20px rgba(251, 146, 60, 0.25);
+    background: linear-gradient(180deg, var(--tint-selection) 0%, var(--tint-active-strong) 100%);
   }
 
   .play-btn:disabled {
@@ -784,11 +792,9 @@
   canvas {
     display: block;
     image-rendering: pixelated;
-    border: 1px solid rgba(160, 128, 96, 0.2);
+    border: 1px solid var(--surface-border);
     border-radius: 2px;
-    box-shadow:
-      0 0 30px rgba(0, 0, 0, 0.5),
-      inset 0 0 20px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--depth-down);
   }
 
   /* ---- Scoreboard ---- */
@@ -802,8 +808,8 @@
     gap: 4px;
     min-width: 120px;
     padding: 8px 10px;
-    background: rgba(10, 8, 6, 0.85);
-    border: 1px solid rgba(160, 128, 96, 0.15);
+    background: var(--backdrop);
+    border: 1px solid var(--surface-border);
     border-radius: 2px;
     font-family: 'SF Mono', Consolas, monospace;
   }
@@ -837,7 +843,7 @@
 
   .score-val {
     font-weight: 700;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     min-width: 16px;
     text-align: right;
   }

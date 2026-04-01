@@ -52,15 +52,17 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
     flex-shrink: 0;
     opacity: 0;
-    transition: opacity 0.15s ease, box-shadow 0.15s ease;
+    transition:
+      opacity 0.15s ease,
+      box-shadow 0.15s ease;
   }
 
   .dirty-dot.visible {
     opacity: 1;
-    box-shadow: 0 0 4px var(--amber-glow);
+    box-shadow: 0 0 4px var(--chrome-accent-500);
   }
 
   .field-info {
@@ -102,7 +104,7 @@
     text-transform: uppercase;
     padding: 1px 5px;
     border-radius: 3px;
-    background: rgba(148, 163, 184, 0.1);
+    background: var(--tint-subtle);
     color: var(--text-muted);
     flex-shrink: 0;
     min-width: 56px;
@@ -110,7 +112,7 @@
   }
 
   .provenance-badge.ephemeral {
-    background: rgba(245, 158, 11, 0.12);
-    color: var(--amber-400);
+    background: var(--tint-active);
+    color: var(--chrome-accent-400);
   }
 </style>

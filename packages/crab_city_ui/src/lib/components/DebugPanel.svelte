@@ -188,16 +188,16 @@
     position: fixed;
     bottom: 1rem;
     right: 1rem;
-    background: var(--surface-900, #1a1a1a);
-    border: 1px solid var(--amber-600, #d97706);
+    background: var(--surface-900);
+    border: 1px solid var(--chrome-accent-600);
     border-radius: 4px;
     padding: 12px;
     font-size: 11px;
-    font-family: var(--font-mono, monospace);
+    font-family: var(--font-mono);
     z-index: 9999;
     min-width: 200px;
     max-width: 280px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow-dropdown);
   }
 
   .debug-panel.dragged {
@@ -211,7 +211,7 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--amber-400, #fbbf24);
+    color: var(--chrome-accent-400);
     cursor: grab;
     user-select: none;
     touch-action: none;
@@ -224,7 +224,7 @@
   section {
     margin-bottom: 10px;
     padding-bottom: 8px;
-    border-bottom: 1px solid var(--surface-border, #333);
+    border-bottom: 1px solid var(--surface-border);
   }
 
   section:last-of-type {
@@ -238,7 +238,7 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--amber-500, #f59e0b);
+    color: var(--chrome-accent-500);
   }
 
   .metric {
@@ -248,16 +248,16 @@
   }
 
   .label {
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
   }
 
   .value {
-    color: var(--text-secondary, #999);
+    color: var(--text-secondary);
     font-weight: 500;
   }
 
   .value.warning {
-    color: var(--red-400, #f87171);
+    color: var(--status-red-text);
   }
 
   .error-toggle {
@@ -265,7 +265,7 @@
     border: none;
     padding: 0;
     cursor: pointer;
-    color: var(--red-400, #f87171);
+    color: var(--status-red-text);
     font: inherit;
     font-weight: 500;
   }
@@ -277,7 +277,7 @@
     max-height: 6em;
     overflow-y: auto;
     font-size: 9px;
-    color: var(--red-400, #f87171);
+    color: var(--status-red-text);
   }
 
   .error-log li {
@@ -294,30 +294,30 @@
 
   .backend-btn {
     background: none;
-    border: 1px solid var(--surface-border, #333);
+    border: 1px solid var(--surface-border);
     border-radius: 3px;
     padding: 1px 6px;
     cursor: pointer;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     font: inherit;
     font-size: 9px;
     transition: all 0.1s ease;
   }
 
   .backend-btn:hover {
-    border-color: var(--amber-600, #d97706);
-    color: var(--text-secondary, #999);
+    border-color: var(--chrome-accent-600);
+    color: var(--text-secondary);
   }
 
   .backend-btn.active {
-    border-color: var(--amber-500, #f59e0b);
-    color: var(--amber-400, #fbbf24);
-    background: rgba(245, 158, 11, 0.1);
+    border-color: var(--chrome-accent-500);
+    color: var(--chrome-accent-400);
+    background: var(--tint-active);
   }
 
   .hint {
     font-size: 9px;
-    color: var(--text-muted, #666);
+    color: var(--text-muted);
     text-align: center;
     margin-top: 4px;
   }

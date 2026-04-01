@@ -82,7 +82,7 @@
   h1 {
     margin: 0 0 4px;
     font-size: 1.4em;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .subtitle {
@@ -92,7 +92,7 @@
   }
 
   .subtitle.success {
-    color: #10b981;
+    color: var(--status-green-text);
   }
 
   .redirect-note {
@@ -103,17 +103,17 @@
   .error {
     padding: 8px 12px;
     margin-bottom: 16px;
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-border);
     border-radius: 4px;
-    color: #ef4444;
+    color: var(--status-red);
     font-size: 0.85em;
   }
 
   .back-link {
     display: inline-block;
     margin-top: 12px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
     font-size: 0.85em;
   }
@@ -126,7 +126,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     margin: 0 auto;
     animation: spin 0.6s linear infinite;

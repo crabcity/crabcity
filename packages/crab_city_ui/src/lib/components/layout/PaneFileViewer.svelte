@@ -264,7 +264,7 @@
     width: 20px;
     height: 20px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--chrome-accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -311,7 +311,7 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.05em;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -339,7 +339,7 @@
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--purple-400);
+    color: var(--thinking-400);
     flex-shrink: 0;
   }
 
@@ -375,7 +375,7 @@
   }
 
   .viewer-btn.active {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .viewer-btn svg {
@@ -402,6 +402,6 @@
     border-radius: 3px;
   }
   .viewer-content::-webkit-scrollbar-thumb:hover {
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
   }
 </style>

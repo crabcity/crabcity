@@ -299,8 +299,8 @@
   }
 
   .status-icon:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .status-icon.in-progress {
@@ -374,8 +374,8 @@
   }
 
   .priority-pill.med {
-    background: rgba(251, 191, 36, 0.1);
-    border: 1px solid rgba(251, 191, 36, 0.25);
+    background: var(--tint-active);
+    border: 1px solid var(--status-yellow-border);
     color: var(--status-yellow);
   }
 
@@ -458,8 +458,8 @@
 
   .instance-link {
     cursor: pointer;
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     font-family: inherit;
     font-size: 10px;
     font-weight: 600;
@@ -468,7 +468,7 @@
 
   .instance-link:hover {
     background: var(--tint-active-strong);
-    color: var(--amber-300);
+    color: var(--accent-300);
   }
 
   .edit-title-input,
@@ -476,7 +476,7 @@
     width: 100%;
     padding: 4px 8px;
     background: var(--surface-800);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     color: var(--text-primary);
     font-size: 13px;
@@ -525,8 +525,8 @@
   }
 
   .action-btn.send-btn:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
     background: var(--tint-active);
   }
 

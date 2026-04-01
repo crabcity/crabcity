@@ -33,36 +33,97 @@
 
   let { instanceId: propInstanceId, paneId }: Props = $props();
 
-  const phosphorTheme = {
-    background: '#0a0806',
-    foreground: '#fdba74',
-    cursor: '#fb923c',
-    cursorAccent: '#0a0806',
-    selectionBackground: 'rgba(251, 146, 60, 0.3)',
-    black: '#15110d',
-    red: '#ef4444',
-    green: '#22c55e',
-    yellow: '#fbbf24',
-    blue: '#60a5fa',
-    magenta: '#a78bfa',
-    cyan: '#22d3ee',
-    white: '#fdba74'
-  };
-
-  const analogTheme = {
-    background: '#faf7f0',
-    foreground: '#1a1714',
-    cursor: '#6e3b1a',
-    cursorAccent: '#faf7f0',
-    selectionBackground: 'rgba(220, 190, 100, 0.3)',
-    black: '#1a1714',
-    red: '#943030',
-    green: '#2a6e3a',
-    yellow: '#7a6520',
-    blue: '#2e4a6e',
-    magenta: '#5a3060',
-    cyan: '#2a5a5a',
-    white: '#faf7f0'
+  const xtermThemes: Record<string, Record<string, string>> = {
+    phosphor: {
+      background: '#0a0806',
+      foreground: '#fdba74',
+      cursor: '#fb923c',
+      cursorAccent: '#0a0806',
+      selectionBackground: 'rgba(251, 146, 60, 0.3)',
+      black: '#15110d',
+      red: '#ef4444',
+      green: '#22c55e',
+      yellow: '#fbbf24',
+      blue: '#60a5fa',
+      magenta: '#a78bfa',
+      cyan: '#22d3ee',
+      white: '#fdba74'
+    },
+    analog: {
+      background: '#faf7f0',
+      foreground: '#1a1714',
+      cursor: '#6e3b1a',
+      cursorAccent: '#faf7f0',
+      selectionBackground: 'rgba(220, 190, 100, 0.3)',
+      black: '#1a1714',
+      red: '#943030',
+      green: '#2a6e3a',
+      yellow: '#7a6520',
+      blue: '#2e4a6e',
+      magenta: '#5a3060',
+      cyan: '#2a5a5a',
+      white: '#faf7f0'
+    },
+    'solarized-dark': {
+      background: '#002b36',
+      foreground: '#839496',
+      cursor: '#b58900',
+      cursorAccent: '#002b36',
+      selectionBackground: 'rgba(181, 137, 0, 0.3)',
+      black: '#073642',
+      red: '#dc322f',
+      green: '#859900',
+      yellow: '#b58900',
+      blue: '#268bd2',
+      magenta: '#d33682',
+      cyan: '#2aa198',
+      white: '#eee8d5'
+    },
+    'solarized-light': {
+      background: '#fdf6e3',
+      foreground: '#586e75',
+      cursor: '#b58900',
+      cursorAccent: '#fdf6e3',
+      selectionBackground: 'rgba(181, 137, 0, 0.2)',
+      black: '#073642',
+      red: '#dc322f',
+      green: '#859900',
+      yellow: '#b58900',
+      blue: '#268bd2',
+      magenta: '#d33682',
+      cyan: '#2aa198',
+      white: '#eee8d5'
+    },
+    darcula: {
+      background: '#2b2b2b',
+      foreground: '#a9b7c6',
+      cursor: '#cc7832',
+      cursorAccent: '#2b2b2b',
+      selectionBackground: 'rgba(33, 66, 131, 0.45)',
+      black: '#3c3f41',
+      red: '#cf6a4c',
+      green: '#6a8759',
+      yellow: '#bbb529',
+      blue: '#6897bb',
+      magenta: '#9876aa',
+      cyan: '#629755',
+      white: '#a9b7c6'
+    },
+    'intellij-light': {
+      background: '#ffffff',
+      foreground: '#080808',
+      cursor: '#2470c0',
+      cursorAccent: '#ffffff',
+      selectionBackground: 'rgba(36, 112, 192, 0.2)',
+      black: '#080808',
+      red: '#c7222d',
+      green: '#067d17',
+      yellow: '#9e880d',
+      blue: '#0033b3',
+      magenta: '#871094',
+      cyan: '#00627a',
+      white: '#f0f0f0'
+    }
   };
 
   let terminalEl: HTMLDivElement;
@@ -181,7 +242,7 @@
         fontSize: settings.terminalFontSize,
         fontFamily: settings.terminalFontFamily,
         allowProposedApi: true, // Required for clipboard addon
-        theme: currentTheme === 'analog' ? analogTheme : phosphorTheme
+        theme: xtermThemes[currentTheme] ?? xtermThemes.phosphor
       });
 
       fitAddon = new FitAddon();
@@ -254,7 +315,7 @@
   // React to theme changes — swap xterm color palette
   const themeUnsubscribe = theme.subscribe((t) => {
     if (!terminal) return;
-    terminal.options.theme = t === 'analog' ? analogTheme : phosphorTheme;
+    terminal.options.theme = xtermThemes[t] ?? xtermThemes.phosphor;
   });
 
   // React to font setting changes
@@ -415,7 +476,7 @@
     width: 14px;
     height: 14px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -457,7 +518,7 @@
   .status-banner.info {
     background: var(--tint-active-strong);
     border-bottom: 1px solid var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .status-banner svg {
@@ -499,7 +560,7 @@
     border-radius: 4px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .lock-banner {
@@ -542,7 +603,7 @@
     font-family: inherit;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
   }
@@ -575,7 +636,7 @@
     font-weight: 600;
     font-family: inherit;
     letter-spacing: 0.1em;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     cursor: pointer;
     z-index: 10;
     transition: all 0.15s ease;
@@ -599,7 +660,7 @@
 
   /* Terminal cursor glow */
   .terminal-container :global(.xterm-cursor-block) {
-    box-shadow: 0 0 8px var(--amber-500);
+    box-shadow: 0 0 8px var(--chrome-accent-500);
   }
 
   /* Mobile responsive */

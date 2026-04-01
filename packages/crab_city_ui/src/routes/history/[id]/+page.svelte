@@ -447,9 +447,9 @@
   }
 
   .back-link:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
-    background: rgba(251, 146, 60, 0.1);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
+    background: var(--tint-active);
   }
 
   .back-link svg {
@@ -463,8 +463,7 @@
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.05em;
-    color: var(--amber-400);
-    text-shadow: 0 0 15px var(--amber-glow);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -475,15 +474,15 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 20px;
-    background: rgba(239, 68, 68, 0.1);
-    border-bottom: 1px solid rgba(239, 68, 68, 0.2);
-    color: #f87171;
+    background: var(--status-red-tint);
+    border-bottom: 1px solid var(--status-red-border);
+    color: var(--status-red-text);
     font-size: 12px;
     font-weight: 600;
   }
 
   .error-link {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 
@@ -527,7 +526,7 @@
     width: 24px;
     height: 24px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     margin-bottom: 16px;

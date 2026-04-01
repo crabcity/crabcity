@@ -195,8 +195,8 @@
 
   .tools-collapsed-toggle:hover {
     background: var(--surface-600);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .tools-count {
@@ -223,7 +223,7 @@
 
   .tools-collapse-toggle:hover {
     opacity: 1;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* File path label on file operation tools */
@@ -251,7 +251,7 @@
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.05em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     cursor: pointer;
     transition: all 0.15s ease;
     font-family: inherit;
@@ -259,7 +259,7 @@
 
   .tool-badge:hover {
     background: var(--surface-600);
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     box-shadow: var(--elevation-low);
   }
 
@@ -269,18 +269,18 @@
   }
 
   .tool-badge.expanded {
-    border-color: var(--amber-500);
+    border-color: var(--accent-500);
     background: var(--surface-600);
     text-shadow: var(--emphasis);
   }
 
   /* File operation tool badges */
   .tool-badge.file-tool {
-    border-left: 2px solid var(--amber-500);
+    border-left: 2px solid var(--accent-500);
   }
 
   .tool-badge.file-tool:hover {
-    border-left-color: var(--amber-400);
+    border-left-color: var(--accent-400);
     text-shadow: var(--emphasis);
   }
 
@@ -304,7 +304,7 @@
   /* ── Expanded detail panel ─────────────────────────── */
 
   .tool-detail-panel {
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     background: var(--surface-800);
     overflow: hidden;
@@ -312,7 +312,7 @@
   }
 
   .tool-detail-panel.error-panel {
-    border-color: #dc2626;
+    border-color: var(--status-red);
   }
 
   .detail-section {
@@ -337,7 +337,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
     margin-bottom: 3px;
   }
 
@@ -360,7 +360,7 @@
     padding: 0;
     font-family: inherit;
     font-size: 11px;
-    color: var(--amber-400);
+    color: var(--accent-400);
     cursor: pointer;
     text-decoration: underline;
     text-decoration-style: dotted;
@@ -368,7 +368,7 @@
   }
 
   button.detail-value.clickable:hover {
-    color: var(--amber-300);
+    color: var(--accent-300);
     text-shadow: var(--emphasis);
   }
 
@@ -383,11 +383,11 @@
   }
 
   .output-section.error-output {
-    border-top-color: #dc2626;
+    border-top-color: var(--status-red);
   }
 
   .output-section.error-output .detail-label {
-    color: #ef4444;
+    color: var(--status-red-text);
   }
 
   .detail-output {
@@ -403,7 +403,7 @@
   }
 
   .output-section.error-output .detail-output {
-    color: #fca5a5;
+    color: var(--status-red-muted);
   }
 
   /* Scanline overlay on output — denser than main display */
@@ -415,8 +415,8 @@
       0deg,
       transparent,
       transparent 2px,
-      rgba(0, 0, 0, 0.03) 2px,
-      rgba(0, 0, 0, 0.03) 4px
+      var(--scanline-color) 2px,
+      var(--scanline-color) 4px
     );
     pointer-events: none;
     border-radius: 2px;
@@ -448,7 +448,7 @@
 
   .agent-log-arrow {
     flex-shrink: 0;
-    color: var(--amber-400);
+    color: var(--accent-400);
     font-size: 10px;
     width: 14px;
     text-align: center;
@@ -519,7 +519,7 @@
     background-image: var(--grain-fine);
     background-blend-mode: multiply;
     border-width: 1.5px;
-    box-shadow: 0 1px 2px rgba(42, 31, 24, 0.06);
+    box-shadow: var(--elevation-low);
   }
 
   :global([data-theme='analog']) .tool-detail-panel {

@@ -132,7 +132,7 @@
     border: 1px solid var(--surface-border);
     border-bottom: none;
     border-radius: 4px 4px 0 0;
-    box-shadow: var(--shadow-dropdown, 0 -4px 16px rgba(0, 0, 0, 0.3));
+    box-shadow: var(--shadow-dropdown);
     z-index: 100;
     max-height: 400px;
     display: flex;
@@ -171,12 +171,12 @@
   }
 
   .hs-result:hover {
-    background: rgba(251, 146, 60, 0.04);
+    background: var(--tint-subtle);
   }
 
   .hs-result.selected {
-    background: rgba(251, 146, 60, 0.1);
-    border-left: 2px solid var(--amber-500);
+    background: var(--tint-active);
+    border-left: 2px solid var(--chrome-accent-500);
     padding-left: 12px;
   }
 
@@ -200,7 +200,7 @@
   }
 
   .hs-result.selected .hs-result-title {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .hs-result-time {
@@ -235,11 +235,11 @@
   }
 
   .hs-snippet-text :global(mark) {
-    background: rgba(251, 146, 60, 0.25);
-    color: var(--amber-300);
+    background: var(--tint-selection);
+    color: var(--chrome-accent-300);
     border-radius: 2px;
     padding: 0 2px;
-    box-shadow: 0 0 6px rgba(251, 146, 60, 0.3);
+    box-shadow: var(--emphasis);
   }
 
   .hs-truncated {
@@ -302,7 +302,7 @@
     width: 12px;
     height: 12px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-500);
+    border-top-color: var(--chrome-accent-500);
     border-radius: 50%;
     animation: hs-spin 0.8s linear infinite;
   }

@@ -86,7 +86,7 @@
   }
 
   .pane-host.focused {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .pane-content {

@@ -211,7 +211,7 @@
 
 <style>
   .question-card {
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 4px;
     background: var(--surface-800);
     overflow: hidden;
@@ -219,8 +219,8 @@
   }
 
   .question-card.pending {
-    border-color: var(--amber-500);
-    box-shadow: 0 0 12px rgba(251, 146, 60, 0.08);
+    border-color: var(--accent-500);
+    box-shadow: var(--elevation-low);
   }
 
   .question-card.resolved {
@@ -264,19 +264,19 @@
 
   .question-tab:hover {
     background: var(--surface-600);
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--accent-600);
+    color: var(--accent-400);
   }
 
   .question-tab.tab-active {
     background: var(--tint-active);
-    border-color: var(--amber-500);
-    color: var(--amber-400);
+    border-color: var(--accent-500);
+    color: var(--accent-400);
   }
 
   .question-tab.tab-answered {
-    border-color: var(--status-green, #22c55e);
-    color: var(--status-green-text, var(--status-green, #22c55e));
+    border-color: var(--status-green);
+    color: var(--status-green-text);
   }
 
   .question-tab.tab-answered.tab-active {
@@ -310,7 +310,7 @@
 
   .toggle-raw:hover {
     background: var(--surface-500);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   /* ── Raw view ─────────────────────────────── */
@@ -331,7 +331,7 @@
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .raw-field {
@@ -381,13 +381,13 @@
     display: inline-block;
     padding: 2px 8px;
     background: var(--tint-active);
-    border: 1px solid var(--amber-600);
+    border: 1px solid var(--accent-600);
     border-radius: 3px;
     font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.15em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .multi-badge {
@@ -429,7 +429,7 @@
   }
 
   .option.first-option {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     background: var(--tint-active);
   }
 
@@ -444,7 +444,7 @@
   }
 
   .first-option .option-number {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .option-body {
@@ -462,7 +462,7 @@
   }
 
   .first-option .option-label {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .option-desc {
@@ -474,16 +474,16 @@
   /* ── Resolved selection states ─────────────── */
 
   .option.selected-option {
-    border-color: var(--amber-600);
+    border-color: var(--accent-600);
     background: var(--tint-active);
   }
 
   .option.selected-option .option-number {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .option.selected-option .option-label {
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .option.unselected-option {
@@ -521,7 +521,7 @@
     gap: 8px;
     padding: 8px 14px;
     border: none;
-    border-top: 1px solid var(--amber-600);
+    border-top: 1px solid var(--accent-600);
     border-radius: 0;
     background: var(--tint-active);
     width: 100%;
@@ -531,7 +531,7 @@
   }
 
   .pending-banner:hover {
-    background: var(--amber-600);
+    background: var(--accent-600);
   }
 
   .pending-icon {
@@ -544,7 +544,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   @keyframes card-on {

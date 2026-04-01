@@ -138,12 +138,12 @@
   }
 
   .action-chip.warning {
-    border-color: var(--amber-500);
-    background: color-mix(in srgb, var(--amber-500) 8%, var(--surface-600));
+    border-color: var(--chrome-accent-500);
+    background: color-mix(in srgb, var(--chrome-accent-500) 8%, var(--surface-600));
   }
 
   .action-chip.warning:hover {
-    background: color-mix(in srgb, var(--amber-500) 15%, var(--surface-600));
+    background: color-mix(in srgb, var(--chrome-accent-500) 15%, var(--surface-600));
   }
 
   /* === Hierarchy: verb > name > context === */
@@ -163,7 +163,7 @@
     color: var(--status-red);
   }
   .warning .chip-verb {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   /* TARGET — secondary context. Name + optional turn count. */

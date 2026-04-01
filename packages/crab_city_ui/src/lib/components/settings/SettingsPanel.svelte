@@ -165,8 +165,9 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--text-primary);
+    text-shadow: var(--emphasis-strong);
     margin: 0 0 16px 0;
     padding-bottom: 8px;
-    border-bottom: 2px solid var(--amber-500);
+    border-bottom: 2px solid var(--chrome-accent-500);
   }
 </style>

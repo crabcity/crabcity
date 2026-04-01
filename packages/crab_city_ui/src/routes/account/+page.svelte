@@ -366,13 +366,13 @@
   }
 
   .back-link:hover {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   h1 {
     margin: 0 0 20px;
     font-size: 1.4em;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-align: center;
   }
 
@@ -407,10 +407,10 @@
     display: inline-block;
     margin-top: 8px;
     padding: 2px 8px;
-    background: rgba(251, 146, 60, 0.15);
-    border: 1px solid rgba(251, 146, 60, 0.3);
+    background: var(--tint-active-strong);
+    border: 1px solid var(--tint-selection);
     border-radius: 3px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-size: 0.75em;
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -425,20 +425,20 @@
   .error {
     padding: 8px 12px;
     margin-bottom: 16px;
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: var(--status-red-tint);
+    border: 1px solid var(--status-red-border);
     border-radius: 4px;
-    color: #ef4444;
+    color: var(--status-red);
     font-size: 0.85em;
   }
 
   .success {
     padding: 8px 12px;
     margin-bottom: 16px;
-    background: rgba(16, 185, 129, 0.15);
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    background: var(--status-green-tint);
+    border: 1px solid var(--status-green-border);
     border-radius: 4px;
-    color: #10b981;
+    color: var(--status-green-text);
     font-size: 0.85em;
   }
 
@@ -473,12 +473,12 @@
 
   input:focus {
     outline: none;
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   button[type='submit'] {
     padding: 10px;
-    background: var(--amber-600);
+    background: var(--chrome-accent-600);
     border: none;
     border-radius: 4px;
     color: var(--surface-900);
@@ -490,7 +490,7 @@
   }
 
   button[type='submit']:hover:not(:disabled) {
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
   }
 
   button[type='submit']:disabled {
@@ -511,8 +511,8 @@
   }
 
   .logout-btn:hover {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 
   .footer-link {
@@ -523,7 +523,7 @@
   }
 
   .footer-link a {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     text-decoration: none;
   }
 
@@ -600,23 +600,23 @@
   }
 
   .badge.active {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+    background: var(--status-green-tint);
+    color: var(--status-green-text);
   }
 
   .badge.revoked {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    background: var(--status-red-tint);
+    color: var(--status-red);
   }
 
   .badge.expired {
-    background: rgba(251, 146, 60, 0.15);
-    color: #fb923c;
+    background: var(--tint-active-strong);
+    color: var(--chrome-accent-500);
   }
 
   .badge.used-up {
-    background: rgba(148, 163, 184, 0.15);
-    color: #94a3b8;
+    background: var(--tint-hover);
+    color: var(--text-muted);
   }
 
   .invite-actions {
@@ -636,13 +636,13 @@
   }
 
   .small-btn:hover {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
     color: var(--text-primary);
   }
 
   .small-btn.danger:hover {
-    border-color: #ef4444;
-    color: #ef4444;
+    border-color: var(--status-red);
+    color: var(--status-red);
   }
 
   .acceptors {
@@ -654,9 +654,9 @@
 
   .acceptor {
     padding: 2px 8px;
-    background: rgba(59, 130, 246, 0.1);
+    background: var(--status-blue-tint);
     border-radius: 3px;
     font-size: 0.7em;
-    color: #60a5fa;
+    color: var(--status-blue);
   }
 </style>

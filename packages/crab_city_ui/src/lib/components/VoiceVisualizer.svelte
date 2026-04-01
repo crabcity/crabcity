@@ -28,6 +28,23 @@
   const DECAY_HI = 0.995;
   const DECAY_LO = 0.94;
 
+  // Read a CSS variable from the active theme, with fallback
+  function cssVar(name: string, fallback: string): string {
+    if (typeof document === 'undefined') return fallback;
+    return getComputedStyle(document.body).getPropertyValue(name).trim() || fallback;
+  }
+
+  // Parse a hex color (#rrggbb or #rgb) into [r, g, b]
+  function hexToRgb(hex: string): [number, number, number] {
+    const h = hex.replace('#', '');
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+  }
+
+  // Theme-derived phosphor colors: dim ember (bottom) and hot amber (top)
+  const [loR, loG, loB] = hexToRgb(cssVar('--accent-600', '#d97706'));
+  const [hiR, hiG, hiB] = hexToRgb(cssVar('--accent-500', '#fb923c'));
+
   // 2D phosphor grid: each cell has its own brightness 0–1
   const phosphor: Float32Array[] = Array.from({ length: BAR_COUNT }, () => new Float32Array(ROWS));
 
@@ -103,11 +120,11 @@
           // Position in column: 0 = bottom, 1 = top
           const pos = 1 - r / (ROWS - 1);
 
-          // Gradient by position: bottom=brown ember, mid=warm orange, top=hot amber
-          // Lerp RGB base colors across the column
-          const baseR = Math.floor(160 + pos * 85); // 160 → 245
-          const baseG = Math.floor(65 + pos * 115); // 65 → 180
-          const baseB = Math.floor(10 + pos * 100); // 10 → 110
+          // Gradient by position: bottom=dim ember, mid=warm orange, top=hot amber
+          // Lerp between theme-derived low (--accent-600) and high (--accent-500)
+          const baseR = Math.floor(loR + pos * (hiR - loR));
+          const baseG = Math.floor(loG + pos * (hiG - loG));
+          const baseB = Math.floor(loB + pos * (hiB - loB));
 
           if (isTip) {
             // Hot tip — extra bright leading edge

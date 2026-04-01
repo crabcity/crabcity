@@ -88,9 +88,9 @@
   }
 
   .conversation-card:hover {
-    background: linear-gradient(180deg, rgba(251, 146, 60, 0.08) 0%, rgba(251, 146, 60, 0.04) 100%);
-    border-color: var(--amber-600);
-    box-shadow: 0 0 15px rgba(251, 146, 60, 0.1);
+    background: linear-gradient(180deg, var(--tint-active) 0%, var(--tint-hover) 100%);
+    border-color: var(--chrome-accent-600);
+    box-shadow: 0 0 15px var(--tint-active);
   }
 
   .search-result-card {
@@ -132,19 +132,18 @@
   }
 
   .conversation-card:hover .card-title {
-    color: var(--amber-400);
-    text-shadow: 0 0 10px var(--amber-glow);
+    color: var(--chrome-accent-400);
   }
 
   .match-badge {
     flex-shrink: 0;
     padding: 2px 8px;
-    background: rgba(251, 146, 60, 0.15);
-    border: 1px solid rgba(251, 146, 60, 0.3);
+    background: var(--tint-active-strong);
+    border: 1px solid var(--tint-selection);
     border-radius: 10px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     white-space: nowrap;
   }
 
@@ -198,11 +197,11 @@
   }
 
   .snippet-text :global(mark) {
-    background: rgba(251, 146, 60, 0.25);
-    color: var(--amber-300);
+    background: var(--tint-focus);
+    color: var(--chrome-accent-300);
     border-radius: 2px;
     padding: 0 2px;
-    box-shadow: 0 0 6px rgba(251, 146, 60, 0.3);
+    box-shadow: 0 0 6px var(--tint-selection);
   }
 
   .card-arrow {
@@ -219,7 +218,7 @@
 
   .conversation-card:hover .card-arrow {
     opacity: 1;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   @media (max-width: 639px) {

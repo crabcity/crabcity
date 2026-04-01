@@ -275,8 +275,8 @@
     background: var(--surface-800);
     border: 1px solid var(--surface-border);
     box-shadow:
-      0 0 15px rgba(0, 0, 0, 0.5),
-      inset 0 0 10px rgba(0, 0, 0, 0.3);
+      var(--elevation-high),
+      var(--recess);
     overflow: hidden;
   }
 
@@ -299,55 +299,53 @@
   }
 
   .segment-bar.user {
-    fill: #5a9a5a;
-    filter: drop-shadow(0 0 2px rgba(90, 154, 90, 0.4));
+    fill: var(--minimap-user);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-user) 40%, transparent));
   }
 
   .segment-bar.user:hover {
-    filter: drop-shadow(0 0 4px rgba(100, 170, 100, 0.6)) brightness(1.2);
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--minimap-user) 60%, transparent)) brightness(1.2);
   }
 
   .segment-bar.assistant {
-    fill: #d4944a;
-    filter: drop-shadow(0 0 2px rgba(212, 148, 74, 0.4));
+    fill: var(--minimap-assistant);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-assistant) 40%, transparent));
   }
 
   .segment-bar.assistant:hover {
-    filter: drop-shadow(0 0 4px rgba(220, 160, 90, 0.6)) brightness(1.2);
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--minimap-assistant) 60%, transparent)) brightness(1.2);
   }
 
   .segment-bar.system {
-    fill: #666666;
-    filter: drop-shadow(0 0 2px rgba(100, 100, 100, 0.3));
+    fill: var(--minimap-system);
     opacity: 0.7;
   }
 
   .segment-bar.system:hover {
-    filter: drop-shadow(0 0 4px rgba(120, 120, 120, 0.5)) brightness(1.2);
+    filter: brightness(1.2);
   }
 
   .segment-bar.unknown {
-    fill: #888888;
-    filter: drop-shadow(0 0 2px rgba(136, 136, 136, 0.3));
-    stroke: #555555;
+    fill: var(--minimap-system);
+    stroke: color-mix(in srgb, var(--minimap-system) 60%, transparent);
     stroke-width: 1;
     stroke-dasharray: 2 2;
     opacity: 0.8;
   }
 
   .segment-bar.unknown:hover {
-    filter: drop-shadow(0 0 4px rgba(150, 150, 150, 0.5)) brightness(1.2);
+    filter: brightness(1.2);
   }
 
   .tool-dot {
-    fill: #9a7ab0;
-    filter: drop-shadow(0 0 2px rgba(154, 122, 176, 0.4));
+    fill: var(--minimap-tool);
+    filter: drop-shadow(0 0 2px color-mix(in srgb, var(--minimap-tool) 40%, transparent));
     pointer-events: none;
   }
 
   .thinking-marker {
-    fill: #8b5cf6;
-    filter: drop-shadow(0 0 3px var(--purple-glow));
+    fill: var(--minimap-thinking);
+    filter: drop-shadow(0 0 3px var(--tint-thinking-strong));
     pointer-events: none;
   }
 
@@ -356,8 +354,8 @@
   }
 
   .viewport {
-    fill: rgba(212, 148, 74, 0.2);
-    stroke: rgba(212, 148, 74, 0.6);
+    fill: var(--minimap-viewport-fill);
+    stroke: var(--minimap-viewport-stroke);
     stroke-width: 1.5;
     pointer-events: none;
   }
@@ -367,7 +365,7 @@
   }
 
   .overflow-indicator:hover .overflow-text {
-    fill: var(--amber-400);
+    fill: var(--accent-400);
   }
 
   .overflow-text {
@@ -389,8 +387,8 @@
       0deg,
       transparent,
       transparent 2px,
-      rgba(0, 0, 0, 0.05) 2px,
-      rgba(0, 0, 0, 0.05) 4px
+      var(--scanline-color) 2px,
+      var(--scanline-color) 4px
     );
     pointer-events: none;
   }

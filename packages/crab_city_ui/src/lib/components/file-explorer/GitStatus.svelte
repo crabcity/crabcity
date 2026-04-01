@@ -96,7 +96,7 @@
 
   .status-count.modified {
     background: var(--tint-active-strong);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .status-count.untracked {
@@ -140,7 +140,7 @@
 
   .git-status-indicator[data-status='modified'] {
     background: var(--tint-focus);
-    color: var(--amber-400);
+    color: var(--accent-400);
   }
 
   .git-status-indicator[data-status='untracked'] {
@@ -171,7 +171,7 @@
     width: 20px;
     height: 20px;
     border: 2px solid var(--surface-border);
-    border-top-color: var(--amber-400);
+    border-top-color: var(--accent-400);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }

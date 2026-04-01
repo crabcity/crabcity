@@ -118,7 +118,7 @@
   }
 
   .form-input:focus {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .body-input {
@@ -146,7 +146,7 @@
   }
 
   .form-select:focus {
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   .submit-btn {

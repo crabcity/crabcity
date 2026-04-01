@@ -94,7 +94,7 @@
   function heatColor(secs: number): string {
     const t = Math.min(1, secs / 120);
     const pct = Math.round(t * 100);
-    return `color-mix(in srgb, var(--amber-400) ${pct}%, var(--text-muted))`;
+    return `color-mix(in srgb, var(--chrome-accent-400) ${pct}%, var(--text-muted))`;
   }
 
   function heatStyle(secs: number): string {
@@ -651,7 +651,7 @@
     background: var(--surface-600);
     border: 1px solid var(--surface-border);
     border-radius: 3px;
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
     font-size: 9px;
     font-weight: 700;
     font-family: inherit;
@@ -665,7 +665,7 @@
 
   .overflow-badge:hover {
     background: var(--surface-500);
-    border-color: var(--amber-600);
+    border-color: var(--chrome-accent-600);
   }
 
   /* ====== Situation summary ====== */
@@ -771,7 +771,7 @@
     background: var(--status-red);
   }
   .bar-seg.active {
-    background: var(--purple-500);
+    background: var(--thinking-500);
   }
   .bar-seg.idle {
     background: var(--status-green);
@@ -821,7 +821,7 @@
     line-height: 12px;
     text-align: center;
     border-radius: 6px;
-    background: var(--amber-500);
+    background: var(--chrome-accent-500);
     color: var(--surface-900);
   }
 
@@ -893,7 +893,7 @@
   }
 
   .tier-name.inbox-label {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   .tier-count {
@@ -907,8 +907,8 @@
   }
 
   .tier-count.inbox-count {
-    background: color-mix(in srgb, var(--amber-500) 20%, var(--surface-600));
-    color: var(--amber-400);
+    background: color-mix(in srgb, var(--chrome-accent-500) 20%, var(--surface-600));
+    color: var(--chrome-accent-400);
   }
 
   .tier-toggle {
@@ -916,7 +916,7 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--amber-500);
+    color: var(--chrome-accent-500);
     background: transparent;
     border: none;
     cursor: pointer;
@@ -925,7 +925,7 @@
   }
 
   .tier-toggle:hover {
-    color: var(--amber-400);
+    color: var(--chrome-accent-400);
   }
 
   /* ====== Panel rows ====== */
@@ -957,12 +957,12 @@
   }
 
   .panel-row.in-pane {
-    border-left-color: var(--amber-700);
+    border-left-color: var(--chrome-accent-700);
   }
 
   .panel-row.current {
-    color: var(--amber-400);
-    border-left-color: var(--amber-500);
+    color: var(--chrome-accent-400);
+    border-left-color: var(--chrome-accent-500);
   }
 
   .panel-row.highlighted.current {
@@ -1166,8 +1166,8 @@
   }
 
   .new-instance-btn:hover {
-    border-color: var(--amber-600);
-    color: var(--amber-400);
+    border-color: var(--chrome-accent-600);
+    color: var(--chrome-accent-400);
     background: var(--tint-active);
   }
 
