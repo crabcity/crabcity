@@ -2,8 +2,10 @@
   import type { ToolCell } from '$lib/types';
   import { allToolCells } from '$lib/stores/conversation';
   import { renderMarkdown } from '$lib/utils/markdown';
+  import { getPlanContent, parseAllowedPrompts, parseStatusText } from '$lib/utils/plan';
   import { getContext } from 'svelte';
   import { setPaneViewMode } from '$lib/stores/layout';
+  import PlanModal from './PlanModal.svelte';
 
   const paneCtx = getContext<{ readonly id: string }>('paneId');
 
@@ -16,43 +18,16 @@
   let showRaw = $state(false);
   let planExpanded = $state(true);
   let selectedVersion: number | null = $state(null);
+  let modalOpen = $state(false);
 
   // ── Status ──────────────────────────────────────────────────────────
   const isResolved = $derived(!!tool.output);
   const isPending = $derived(!tool.output && !tool.is_error);
   const isError = $derived(!!tool.is_error);
 
-  // ── Allowed prompts ─────────────────────────────────────────────────
-  interface AllowedPrompt {
-    tool: string;
-    prompt: string;
-  }
-
-  function parseAllowedPrompts(raw: unknown): AllowedPrompt[] {
-    if (!Array.isArray(raw)) return [];
-    return raw.filter(
-      (p): p is AllowedPrompt =>
-        typeof p === 'object' &&
-        p !== null &&
-        typeof (p as Record<string, unknown>).tool === 'string' &&
-        typeof (p as Record<string, unknown>).prompt === 'string'
-    );
-  }
-
-  const allowedPrompts: AllowedPrompt[] = $derived(parseAllowedPrompts(tool.input.allowedPrompts));
-
-  // ── Plan content ────────────────────────────────────────────────────
-  // ExitPlanMode carries the plan text in input.plan — no file scanning needed.
-
-  function getPlanContent(t: ToolCell): string | null {
-    if (typeof t.input.plan === 'string' && t.input.plan.length > 0) {
-      return t.input.plan;
-    }
-    return null;
-  }
-
   const planContent = $derived(getPlanContent(tool));
   const renderedPlan = $derived(planContent ? renderMarkdown(planContent) : null);
+  const statusText = $derived(parseStatusText(tool.output));
 
   // ── Version history ─────────────────────────────────────────────────
   const allVersions: ToolCell[] = $derived(
@@ -86,19 +61,9 @@
     return activePlanContent ? renderMarkdown(activePlanContent) : null;
   });
 
-  const activeAllowedPrompts: AllowedPrompt[] = $derived.by(() => {
+  const activeAllowedPrompts = $derived.by(() => {
     if (!isLatestVersion) return [];
     return parseAllowedPrompts(activeToolCell.input.allowedPrompts);
-  });
-
-  // Resolve status text from tool output
-  const statusText: string | null = $derived.by(() => {
-    if (!tool.output) return null;
-    const lower = tool.output.toLowerCase();
-    if (lower.includes('approved') || lower.includes('accepted')) return 'APPROVED';
-    if (lower.includes('rejected') || lower.includes('denied')) return 'REJECTED';
-    if (lower.includes('changes requested')) return 'CHANGES REQUESTED';
-    return null;
   });
 
   // Collapse plan content for resolved cards by default
@@ -174,7 +139,10 @@
             class:led-error={isError}
           ></span>
         </div>
-        <button class="toggle-raw" onclick={() => (showRaw = true)} title="Show raw">&#9671;</button>
+        <div class="header-actions">
+          <button class="expand-btn" onclick={() => (modalOpen = true)} title="Expand plan"><span class="expand-icon"></span></button>
+          <button class="toggle-raw" onclick={() => (showRaw = true)} title="Show raw">&#9671;</button>
+        </div>
       </div>
 
       <!-- Plan content area -->
@@ -240,6 +208,19 @@
       {/if}
     {/if}
   </div>
+{/if}
+
+{#if modalOpen}
+  <PlanModal
+    {tool}
+    {allVersions}
+    {currentVersionIndex}
+    {statusText}
+    {isResolved}
+    {isPending}
+    {isError}
+    onclose={() => (modalOpen = false)}
+  />
 {/if}
 
 <style>
@@ -388,9 +369,16 @@
     box-shadow: 0 0 6px var(--status-red);
   }
 
-  /* ── Toggle raw button ───────────────────── */
+  /* ── Header actions ──────────────────────── */
 
-  .toggle-raw {
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .toggle-raw,
+  .expand-btn {
     background: none;
     border: none;
     color: var(--text-muted);
@@ -402,13 +390,36 @@
     transition: all 0.15s ease;
   }
 
-  .plan-card:hover .toggle-raw {
+  .plan-card:hover .toggle-raw,
+  .plan-card:hover .expand-btn {
     opacity: 0.8;
   }
 
-  .toggle-raw:hover {
+  .toggle-raw:hover,
+  .expand-btn:hover {
     background: var(--surface-500);
     color: var(--accent-400);
+  }
+
+  .expand-icon {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid currentColor;
+    border-radius: 1px;
+    position: relative;
+  }
+
+  .expand-icon::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    width: 0;
+    height: 0;
+    border-style: solid;
+    border-width: 0 5px 5px 0;
+    border-color: transparent currentColor transparent transparent;
   }
 
   /* ── Raw view ────────────────────────────── */
