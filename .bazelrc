@@ -18,19 +18,8 @@ build:clippy --@rules_rust//:clippy_flags=-Dwarnings
 # Running them locally prevents sandbox-path leakage into downstream actions.
 build --strategy=CargoBuildScriptRun=local
 
-# Tauri proc-macro cfg consistency
-# Tauri's ResolvedCommand has #[cfg(debug_assertions)] fields. The proc macro
-# generates struct literals whose shape depends on the HOST cfg (where the proc
-# macro runs), but the generated code compiles in the TARGET cfg. Host and
-# target must agree on debug_assertions or the struct literal won't match the
-# struct definition. Default Bazel: host=opt, target=fastbuild → mismatch.
-# Fix: force host=fastbuild to match the default target.
-build --host_compilation_mode=fastbuild
-# Optimized builds: use --config=opt (NOT bare -c opt) so host_compilation_mode
-# is also set to opt. Bare -c opt only changes the target, leaving the host at
-# fastbuild (from above), which reintroduces the cfg mismatch.
+# Optimized builds
 build:opt --compilation_mode=opt
-build:opt --host_compilation_mode=opt
 
 # Coverage
 # Filter to only instrument our source code, not external crates or test harnesses

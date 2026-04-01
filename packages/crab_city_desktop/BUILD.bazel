@@ -1,6 +1,7 @@
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load(":macos_app.bzl", "macos_app")
+load(":tauri_transition.bzl", "tauri_binary", "tauri_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -45,7 +46,7 @@ cargo_build_script(
 )
 
 rust_binary(
-    name = "crab_city_desktop",
+    name = "_crab_city_desktop_raw",
     srcs = glob(["src/**/*.rs"]),
     compile_data = _TAURI_DATA,
     edition = "2024",
@@ -54,8 +55,13 @@ rust_binary(
         "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
     },
     # no-sandbox: tauri proc macros read config and icon files from disk
-    tags = ["no-sandbox"],
+    # manual: must be built via tauri_binary (which applies cfg transition)
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//visibility:private"],
     deps = [
         ":build_script",
         "//packages/crab_city:crab_city_lib_embedded",
@@ -71,16 +77,33 @@ rust_binary(
     ],
 )
 
+tauri_binary(
+    name = "crab_city_desktop",
+    binary = ":_crab_city_desktop_raw",
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 rust_test(
-    name = "crab_city_desktop_test",
+    name = "_crab_city_desktop_test_raw",
     compile_data = _TAURI_DATA,
-    crate = ":crab_city_desktop",
+    crate = ":_crab_city_desktop_raw",
     edition = "2024",
     rustc_env = {
         "CARGO_MANIFEST_DIR": "packages/crab_city_desktop",
     },
-    tags = ["no-sandbox"],
+    # manual: must be built via tauri_test (which applies cfg transition)
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//visibility:private"],
+)
+
+tauri_test(
+    name = "crab_city_desktop_test",
+    target_compatible_with = ["@platforms//os:macos"],
+    test = ":_crab_city_desktop_test_raw",
 )
 
 macos_app(
