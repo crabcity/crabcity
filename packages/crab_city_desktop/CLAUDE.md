@@ -41,7 +41,9 @@ Tauri's `generate_context!()` proc macro writes cache files to `OUT_DIR` during 
 
 Frontend assets (`frontendDist`) are brotli-compressed into `$OUT_DIR/tauri-codegen-assets/{blake3_hash}.{ext}`. The `precreate_frontend_cache()` function in `build.rs` replicates this exactly so the proc macro's write is a no-op in Bazel.
 
-Additionally, `ResolvedCommand` has `#[cfg(debug_assertions)]` fields. Bazel compiles proc macros in exec config (default: `opt`, no debug_assertions) but targets in `fastbuild` (with debug_assertions). This mismatch is fixed by `--host_compilation_mode=fastbuild` in `.bazelrc`.
+Additionally, `ResolvedCommand` has `#[cfg(debug_assertions)]` fields. Bazel compiles proc macros in exec config (default: `opt`, no debug_assertions) but targets in `fastbuild` (with debug_assertions). This mismatch is fixed by a Starlark transition in `tauri_transition.bzl` that forces `host_compilation_mode` to match `compilation_mode`. The `tauri_binary` and `tauri_test` wrapper rules apply this transition — the raw `rust_binary` and `rust_test` targets are tagged `manual` and should not be built directly.
+
+DevTools APIs (`is_devtools_open()`, `open_devtools()`, `close_devtools()`) are only available with `debug_assertions`. The devtools menu item and handler are gated behind `#[cfg(debug_assertions)]`.
 
 ## Dev Workflow
 
@@ -80,7 +82,10 @@ When the external server dies, the health monitor navigates back to `tauri://loc
 ## Release Build (macOS .app bundle)
 
 ```sh
-bazel build //packages/crab_city_desktop:macos_app
+bazel build //packages/crab_city_desktop:macos_app          # debug
+bazel build --config=opt //packages/crab_city_desktop:macos_app  # optimized
 ```
+
+The `tauri_binary` wrapper rule applies a Starlark transition that keeps `host_compilation_mode` in sync with `compilation_mode`, so both `-c opt` and `--config=opt` work correctly.
 
 Produces `CrabCity.app` with the Tauri binary (which includes the embedded server) in `Contents/MacOS/`. No sidecar binary needed. The `macos_app` rule in `macos_app.bzl` uses a tree artifact (directory output) to assemble the bundle structure. Code signing and notarization are deferred to when public distribution is needed.
