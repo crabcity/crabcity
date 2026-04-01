@@ -126,11 +126,10 @@ _coverage_report="$_output_path/_coverage/_coverage_report.dat"
 
 if [[ $_skip_tests -eq 0 ]]; then
     if [[ -z "$_targets" ]]; then
-        _targets=$(bazel query 'kind("rust_test|jest_test", //...)' 2>/dev/null | tr '\n' ' ')
-        if [[ -z "$_targets" ]]; then
-            echo "ERROR: No test targets found."
-            exit 1
-        fi
+        # Use //... so bazel coverage discovers test targets itself and
+        # respects target_compatible_with (skips platform-incompatible
+        # targets like the macOS-only desktop app on Linux CI).
+        _targets="//..."
     fi
 
     _bazel_log=$(mktemp)

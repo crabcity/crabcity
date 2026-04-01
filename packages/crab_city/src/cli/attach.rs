@@ -13,9 +13,9 @@ use tokio_tungstenite::tungstenite;
 
 use crate::cli::daemon::{DaemonError, DaemonInfo};
 use crate::cli::terminal::get_terminal_size;
-use crate::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
-use crate::inference::ClaudeState;
-use crate::ws::protocol::{ClientMessage, ServerMessage};
+use crab_city::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
+use crab_city::inference::ClaudeState;
+use crab_city::ws::{ClientMessage, ServerMessage};
 use virtual_terminal::walk_row;
 
 /// Default scrollback lines if config fetch fails.

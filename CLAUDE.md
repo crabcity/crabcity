@@ -36,6 +36,19 @@ All Rust code uses edition 2024. Cargo defaults to edition 2021 for `cargo check
 - `bazel test //...` — full CI-equivalent (includes format check, edition 2024)
 - `CRAB_CITY_UI_PATH=packages/crab_city_ui/build cargo build -p crab_city_ui` — build embedded UI crate
 
+### Desktop App (Tauri)
+
+- `cargo check -p crab_city_desktop` — quick compile check
+- `cargo test -p crab_city_desktop` — run unit tests
+- `cd packages/crab_city_desktop && cargo tauri dev --config tauri.dev.conf.json` — launch desktop app with embedded server (auto-starts Vite dev server)
+- `bazel build //packages/crab_city_desktop:macos_app` — build macOS `.app` bundle with embedded server
+
+**Dev workflow** (single terminal): `cd packages/crab_city_desktop && cargo tauri dev --config tauri.dev.conf.json` — the Tauri app starts an embedded server in-process, and Vite's dev proxy discovers it automatically via the `daemon.port` file. The `--config` flag merges `tauri.dev.conf.json` (devUrl + beforeDevCommand) into the base config. The base `tauri.conf.json` has no dev URL — production builds never reference external dev servers.
+
+**Custom data directory**: `crab_city_desktop --data-dir /path/to/data` (defaults to `~/.crabcity`).
+
+Note: `crab_city_desktop` is in workspace `members` but NOT in `default-members` (requires Tauri system deps). The desktop app depends on the `crab_city` library crate (with `embedded-ui` feature) — no separate daemon process.
+
 ### Frontend (SvelteKit)
 
 - `cd packages/crab_city_ui && pnpm install && pnpm build` — build the web UI
@@ -55,14 +68,27 @@ The terminal theme is solarized. Hardcoded ANSI colors are invisible or clash:
 ### Package Dependency Graph
 
 ```
-crab_city (server + CLI + TUI)
+crab_city (lib: server core, config, handlers, WS | bin: CLI + TUI)
 ├── claude_convo      (conversation log reader)
 ├── pty_manager        (PTY lifecycle)
 └── virtual_terminal   (screen buffer + viewport negotiation)
 
 tty_wrapper            (standalone HTTP-controlled PTY — not depended on by crab_city)
 crab_city_ui           (SvelteKit frontend — embedded via rust-embed feature flag)
+crab_city_desktop      (Tauri native desktop app — embeds crab_city server in-process)
+  └── crab_city (lib, with embedded-ui feature)
 ```
+
+### Daemon Lifecycle
+
+One server per data directory, enforced by advisory file lock (`daemon.lock`). The lock uses `flock(2)` — automatically released on process crash.
+
+- **`try_acquire_daemon_lock()`** — non-blocking exclusive lock attempt; returns `None` if another server holds it
+- **`check_existing_server()`** — reads `daemon.pid`/`daemon.port`, verifies process alive via `kill(pid, 0)`, then health-checks `GET /health`
+- **`release_daemon_files()`** — PID-aware cleanup: only deletes state files if `daemon.pid` matches current process
+- **`DaemonLock`** — RAII guard; `Drop` calls `release_daemon_files()`, then releases the flock
+- Both `crab server` and `EmbeddedServer::start()` acquire the lock before initializing
+- Desktop app calls `check_existing_server()` first — connects to existing daemon if healthy, otherwise starts embedded
 
 ### Server Internals
 

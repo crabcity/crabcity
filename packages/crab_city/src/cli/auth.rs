@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use super::daemon::{self, DaemonInfo};
-use crate::config::{CrabCityConfig, FileConfig, load_config};
+use crab_city::config::{CrabCityConfig, FileConfig, load_config};
 
 /// `crab auth enable` — write auth.enabled=true to config.toml, restart server,
 /// and if no users exist prompt for admin credentials.

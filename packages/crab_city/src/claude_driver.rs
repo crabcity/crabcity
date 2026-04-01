@@ -25,6 +25,12 @@ pub struct ClaudeDriver {
     cancel: Option<CancellationToken>,
 }
 
+impl Default for ClaudeDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClaudeDriver {
     pub fn new() -> Self {
         let (conversation_tx, _) = broadcast::channel(64);

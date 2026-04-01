@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tokio_tungstenite::tungstenite;
 
-use crate::config::CrabCityConfig;
+use crab_city::config::CrabCityConfig;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -230,24 +230,12 @@ pub fn stop_daemon(info: &DaemonInfo) {
     }
 }
 
-/// Clean up daemon PID and port files.
-pub fn cleanup_daemon_files(config: &CrabCityConfig) {
-    let _ = std::fs::remove_file(config.daemon_pid_path());
-    let _ = std::fs::remove_file(config.daemon_port_path());
-}
-
-/// Write daemon PID and port files after the server binds.
-pub fn write_daemon_files(config: &CrabCityConfig, pid: u32, port: u16) -> Result<()> {
-    std::fs::write(config.daemon_pid_path(), pid.to_string())
-        .context("Failed to write daemon PID file")?;
-    std::fs::write(config.daemon_port_path(), port.to_string())
-        .context("Failed to write daemon port file")?;
-    Ok(())
-}
+// write_daemon_files / cleanup_daemon_files are now in crab_city::server
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crab_city::server::write_daemon_files;
 
     /// Build a throwaway `CrabCityConfig` rooted in a temp directory.
     /// Returns (config, _tempdir_guard) — keep the guard alive or the dir disappears.

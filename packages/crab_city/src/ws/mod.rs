@@ -16,7 +16,7 @@ mod state_manager;
 // Re-export the main types and functions
 pub(crate) use conversation_watcher::run_driver_conversation_watcher;
 pub use handler::handle_multiplexed_ws;
-pub use protocol::{ServerMessage, WsUser};
+pub use protocol::{ClientMessage, ServerMessage, WsUser};
 pub use state_manager::{
     ConversationEvent, FirstInputData, GlobalStateManager, PendingAttribution, StateBroadcast,
     create_state_broadcast,

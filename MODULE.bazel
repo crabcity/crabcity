@@ -263,6 +263,7 @@ crate_index.spec(
 )
 crate_index.spec(
     features = [
+        "fs",
         "signal",
         "term",
     ],
@@ -394,6 +395,46 @@ crate_index.spec(
 crate_index.spec(
     package = "unicode-segmentation",
     version = "=1.12.0",
+)
+
+# Tauri desktop app
+crate_index.spec(
+    features = ["tray-icon"],
+    package = "tauri",
+    version = "2",
+)
+crate_index.spec(
+    package = "tauri-build",
+    version = "2",
+)
+crate_index.spec(
+    package = "blake3",
+    version = "1",
+)
+crate_index.spec(
+    features = ["std"],
+    package = "brotli",
+    version = "8",
+)
+crate_index.spec(
+    package = "plist",
+    version = "1",
+)
+crate_index.spec(
+    package = "png",
+    version = "0.17",
+)
+crate_index.spec(
+    package = "tauri-plugin-shell",
+    version = "2",
+)
+crate_index.spec(
+    package = "tauri-plugin-window-state",
+    version = "2",
+)
+crate_index.spec(
+    package = "which",
+    version = "7",
 )
 crate_index.from_specs(name = "crate_index")
 use_repo(crate_index, "crate_index")

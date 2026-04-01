@@ -13,7 +13,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 use super::daemon::DaemonInfo;
-use crate::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
+use crab_city::config::{MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_LINES};
 
 /// Mirrors the server's GET /api/admin/config response.
 #[derive(Deserialize, Clone, Debug)]
